@@ -27,6 +27,34 @@
     update: (id, data) =>
       api(`/api/db/${name}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
     delete: (id) => api(`/api/db/${name}/${id}`, { method: 'DELETE' }),
+    // Live changes from all visitors. Returns an unsubscribe function;
+    // reconnects automatically until unsubscribed.
+    subscribe: (handlers = {}) => {
+      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      let ws;
+      let closed = false;
+      const connect = () => {
+        ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+        ws.addEventListener('open', () => {
+          ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
+        });
+        ws.addEventListener('message', (e) => {
+          const msg = JSON.parse(e.data);
+          if (msg.collection !== name) return;
+          if (msg.type === 'create') handlers.onCreate?.(msg.doc);
+          if (msg.type === 'update') handlers.onUpdate?.(msg.doc);
+          if (msg.type === 'delete') handlers.onDelete?.(msg.id);
+        });
+        ws.addEventListener('close', () => {
+          if (!closed) setTimeout(connect, 1000);
+        });
+      };
+      connect();
+      return () => {
+        closed = true;
+        ws.close();
+      };
+    },
   });
 
   window.quick = {

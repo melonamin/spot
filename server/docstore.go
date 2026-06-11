@@ -29,9 +29,15 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 	if err != nil {
 		return Document{}, fmt.Errorf("encode document: %w", err)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Document{}, fmt.Errorf("begin insert: %w", err)
+	}
+	defer tx.Rollback()
+
 	var doc Document
 	doc.Data = data
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO documents (scope, collection, data)
 		 VALUES ($1, $2, $3)
 		 RETURNING id, created_at, updated_at`,
@@ -40,7 +46,26 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 	if err != nil {
 		return Document{}, fmt.Errorf("insert document: %w", err)
 	}
+	if err := notifyChange(ctx, tx, "create", scope, collection, doc.ID); err != nil {
+		return Document{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Document{}, fmt.Errorf("commit insert: %w", err)
+	}
 	return doc, nil
+}
+
+// notifyChange fires the realtime notification inside the write's
+// transaction, so listeners never hear about rolled-back changes.
+func notifyChange(ctx context.Context, tx *sql.Tx, action, scope, collection, id string) error {
+	payload, err := json.Marshal(docChange{Action: action, Scope: scope, Collection: collection, ID: id})
+	if err != nil {
+		return fmt.Errorf("encode notify payload: %w", err)
+	}
+	if _, err := tx.ExecContext(ctx, `SELECT pg_notify($1, $2)`, notifyChannel, string(payload)); err != nil {
+		return fmt.Errorf("notify %s: %w", action, err)
+	}
+	return nil
 }
 
 func (s *DocStore) List(ctx context.Context, scope, collection string, limit int) ([]Document, error) {
@@ -85,9 +110,15 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 	if err != nil {
 		return Document{}, fmt.Errorf("encode document: %w", err)
 	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return Document{}, fmt.Errorf("begin update: %w", err)
+	}
+	defer tx.Rollback()
+
 	var doc Document
 	doc.Data = data
-	err = s.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`UPDATE documents SET data = $4, updated_at = now()
 		 WHERE scope = $1 AND collection = $2 AND id = $3
 		 RETURNING id, created_at, updated_at`,
@@ -99,11 +130,23 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 	if err != nil {
 		return Document{}, fmt.Errorf("update document: %w", err)
 	}
+	if err := notifyChange(ctx, tx, "update", scope, collection, id); err != nil {
+		return Document{}, err
+	}
+	if err := tx.Commit(); err != nil {
+		return Document{}, fmt.Errorf("commit update: %w", err)
+	}
 	return doc, nil
 }
 
 func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	res, err := tx.ExecContext(ctx,
 		`DELETE FROM documents WHERE scope = $1 AND collection = $2 AND id = $3`,
 		scope, collection, id,
 	)
@@ -116,6 +159,12 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	}
 	if n == 0 {
 		return ErrNotFound
+	}
+	if err := notifyChange(ctx, tx, "delete", scope, collection, id); err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit delete: %w", err)
 	}
 	return nil
 }

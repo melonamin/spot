@@ -12,10 +12,11 @@ quick.localhost {
 	tls internal
 
 	handle /api/* {
-		# Overwrite (not append) X-Forwarded-For: identity resolution
-		# depends on this header, and clients can set it in fetch().
+		# Overwrite (not append) the X-Forwarded-* headers: identity and
+		# scoping depend on them, and clients can set them in fetch().
 		reverse_proxy quick-api:8080 {
 			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Host {host}
 		}
 	}
 
@@ -34,13 +35,15 @@ quick.localhost {
 	forward_auth quick-api:8080 {
 		uri /api/authz
 		header_up X-Forwarded-For {client_ip}
+		header_up X-Forwarded-Host {host}
 	}
 
 	handle /api/* {
-		# Overwrite (not append) X-Forwarded-For: identity resolution
-		# depends on this header, and clients can set it in fetch().
+		# Overwrite (not append) the X-Forwarded-* headers: identity and
+		# scoping depend on them, and clients can set them in fetch().
 		reverse_proxy quick-api:8080 {
 			header_up X-Forwarded-For {client_ip}
+			header_up X-Forwarded-Host {host}
 		}
 	}
 

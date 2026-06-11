@@ -117,6 +117,22 @@ Collections are private to this site, except collections named
 Use the prefix deliberately — for cross-site libraries, leaderboards,
 and the like.
 
+### Realtime
+
+Subscribe to a collection to receive every visitor's changes live —
+this is how to build collaborative and multiplayer sites:
+
+\`\`\`js
+const unsubscribe = posts.subscribe({
+  onCreate: (doc) => { /* doc = { id, data, created_at, updated_at } */ },
+  onUpdate: (doc) => {},
+  onDelete: (id) => {},
+});
+\`\`\`
+
+Prefer rendering from subscription events over polling or re-fetching
+after writes.
+
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.
 

@@ -2,7 +2,10 @@ module quick/server
 
 go 1.26
 
-require github.com/jackc/pgx/v5 v5.7.5
+require (
+	github.com/coder/websocket v1.8.14
+	github.com/jackc/pgx/v5 v5.7.5
+)
 
 require (
 	github.com/jackc/pgpassfile v1.0.0 // indirect

@@ -83,6 +83,12 @@ done
 code=$($CURL -o /dev/null -w '%{http_code}' https://demo.quick.localhost:8443/)
 [ "$code" = "200" ] || fail "open site returned $code after access-control deploy, want 200"
 
+echo "==> websocket endpoint is routed through Caddy"
+code=$($CURL -o /dev/null -w '%{http_code}' https://demo.quick.localhost:8443/api/ws)
+# A plain GET (no Upgrade headers) must reach the handler and be told to
+# upgrade — proving the route exists end to end.
+[ "$code" = "426" ] || fail "/api/ws returned $code, want 426 Upgrade Required"
+
 echo "==> identity API without NetBird configured fails loudly"
 me=$($CURL https://demo.quick.localhost:8443/api/me)
 echo "$me" | grep -q "identity resolver not configured" \

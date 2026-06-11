@@ -7,6 +7,9 @@ import (
 	"net/http"
 	"regexp"
 	"strconv"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
@@ -15,7 +18,20 @@ type Server struct {
 	store       *DocStore
 	resolver    *NetbirdResolver
 	policies    *PolicyStore
+	hub         *Hub
 	quickDomain string
+}
+
+// requestHost is the host the browser addressed. Caddy overwrites
+// X-Forwarded-Host on every proxied request (clients could otherwise
+// set it themselves), so when present it is trustworthy — and it is the
+// only host available on forward_auth subrequests, where r.Host is the
+// backend's own address.
+func requestHost(r *http.Request) string {
+	if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+		return host
+	}
+	return r.Host
 }
 
 func (s *Server) routes() *http.ServeMux {
@@ -25,6 +41,7 @@ func (s *Server) routes() *http.ServeMux {
 	})
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
+	mux.HandleFunc("GET /api/ws", s.handleWS)
 	mux.HandleFunc("GET /api/db/{collection}", s.handleList)
 	mux.HandleFunc("POST /api/db/{collection}", s.handleCreate)
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.handleGet)
@@ -58,11 +75,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // mesh; sites with one fail CLOSED whenever the policy or the visitor's
 // identity cannot be established.
 func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
-	host := r.Header.Get("X-Forwarded-Host")
-	if host == "" {
-		host = r.Host
-	}
-	site := siteFromHost(host, s.quickDomain)
+	site := siteFromHost(requestHost(r), s.quickDomain)
 	if site == "" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -98,11 +111,86 @@ func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+type wsRequest struct {
+	Type       string `json:"type"`
+	Collection string `json:"collection"`
+}
+
+// handleWS serves realtime subscriptions. A session subscribes to
+// collections with {"type":"subscribe","collection":"posts"} and
+// receives Event messages; scoping follows the same rules as the
+// database API (site-private, shared-* global).
+func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+	site := siteFromHost(requestHost(r), s.quickDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "websocket API must be called from a site subdomain")
+		return
+	}
+	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
+		// Proxied requests have Host quick-api:8080 while the browser's
+		// Origin is the site, so the default same-host check would
+		// reject everything. Any *.quickDomain origin is legitimate.
+		OriginPatterns: []string{"*." + s.quickDomain, "*." + s.quickDomain + ":*"},
+	})
+	if err != nil {
+		return // Accept has already written the error response
+	}
+	defer conn.CloseNow()
+
+	ctx := r.Context()
+	out := make(chan Event, 64)
+	defer s.hub.UnsubscribeAll(out)
+
+	reqs := make(chan wsRequest)
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		for {
+			var req wsRequest
+			if err := wsjson.Read(ctx, conn, &req); err != nil {
+				return
+			}
+			select {
+			case reqs <- req:
+			case <-ctx.Done():
+				return
+			}
+		}
+	}()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-readDone:
+			return
+		case req := <-reqs:
+			scope, err := scopeFor(site, req.Collection)
+			if err != nil {
+				_ = wsjson.Write(ctx, conn, map[string]string{"type": "error", "error": err.Error()})
+				continue
+			}
+			switch req.Type {
+			case "subscribe":
+				s.hub.Subscribe(scope, req.Collection, out)
+			case "unsubscribe":
+				s.hub.Unsubscribe(scope, req.Collection, out)
+			default:
+				_ = wsjson.Write(ctx, conn, map[string]string{"type": "error", "error": "unknown request type " + req.Type})
+			}
+		case ev := <-out:
+			if err := wsjson.Write(ctx, conn, ev); err != nil {
+				return
+			}
+		}
+	}
+}
+
 // scope resolves the request to a database namespace, writing the error
 // response itself when the request is not a valid site request.
 func (s *Server) scope(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	collection := r.PathValue("collection")
-	site := siteFromHost(r.Host, s.quickDomain)
+	site := siteFromHost(requestHost(r), s.quickDomain)
 	scope, err := scopeFor(site, collection)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())

@@ -23,18 +23,27 @@
   <script src="/quick.js"></script>
   <script>
     const entries = quick.db.collection('entries');
+    const list = document.getElementById('entries');
+
+    // Stored data is rendered as text, never as HTML.
+    function entryItem(d) {
+      const li = document.createElement('li');
+      const from = document.createElement('strong');
+      from.textContent = `${d.data.from || 'someone'}:`;
+      li.append(from, ` ${d.data.message}`);
+      return li;
+    }
 
     async function render() {
       const docs = await entries.list();
-      // Stored data is rendered as text, never as HTML.
-      document.getElementById('entries').replaceChildren(...docs.map((d) => {
-        const li = document.createElement('li');
-        const from = document.createElement('strong');
-        from.textContent = `${d.data.from || 'someone'}:`;
-        li.append(from, ` ${d.data.message}`);
-        return li;
-      }));
+      list.replaceChildren(...docs.map(entryItem));
     }
+
+    // New entries appear live for every visitor, including this one —
+    // submitting does not re-render, the subscription does.
+    entries.subscribe({
+      onCreate: (doc) => list.prepend(entryItem(doc)),
+    });
 
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -42,7 +51,6 @@
       const me = await quick.me().catch(() => null);
       await entries.create({ message: input.value, from: me ? me.name : null });
       input.value = '';
-      await render();
     });
 
     quick.me()

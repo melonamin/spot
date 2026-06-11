@@ -63,6 +63,19 @@ read and write — that's how cross-site libraries (leaderboards,
 comments, analytics) share data. The prefix makes sharing an explicit,
 visible choice.
 
+Realtime: any collection can be subscribed to, and every visitor sees
+changes live. Under the hood each write fires `pg_notify` in its own
+transaction; a dedicated listener connection relays events to a hub
+that fans out to websocket sessions (`/api/ws`):
+
+```js
+const unsubscribe = posts.subscribe({
+  onCreate: (doc) => ...,
+  onUpdate: (doc) => ...,
+  onDelete: (id) => ...,
+});
+```
+
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/quick.js`.
 
@@ -112,8 +125,6 @@ Two consequences to be aware of:
 
 ## Not built yet (in blog-post order)
 
-- realtime subscriptions on the document store (Postgres LISTEN/NOTIFY
-  is already a natural fit)
 - file uploads (presigned URLs against the quick-uploads bucket)
 - AI proxy (`quick.ai.chat()` with server-side keys)
 - websocket rooms for multiplayer

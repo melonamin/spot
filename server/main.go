@@ -100,10 +100,16 @@ func main() {
 		log.Printf("identity: NETBIRD_API_URL/NETBIRD_API_TOKEN not set, /api/me will return 503")
 	}
 
+	store := &DocStore{db: db}
+	hub := NewHub()
+	listener := &Listener{dsn: cfg.DatabaseURL, store: store, hub: hub}
+	go listener.Run(ctx)
+
 	srv := &Server{
-		store:       &DocStore{db: db},
+		store:       store,
 		resolver:    resolver,
 		policies:    NewPolicyStore(cfg.SitesDir, 5*time.Second),
+		hub:         hub,
 		quickDomain: cfg.QuickDomain,
 	}
 

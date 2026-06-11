@@ -13,13 +13,16 @@ import (
 //
 //	just up
 //	just test-integration
+func testDSN() string {
+	if dsn := os.Getenv("QUICK_TEST_DATABASE_URL"); dsn != "" {
+		return dsn
+	}
+	return "postgres://quick:quick@localhost:5433/quick?sslmode=disable"
+}
+
 func newTestStore(t *testing.T) *DocStore {
 	t.Helper()
-	dsn := os.Getenv("QUICK_TEST_DATABASE_URL")
-	if dsn == "" {
-		dsn = "postgres://quick:quick@localhost:5433/quick?sslmode=disable"
-	}
-	db, err := openDB(context.Background(), dsn)
+	db, err := openDB(context.Background(), testDSN())
 	if err != nil {
 		t.Fatalf("connect to test database (is `just up` running?): %v", err)
 	}
