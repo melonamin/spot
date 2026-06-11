@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick demo guestbook</title>
+  <style>
+    body { font: 16px/1.6 system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; }
+    li { margin: 0.4rem 0; }
+    input { padding: 0.4rem; width: 60%; }
+    button { padding: 0.4rem 0.8rem; }
+  </style>
+</head>
+<body>
+  <h1>Quick demo guestbook</h1>
+  <p id="who">Resolving who you are…</p>
+  <form id="form">
+    <input id="message" placeholder="Leave a message" required>
+    <button>Sign</button>
+  </form>
+  <ul id="entries"></ul>
+
+  <script src="/quick.js"></script>
+  <script>
+    const entries = quick.db.collection('entries');
+
+    async function render() {
+      const docs = await entries.list();
+      document.getElementById('entries').innerHTML = docs
+        .map((d) => `<li><strong>${d.data.from || 'someone'}:</strong> ${d.data.message}</li>`)
+        .join('');
+    }
+
+    document.getElementById('form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('message');
+      const me = await quick.me().catch(() => null);
+      await entries.create({ message: input.value, from: me ? me.name : null });
+      input.value = '';
+      await render();
+    });
+
+    quick.me()
+      .then((me) => { document.getElementById('who').textContent = `Hi ${me.name} (${me.email})`; })
+      .catch(() => { document.getElementById('who').textContent = 'Identity unavailable (no NetBird resolver configured).'; });
+
+    render();
+  </script>
+</body>
+</html>

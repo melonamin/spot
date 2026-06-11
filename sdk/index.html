@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Quick</title>
+  <style>
+    body { font: 16px/1.6 system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
+    code, pre { background: #f4f4f4; border-radius: 4px; }
+    code { padding: 0.1rem 0.3rem; }
+    pre { padding: 1rem; overflow-x: auto; }
+  </style>
+</head>
+<body>
+  <h1>Quick</h1>
+  <p>Drop a folder of HTML, get a site. Deploy from any directory:</p>
+  <pre>quick deploy mysite</pre>
+  <p>Your site is live at <code>https://mysite.&lt;quick-domain&gt;/</code> and
+     every page can use the zero-config backend:</p>
+  <pre>&lt;script src="/quick.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  const posts = quick.db.collection('posts');
+  await posts.create({ title: 'Hello Quick DB' });
+  const me = await quick.me(); // { email, name, peer_name, peer_ip }
+&lt;/script&gt;</pre>
+  <p>Run <code>quick init</code> in a project to teach your coding agent
+     the whole API.</p>
+</body>
+</html>

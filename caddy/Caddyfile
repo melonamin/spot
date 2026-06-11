@@ -1,0 +1,42 @@
+# Quick: wildcard host -> site folder, /api -> shared backend.
+#
+# Dev runs on quick.localhost with Caddy's internal CA. For production,
+# set the real domain and switch `tls internal` to a DNS-01 challenge
+# (e.g. the caddy-dns/cloudflare module) so the wildcard cert is publicly
+# trusted. The {labels.N} index in the wildcard block selects the site
+# name: it counts host labels from the right, so for a 2-label
+# QUICK_DOMAIN (quick.localhost) the site is {labels.2}; a 4-label domain
+# (quick.corp.example.com) needs {labels.4}.
+
+quick.localhost {
+	tls internal
+
+	handle /api/* {
+		reverse_proxy quick-api:8080
+	}
+
+	handle {
+		root * /srv/sdk
+		file_server
+	}
+}
+
+*.quick.localhost {
+	tls internal
+
+	handle /api/* {
+		reverse_proxy quick-api:8080
+	}
+
+	# Every site gets the SDK at a stable same-origin path.
+	handle /quick.js {
+		root * /srv/sdk
+		rewrite * /quick.js
+		file_server
+	}
+
+	handle {
+		root * /srv/sites/{labels.2}
+		file_server
+	}
+}

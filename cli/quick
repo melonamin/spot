@@ -1,0 +1,124 @@
+#!/bin/sh
+# quick — deploy static sites to the Quick platform.
+#
+# Configuration via environment (or ~/.config/quick/env, sourced if present):
+#   QUICK_S3_ENDPOINT    S3 endpoint of the RustFS instance (default http://localhost:9000)
+#   QUICK_S3_ACCESS_KEY  access key (default rustfsadmin)
+#   QUICK_S3_SECRET_KEY  secret key (default rustfsadmin)
+#   QUICK_DOMAIN         domain sites are served under (default quick.localhost)
+set -eu
+
+[ -f "${HOME}/.config/quick/env" ] && . "${HOME}/.config/quick/env"
+
+QUICK_S3_ENDPOINT=${QUICK_S3_ENDPOINT:-http://localhost:9000}
+QUICK_S3_ACCESS_KEY=${QUICK_S3_ACCESS_KEY:-rustfsadmin}
+QUICK_S3_SECRET_KEY=${QUICK_S3_SECRET_KEY:-rustfsadmin}
+QUICK_S3_BUCKET=${QUICK_S3_BUCKET:-quick-sites}
+QUICK_DOMAIN=${QUICK_DOMAIN:-quick.localhost}
+
+usage() {
+    cat <<'EOF'
+usage: quick <command>
+
+commands:
+  deploy [name] [dir]   sync a directory (default .) to the site <name>
+                        (default: current directory name)
+  init                  write the Quick agent skill into ./.claude/skills/quick
+EOF
+    exit 1
+}
+
+# Runs rclone with the S3 remote configured from the environment. Prefers
+# a local rclone; falls back to the rclone docker image.
+run_rclone() {
+    if command -v rclone >/dev/null 2>&1; then
+        RCLONE_CONFIG_QUICK_TYPE=s3 \
+        RCLONE_CONFIG_QUICK_PROVIDER=Minio \
+        RCLONE_CONFIG_QUICK_ENDPOINT="$QUICK_S3_ENDPOINT" \
+        RCLONE_CONFIG_QUICK_ACCESS_KEY_ID="$QUICK_S3_ACCESS_KEY" \
+        RCLONE_CONFIG_QUICK_SECRET_ACCESS_KEY="$QUICK_S3_SECRET_KEY" \
+        RCLONE_CONFIG_QUICK_FORCE_PATH_STYLE=true \
+        rclone "$@"
+    else
+        docker run --rm --network host \
+            -v "$PWD:/work" -w /work \
+            -e RCLONE_CONFIG_QUICK_TYPE=s3 \
+            -e RCLONE_CONFIG_QUICK_PROVIDER=Minio \
+            -e RCLONE_CONFIG_QUICK_ENDPOINT="$QUICK_S3_ENDPOINT" \
+            -e RCLONE_CONFIG_QUICK_ACCESS_KEY_ID="$QUICK_S3_ACCESS_KEY" \
+            -e RCLONE_CONFIG_QUICK_SECRET_ACCESS_KEY="$QUICK_S3_SECRET_KEY" \
+            -e RCLONE_CONFIG_QUICK_FORCE_PATH_STYLE=true \
+            rclone/rclone:latest "$@"
+    fi
+}
+
+deploy() {
+    name=${1:-$(basename "$PWD")}
+    dir=${2:-.}
+    case $name in
+        *[!a-z0-9-]*|'')
+            echo "error: site name '$name' must match [a-z0-9-]+" >&2
+            exit 1
+            ;;
+    esac
+    if [ ! -e "$dir/index.html" ]; then
+        echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
+        exit 1
+    fi
+    echo "deploying $dir -> $name.$QUICK_DOMAIN"
+    ( cd "$dir" && run_rclone sync . "quick:$QUICK_S3_BUCKET/$name" )
+    echo "live: https://$name.$QUICK_DOMAIN/"
+}
+
+init() {
+    mkdir -p .claude/skills/quick
+    cat > .claude/skills/quick/SKILL.md <<EOF
+---
+name: quick
+description: Build and deploy sites on Quick, the internal hosting platform. Use when creating or updating a Quick site, or when a site needs storage or identity.
+---
+
+# Quick
+
+Quick hosts static sites for everyone on the internal network. A site is a
+folder with an index.html. Deploy with \`quick deploy <name>\` from the site
+directory; it is then live at https://<name>.$QUICK_DOMAIN/.
+
+There is no build step and no framework. Plain HTML/CSS/JS works best.
+
+## Backend SDK
+
+Load the SDK with \`<script src="/quick.js"></script>\`. Everything is
+same-origin and zero-config — no API keys, no auth code.
+
+### Identity
+
+\`\`\`js
+const me = await quick.me();
+// { email, name, peer_name, peer_ip } — resolved from the NetBird mesh
+\`\`\`
+
+### Database (schemaless document collections, private to this site)
+
+\`\`\`js
+const posts = quick.db.collection('posts');
+const doc = await posts.create({ title: 'Hello' }); // { id, data, created_at, updated_at }
+const docs = await posts.list({ limit: 100 });      // newest first
+await posts.get(doc.id);
+await posts.update(doc.id, { title: 'Bye' });       // replaces data
+await posts.delete(doc.id);
+\`\`\`
+
+Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
+up to 1 MB.
+EOF
+    echo "wrote .claude/skills/quick/SKILL.md"
+}
+
+cmd=${1:-help}
+[ $# -gt 0 ] && shift
+case $cmd in
+    deploy) deploy "$@" ;;
+    init)   init ;;
+    *)      usage ;;
+esac
