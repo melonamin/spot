@@ -26,9 +26,14 @@
 
     async function render() {
       const docs = await entries.list();
-      document.getElementById('entries').innerHTML = docs
-        .map((d) => `<li><strong>${d.data.from || 'someone'}:</strong> ${d.data.message}</li>`)
-        .join('');
+      // Stored data is rendered as text, never as HTML.
+      document.getElementById('entries').replaceChildren(...docs.map((d) => {
+        const li = document.createElement('li');
+        const from = document.createElement('strong');
+        from.textContent = `${d.data.from || 'someone'}:`;
+        li.append(from, ` ${d.data.message}`);
+        return li;
+      }));
     }
 
     document.getElementById('form').addEventListener('submit', async (e) => {

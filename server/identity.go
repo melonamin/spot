@@ -118,13 +118,15 @@ func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-// clientIP returns the address the request originated from. Caddy is the
-// only thing in front of this server and appends the real client to
-// X-Forwarded-For; fall back to the socket address when absent.
+// clientIP returns the address the request originated from. Identity
+// hangs off this value, so it must not be spoofable: Caddy overwrites
+// X-Forwarded-For with the connection's address, and as defense in depth
+// this reads the LAST entry — the one the proxy in front of us set —
+// never a client-supplied prefix. Falls back to the socket address.
 func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		first, _, _ := strings.Cut(xff, ",")
-		return strings.TrimSpace(first)
+	if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
+		entries := strings.Split(vals[len(vals)-1], ",")
+		return strings.TrimSpace(entries[len(entries)-1])
 	}
 	host, _, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {

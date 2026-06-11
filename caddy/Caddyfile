@@ -12,7 +12,11 @@ quick.localhost {
 	tls internal
 
 	handle /api/* {
-		reverse_proxy quick-api:8080
+		# Overwrite (not append) X-Forwarded-For: identity resolution
+		# depends on this header, and clients can set it in fetch().
+		reverse_proxy quick-api:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
 	}
 
 	handle {
@@ -25,7 +29,11 @@ quick.localhost {
 	tls internal
 
 	handle /api/* {
-		reverse_proxy quick-api:8080
+		# Overwrite (not append) X-Forwarded-For: identity resolution
+		# depends on this header, and clients can set it in fetch().
+		reverse_proxy quick-api:8080 {
+			header_up X-Forwarded-For {client_ip}
+		}
 	}
 
 	# Every site gets the SDK at a stable same-origin path.

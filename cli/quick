@@ -111,6 +111,9 @@ await posts.delete(doc.id);
 
 Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
 up to 1 MB.
+
+When rendering stored documents, set text via textContent / DOM APIs —
+never interpolate document data into innerHTML.
 EOF
     echo "wrote .claude/skills/quick/SKILL.md"
 }

@@ -87,9 +87,20 @@ func TestHandleMeUnconfigured(t *testing.T) {
 func TestClientIP(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "172.18.0.5:39000"
-	req.Header.Set("X-Forwarded-For", "100.64.0.7, 172.18.0.2")
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
 	if got := clientIP(req); got != "100.64.0.7" {
 		t.Errorf("clientIP with XFF = %q, want 100.64.0.7", got)
+	}
+
+	// A client-supplied XFF that a proxy appended to must not win:
+	// only the last entry (the proxy-set one) is trusted.
+	req.Header.Set("X-Forwarded-For", "100.64.0.66, 100.64.0.7")
+	if got := clientIP(req); got != "100.64.0.7" {
+		t.Errorf("clientIP with spoofed XFF prefix = %q, want 100.64.0.7", got)
+	}
+	req.Header.Add("X-Forwarded-For", "100.64.0.8")
+	if got := clientIP(req); got != "100.64.0.8" {
+		t.Errorf("clientIP with multiple XFF headers = %q, want 100.64.0.8", got)
 	}
 
 	req.Header.Del("X-Forwarded-For")
