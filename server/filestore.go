@@ -93,6 +93,25 @@ func newFileID() (string, error) {
 	return hex.EncodeToString(raw), nil
 }
 
+// inlineSafe reports whether a content type may be rendered inline by a
+// browser without risk of script execution. SVG and HTML are
+// deliberately excluded — both can carry script — so they download
+// instead. Images, PDFs, plain text, and audio/video render inline so
+// sites can embed them directly.
+func inlineSafe(contentType string) bool {
+	media := contentType
+	if i := strings.IndexByte(media, ';'); i >= 0 {
+		media = media[:i]
+	}
+	media = strings.TrimSpace(strings.ToLower(media))
+	switch media {
+	case "image/png", "image/jpeg", "image/gif", "image/webp",
+		"application/pdf", "text/plain":
+		return true
+	}
+	return strings.HasPrefix(media, "audio/") || strings.HasPrefix(media, "video/")
+}
+
 // sanitizeFilename keeps the base name with a conservative character
 // set, so object keys and download paths stay unambiguous.
 func sanitizeFilename(name string) string {

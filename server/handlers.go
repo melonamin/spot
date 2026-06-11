@@ -106,8 +106,20 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	}
 	defer file.Close()
 
-	stored, err := s.files.Put(r.Context(), site, header.Filename,
-		header.Header.Get("Content-Type"), file, header.Size)
+	// Sniff the content type from the bytes rather than trusting the
+	// client's declared type — that header controls how a browser renders
+	// the download, so a forged image/png on HTML bytes would be a stored
+	// XSS in the viewer's site origin.
+	sniff := make([]byte, 512)
+	n, _ := io.ReadFull(file, sniff)
+	contentType := http.DetectContentType(sniff[:n])
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		log.Printf("files: seek: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not read the upload")
+		return
+	}
+
+	stored, err := s.files.Put(r.Context(), site, header.Filename, contentType, file, header.Size)
 	if err != nil {
 		log.Printf("files: %v", err)
 		httpError(w, http.StatusInternalServerError, "could not store the file")
@@ -136,6 +148,17 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	defer obj.Close()
 
 	w.Header().Set("Content-Type", contentType)
+	// Defense in depth against a rendered upload running script in a
+	// viewer's site origin: never let the browser re-sniff, sandbox the
+	// response, and only allow inline rendering for known-safe media —
+	// everything else (HTML, SVG, unknown) downloads instead of renders.
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	disposition := "attachment"
+	if inlineSafe(contentType) {
+		disposition = "inline"
+	}
+	w.Header().Set("Content-Disposition", disposition+`; filename="`+name+`"`)
 	// IDs are random per upload, so content at a URL never changes.
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	if _, err := io.Copy(w, obj); err != nil {

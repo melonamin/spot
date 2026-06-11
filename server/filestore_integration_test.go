@@ -9,7 +9,9 @@ import (
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
+	"net/textproto"
 	"os"
+	"strings"
 	"testing"
 )
 
@@ -85,5 +87,68 @@ func TestFileUploadRoundtrip(t *testing.T) {
 	missing.Body.Close()
 	if missing.StatusCode != http.StatusNotFound {
 		t.Errorf("missing file: status %d, want 404", missing.StatusCode)
+	}
+}
+
+// TestFileUploadHTMLIsNotRenderable verifies the XSS defense: an HTML
+// upload is sniffed (not trusted) and served as a sandboxed attachment
+// so a browser never executes it in the viewer's site origin.
+func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
+	endpoint := os.Getenv("QUICK_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:9000"
+	}
+	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "quick-uploads")
+	if err != nil {
+		t.Fatalf("file store: %v", err)
+	}
+	srv := &Server{files: files, quickDomain: "quick.localhost"}
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	var form bytes.Buffer
+	writer := multipart.NewWriter(&form)
+	// Claim image/png, but send HTML bytes — the classic disguised upload.
+	header := make(textproto.MIMEHeader)
+	header.Set("Content-Disposition", `form-data; name="file"; filename="evil.png"`)
+	header.Set("Content-Type", "image/png")
+	part, err := writer.CreatePart(header)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part.Write([]byte("<html><script>alert(document.domain)</script></html>"))
+	writer.Close()
+
+	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/files", &form)
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	req.Header.Set("X-Forwarded-Host", "it-files.quick.localhost")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("upload: %v", err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode != http.StatusCreated {
+		t.Fatalf("upload: status %d", res.StatusCode)
+	}
+	var stored StoredFile
+	json.NewDecoder(res.Body).Decode(&stored)
+	// The client claimed image/png; sniffing must override it to text/html.
+	if stored.ContentType != "text/html; charset=utf-8" {
+		t.Errorf("stored content type = %q, want sniffed text/html", stored.ContentType)
+	}
+
+	got, err := http.Get(ts.URL + stored.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer got.Body.Close()
+	if disp := got.Header.Get("Content-Disposition"); !strings.HasPrefix(disp, "attachment") {
+		t.Errorf("HTML upload Content-Disposition = %q, want attachment", disp)
+	}
+	if got.Header.Get("X-Content-Type-Options") != "nosniff" {
+		t.Error("missing X-Content-Type-Options: nosniff")
+	}
+	if !strings.Contains(got.Header.Get("Content-Security-Policy"), "sandbox") {
+		t.Errorf("CSP = %q, want sandbox", got.Header.Get("Content-Security-Policy"))
 	}
 }

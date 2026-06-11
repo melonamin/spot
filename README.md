@@ -133,6 +133,13 @@ from any site:
 const stored = await quick.files.upload(file);  // { id, name, size, content_type, url }
 ```
 
+The content type is sniffed from the bytes, not the client's claim.
+Images, PDFs, plain text, and audio/video render inline; everything else
+(HTML, SVG, unknown) is served as a sandboxed `attachment` with
+`nosniff` so an uploaded file can't run script in a viewer's site origin.
+For stricter isolation in production, serve `/api/files` from a separate
+cookieless domain.
+
 The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
 in `.env`); sites call Claude with zero configuration. Defaults:
 `claude-opus-4-8`, adaptive thinking, 16K max tokens — overridable per
