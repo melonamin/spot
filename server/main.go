@@ -25,6 +25,7 @@ type config struct {
 	Port            string
 	DatabaseURL     string
 	QuickDomain     string
+	SitesDir        string
 	NetbirdAPIURL   string
 	NetbirdAPIToken string
 }
@@ -34,6 +35,7 @@ func loadConfig() (config, error) {
 		Port:            envOr("PORT", "8080"),
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
 		QuickDomain:     os.Getenv("QUICK_DOMAIN"),
+		SitesDir:        envOr("QUICK_SITES_DIR", "/srv/sites"),
 		NetbirdAPIURL:   os.Getenv("NETBIRD_API_URL"),
 		NetbirdAPIToken: os.Getenv("NETBIRD_API_TOKEN"),
 	}
@@ -101,6 +103,7 @@ func main() {
 	srv := &Server{
 		store:       &DocStore{db: db},
 		resolver:    resolver,
+		policies:    NewPolicyStore(cfg.SitesDir, 5*time.Second),
 		quickDomain: cfg.QuickDomain,
 	}
 

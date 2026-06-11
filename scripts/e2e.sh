@@ -65,6 +65,24 @@ code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE \
     "https://demo.quick.localhost:8443/api/db/entries/$id")
 [ "$code" = "204" ] || fail "delete returned $code, want 204"
 
+echo "==> access control: restricted site fails closed, open site stays open"
+( cd examples/secret && ../../cli/quick deploy secret ) >/dev/null
+ok=""
+for _ in $(seq 1 30); do
+    code=$(curl -sk --resolve secret.quick.localhost:8443:127.0.0.1 -o /dev/null \
+        -w '%{http_code}' https://secret.quick.localhost:8443/ 2>/dev/null || true)
+    # 503, not 403: the policy exists but no identity resolver is
+    # configured in e2e — restricted sites must fail closed.
+    if [ "$code" = "503" ]; then
+        ok=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$ok" ] || fail "restricted site returned $code, want 503 (fail closed)"
+code=$($CURL -o /dev/null -w '%{http_code}' https://demo.quick.localhost:8443/)
+[ "$code" = "200" ] || fail "open site returned $code after access-control deploy, want 200"
+
 echo "==> identity API without NetBird configured fails loudly"
 me=$($CURL https://demo.quick.localhost:8443/api/me)
 echo "$me" | grep -q "identity resolver not configured" \

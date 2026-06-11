@@ -28,6 +28,14 @@ quick.localhost {
 *.quick.localhost {
 	tls internal
 
+	# Per-site allowlists: a site ships _access.json, quick-api enforces
+	# it. Runs before every handler so files and the DB API are gated
+	# alike. No policy file means open — the platform default.
+	forward_auth quick-api:8080 {
+		uri /api/authz
+		header_up X-Forwarded-For {client_ip}
+	}
+
 	handle /api/* {
 		# Overwrite (not append) X-Forwarded-For: identity resolution
 		# depends on this header, and clients can set it in fetch().

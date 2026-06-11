@@ -87,8 +87,17 @@ services:
     environment:
       DATABASE_URL: postgres://quick:${POSTGRES_PASSWORD:-quick}@postgres:5432/quick?sslmode=disable
       QUICK_DOMAIN: ${QUICK_DOMAIN:-quick.localhost}
+      QUICK_SITES_DIR: /srv/sites
       NETBIRD_API_URL: ${NETBIRD_API_URL:-}
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
+    volumes:
+      # Same FUSE-propagated view as Caddy; _access.json policies are
+      # read from here.
+      - type: bind
+        source: ./data/sites
+        target: /srv/sites
+        bind:
+          propagation: rslave
     depends_on:
       postgres:
         condition: service_healthy

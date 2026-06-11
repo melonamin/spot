@@ -14,6 +14,7 @@ var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
 type Server struct {
 	store       *DocStore
 	resolver    *NetbirdResolver
+	policies    *PolicyStore
 	quickDomain string
 }
 
@@ -23,6 +24,7 @@ func (s *Server) routes() *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/db/{collection}", s.handleList)
 	mux.HandleFunc("POST /api/db/{collection}", s.handleCreate)
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.handleGet)
@@ -49,6 +51,51 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, id)
+}
+
+// handleAuthz answers Caddy's forward_auth subrequest for every site
+// request. Sites without an access policy are open to everyone on the
+// mesh; sites with one fail CLOSED whenever the policy or the visitor's
+// identity cannot be established.
+func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
+	host := r.Header.Get("X-Forwarded-Host")
+	if host == "" {
+		host = r.Host
+	}
+	site := siteFromHost(host, s.quickDomain)
+	if site == "" {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	policy, err := s.policies.For(site)
+	if err != nil {
+		log.Printf("authz: %v", err)
+		httpError(w, http.StatusServiceUnavailable,
+			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
+		return
+	}
+	if policy == nil {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
+	if s.resolver == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"site is restricted but the identity resolver is not configured")
+		return
+	}
+	ip := clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil {
+		log.Printf("authz: resolve %s: %v", ip, err)
+		httpError(w, http.StatusServiceUnavailable, "could not verify identity with NetBird")
+		return
+	}
+	if !found || !policy.Allows(id) {
+		httpError(w, http.StatusForbidden,
+			"this site is restricted by its "+accessFileName+"; redeploy with your email or group to get in")
+		return
+	}
+	w.WriteHeader(http.StatusOK)
 }
 
 // scope resolves the request to a database namespace, writing the error

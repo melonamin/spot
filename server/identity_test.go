@@ -23,12 +23,18 @@ func newNetbirdAPI(t *testing.T, requests *int) *httptest.Server {
 		switch r.URL.Path {
 		case "/api/peers":
 			json.NewEncoder(w).Encode([]netbirdPeer{
-				{IP: "100.64.0.7", Name: "sasha-laptop", UserID: "u1"},
+				{IP: "100.64.0.7", Name: "sasha-laptop", UserID: "u1",
+					Groups: []netbirdGroupRef{{ID: "g1", Name: "laptops"}}},
 				{IP: "100.64.0.9", Name: "ci-runner", UserID: ""},
 			})
 		case "/api/users":
 			json.NewEncoder(w).Encode([]netbirdUser{
-				{ID: "u1", Email: "sasha@example.com", Name: "Sasha"},
+				{ID: "u1", Email: "sasha@example.com", Name: "Sasha", AutoGroups: []string{"g2"}},
+			})
+		case "/api/groups":
+			json.NewEncoder(w).Encode([]netbirdGroupRef{
+				{ID: "g1", Name: "laptops"},
+				{ID: "g2", Name: "engineering"},
 			})
 		default:
 			w.WriteHeader(http.StatusNotFound)
@@ -54,6 +60,10 @@ func TestNetbirdResolver(t *testing.T) {
 	if id.Email != "sasha@example.com" || id.Name != "Sasha" || id.PeerName != "sasha-laptop" {
 		t.Errorf("Resolve(100.64.0.7) = %+v", id)
 	}
+	// Peer groups and the owner's auto-groups are merged, sorted.
+	if len(id.Groups) != 2 || id.Groups[0] != "engineering" || id.Groups[1] != "laptops" {
+		t.Errorf("Resolve(100.64.0.7).Groups = %v, want [engineering laptops]", id.Groups)
+	}
 
 	// Peer registered with a setup key has no user behind it.
 	id, found, err = r.Resolve(ctx, "100.64.0.9")
@@ -68,9 +78,10 @@ func TestNetbirdResolver(t *testing.T) {
 		t.Error("Resolve(100.64.0.99): want not found")
 	}
 
-	// All three lookups must come from one fetch (peers + users = 2 requests).
-	if requests != 2 {
-		t.Errorf("API requests = %d, want 2 (cached)", requests)
+	// All three lookups must come from one fetch
+	// (peers + users + groups = 3 requests).
+	if requests != 3 {
+		t.Errorf("API requests = %d, want 3 (cached)", requests)
 	}
 }
 

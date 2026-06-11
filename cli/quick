@@ -114,6 +114,19 @@ up to 1 MB.
 
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.
+
+### Access control (optional)
+
+Sites are open to everyone by default. To restrict a site, deploy an
+\`_access.json\` at its root:
+
+\`\`\`json
+{ "allow": ["alice@corp.com", "team-payments"] }
+\`\`\`
+
+Entries with an @ match the visitor's email; all others match a NetBird
+group name. The file applies to the whole site including its database
+API. It is an allowlist, not a secret — permitted visitors can read it.
 EOF
     echo "wrote .claude/skills/quick/SKILL.md"
 }

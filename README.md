@@ -60,6 +60,32 @@ await posts.list();
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/quick.js`.
 
+## Access control
+
+Sites are **open to everyone on the mesh by default**. A site restricts
+itself by shipping an `_access.json` at its root:
+
+```json
+{ "allow": ["alice@corp.com", "team-payments"] }
+```
+
+Entries containing `@` match the visitor's email; everything else
+matches a NetBird group name (device groups and the owner's
+auto-groups). Caddy consults `quick-api` (`forward_auth` → `/api/authz`)
+on every request, so the policy covers static files and the site's
+database API alike. Restricted sites **fail closed**: an unparseable
+policy or an unreachable identity resolver denies access rather than
+allowing it.
+
+Two consequences to be aware of:
+
+- The policy protects *visibility*, not *integrity*: Quick has no site
+  ownership, so anyone on the mesh can redeploy a site, including its
+  `_access.json`. If a site ever needs real ownership, that requires
+  per-site deploy credentials — deliberately not built.
+- `_access.json` is an allowlist, not a secret; permitted visitors can
+  fetch it like any other file of the site.
+
 ## Production notes
 
 - **DNS**: publish `*.quick.<domain>` as an A record pointing at the VM's

@@ -6,18 +6,21 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sort"
 	"strings"
 	"sync"
 	"time"
 )
 
 // Identity is what the mesh knows about a visitor: the owner of the
-// NetBird peer the request came from.
+// NetBird peer the request came from. Groups is the union of the peer's
+// groups and the owner's auto-groups, by name.
 type Identity struct {
-	Email    string `json:"email"`
-	Name     string `json:"name"`
-	PeerName string `json:"peer_name"`
-	PeerIP   string `json:"peer_ip"`
+	Email    string   `json:"email"`
+	Name     string   `json:"name"`
+	PeerName string   `json:"peer_name"`
+	PeerIP   string   `json:"peer_ip"`
+	Groups   []string `json:"groups"`
 }
 
 // NetbirdResolver maps WireGuard peer IPs to users via the NetBird
@@ -58,15 +61,22 @@ func (r *NetbirdResolver) Resolve(ctx context.Context, ip string) (Identity, boo
 }
 
 type netbirdPeer struct {
-	IP     string `json:"ip"`
-	Name   string `json:"name"`
-	UserID string `json:"user_id"`
+	IP     string            `json:"ip"`
+	Name   string            `json:"name"`
+	UserID string            `json:"user_id"`
+	Groups []netbirdGroupRef `json:"groups"`
+}
+
+type netbirdGroupRef struct {
+	ID   string `json:"id"`
+	Name string `json:"name"`
 }
 
 type netbirdUser struct {
-	ID    string `json:"id"`
-	Email string `json:"email"`
-	Name  string `json:"name"`
+	ID         string   `json:"id"`
+	Email      string   `json:"email"`
+	Name       string   `json:"name"`
+	AutoGroups []string `json:"auto_groups"`
 }
 
 func (r *NetbirdResolver) fetch(ctx context.Context) (map[string]Identity, error) {
@@ -78,19 +88,43 @@ func (r *NetbirdResolver) fetch(ctx context.Context) (map[string]Identity, error
 	if err := r.get(ctx, "/api/users", &users); err != nil {
 		return nil, err
 	}
+	var groups []netbirdGroupRef
+	if err := r.get(ctx, "/api/groups", &groups); err != nil {
+		return nil, err
+	}
 
 	usersByID := make(map[string]netbirdUser, len(users))
 	for _, u := range users {
 		usersByID[u.ID] = u
 	}
+	groupNames := make(map[string]string, len(groups))
+	for _, g := range groups {
+		groupNames[g.ID] = g.Name
+	}
 
 	byIP := make(map[string]Identity, len(peers))
 	for _, p := range peers {
 		id := Identity{PeerName: p.Name, PeerIP: p.IP}
+		names := map[string]struct{}{}
+		for _, g := range p.Groups {
+			if g.Name != "" {
+				names[g.Name] = struct{}{}
+			}
+		}
 		if u, ok := usersByID[p.UserID]; ok {
 			id.Email = u.Email
 			id.Name = u.Name
+			for _, gid := range u.AutoGroups {
+				if name := groupNames[gid]; name != "" {
+					names[name] = struct{}{}
+				}
+			}
 		}
+		id.Groups = make([]string, 0, len(names))
+		for name := range names {
+			id.Groups = append(id.Groups, name)
+		}
+		sort.Strings(id.Groups)
 		byIP[p.IP] = id
 	}
 	return byIP, nil
