@@ -123,9 +123,32 @@ Two consequences to be aware of:
 - Like the original, there are no site owners and no permissions: anyone
   on the mesh can overwrite any site. That is the point.
 
-## Not built yet (in blog-post order)
+## Files and AI
 
-- file uploads (presigned URLs against the quick-uploads bucket)
-- AI proxy (`quick.ai.chat()` with server-side keys)
-- websocket rooms for multiplayer
-- rate limiting (the blog learned this the hard way)
+Uploads go through the server (browsers never see storage credentials)
+into the `quick-uploads` bucket; download URLs are immutable and work
+from any site:
+
+```js
+const stored = await quick.files.upload(file);  // { id, name, size, content_type, url }
+```
+
+The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
+in `.env`); sites call Claude with zero configuration. Defaults:
+`claude-opus-4-8`, adaptive thinking, 16K max tokens — overridable per
+request with `model`, `system`, `max_tokens`:
+
+```js
+const res = await quick.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+console.log(res.text);
+```
+
+## Rate limits
+
+Per peer IP: database 25 req/s (burst 50), uploads 2 req/s (burst 10),
+AI 1 request per 2s (burst 10). The authz endpoint Caddy consults for
+static files is deliberately unlimited.
+
+Compared to the blog's feature list, only the data warehouse
+(Shopify-specific BigQuery) is deliberately omitted — wire your own
+warehouse in if one exists.

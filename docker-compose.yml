@@ -88,8 +88,13 @@ services:
       DATABASE_URL: postgres://quick:${POSTGRES_PASSWORD:-quick}@postgres:5432/quick?sslmode=disable
       QUICK_DOMAIN: ${QUICK_DOMAIN:-quick.localhost}
       QUICK_SITES_DIR: /srv/sites
+      QUICK_S3_ENDPOINT: rustfs:9000
+      QUICK_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      QUICK_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      QUICK_UPLOADS_BUCKET: quick-uploads
       NETBIRD_API_URL: ${NETBIRD_API_URL:-}
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
     volumes:
       # Same FUSE-propagated view as Caddy; _access.json policies are
       # read from here.

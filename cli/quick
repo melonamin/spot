@@ -133,6 +133,29 @@ const unsubscribe = posts.subscribe({
 Prefer rendering from subscription events over polling or re-fetching
 after writes.
 
+### AI
+
+Call Claude from the browser — keys live on the server:
+
+\`\`\`js
+const res = await quick.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+// res = { text, model, stop_reason, usage }
+// Optional second-level fields in the request: model, system, max_tokens.
+\`\`\`
+
+### File uploads
+
+\`\`\`js
+const stored = await quick.files.upload(fileInput.files[0]);
+// stored = { id, name, size, content_type, url } — url serves the file
+// from any site, content is immutable per upload (25 MB max).
+\`\`\`
+
+### Rate limits
+
+Per-visitor: database 25 req/s, uploads 2 req/s, AI 1 request per 2s
+(burst 10). A 429 means slow down — do not hammer APIs in loops.
+
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.
 

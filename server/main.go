@@ -28,6 +28,11 @@ type config struct {
 	SitesDir        string
 	NetbirdAPIURL   string
 	NetbirdAPIToken string
+	S3Endpoint      string
+	S3AccessKey     string
+	S3SecretKey     string
+	UploadsBucket   string
+	AnthropicAPIKey string
 }
 
 func loadConfig() (config, error) {
@@ -38,6 +43,11 @@ func loadConfig() (config, error) {
 		SitesDir:        envOr("QUICK_SITES_DIR", "/srv/sites"),
 		NetbirdAPIURL:   os.Getenv("NETBIRD_API_URL"),
 		NetbirdAPIToken: os.Getenv("NETBIRD_API_TOKEN"),
+		S3Endpoint:      os.Getenv("QUICK_S3_ENDPOINT"),
+		S3AccessKey:     os.Getenv("QUICK_S3_ACCESS_KEY"),
+		S3SecretKey:     os.Getenv("QUICK_S3_SECRET_KEY"),
+		UploadsBucket:   envOr("QUICK_UPLOADS_BUCKET", "quick-uploads"),
+		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -105,11 +115,32 @@ func main() {
 	listener := &Listener{dsn: cfg.DatabaseURL, store: store, hub: hub}
 	go listener.Run(ctx)
 
+	var files *FileStore
+	if cfg.S3Endpoint != "" {
+		files, err = NewFileStore(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.UploadsBucket)
+		if err != nil {
+			log.Fatalf("file store: %v", err)
+		}
+		log.Printf("files: storing uploads in %s/%s", cfg.S3Endpoint, cfg.UploadsBucket)
+	} else {
+		log.Printf("files: QUICK_S3_ENDPOINT not set, /api/files will return 503")
+	}
+
+	var ai *AIProxy
+	if cfg.AnthropicAPIKey != "" {
+		ai = NewAIProxy(cfg.AnthropicAPIKey)
+		log.Printf("ai: proxying to the Claude API")
+	} else {
+		log.Printf("ai: ANTHROPIC_API_KEY not set, /api/ai/chat will return 503")
+	}
+
 	srv := &Server{
 		store:       store,
 		resolver:    resolver,
 		policies:    NewPolicyStore(cfg.SitesDir, 5*time.Second),
 		hub:         hub,
+		files:       files,
+		ai:          ai,
 		quickDomain: cfg.QuickDomain,
 	}
 

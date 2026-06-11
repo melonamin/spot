@@ -61,5 +61,27 @@
     // Who is visiting, according to the NetBird mesh.
     me: () => api('/api/me'),
     db: { collection },
+    ai: {
+      // chat([{role, content}, ...], {model, system, max_tokens})
+      // -> { text, model, stop_reason, usage }
+      chat: (messages, opts = {}) =>
+        api('/api/ai/chat', {
+          method: 'POST',
+          body: JSON.stringify({ messages, ...opts }),
+        }),
+    },
+    files: {
+      // upload(File|Blob) -> { id, name, size, content_type, url }
+      upload: async (file, { name } = {}) => {
+        const form = new FormData();
+        form.append('file', file, name || file.name || 'file');
+        const res = await fetch('/api/files', { method: 'POST', body: form });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+          throw new Error((body && body.error) || `quick: HTTP ${res.status}`);
+        }
+        return body;
+      },
+    },
   };
 })();

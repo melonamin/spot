@@ -89,6 +89,42 @@ code=$($CURL -o /dev/null -w '%{http_code}' https://demo.quick.localhost:8443/ap
 # upgrade — proving the route exists end to end.
 [ "$code" = "426" ] || fail "/api/ws returned $code, want 426 Upgrade Required"
 
+echo "==> file uploads: roundtrip through Caddy"
+payload="quick e2e payload $$"
+printf '%s' "$payload" > /tmp/quick-e2e-upload.txt
+uploaded=$($CURL -F "file=@/tmp/quick-e2e-upload.txt" https://demo.quick.localhost:8443/api/files)
+url=$(echo "$uploaded" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
+[ -n "$url" ] || fail "upload did not return a url: $uploaded"
+downloaded=$($CURL "https://demo.quick.localhost:8443$url")
+[ "$downloaded" = "$payload" ] || fail "downloaded content differs: $downloaded"
+rm -f /tmp/quick-e2e-upload.txt
+
+echo "==> AI proxy"
+ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'
+if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+    ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
+        https://demo.quick.localhost:8443/api/ai/chat)
+    echo "$ai_res" | grep -q '"text"' || fail "AI chat with key did not return text: $ai_res"
+    echo "    real Claude API call succeeded"
+else
+    code=$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        -d "$ai_body" https://demo.quick.localhost:8443/api/ai/chat)
+    [ "$code" = "503" ] || fail "AI chat without key returned $code, want 503"
+    echo "    no ANTHROPIC_API_KEY in env: 503 fail-loud verified"
+fi
+
+echo "==> rate limiting: upload endpoint throttles a parallel burst"
+printf 'x' > /tmp/quick-e2e-rl.txt
+# Sequential requests refill the bucket between calls; only a parallel
+# burst reliably exceeds it (uploads: 2/s, burst 10).
+limited=$(seq 1 15 | xargs -P 15 -I{} curl -sk \
+    --resolve demo.quick.localhost:8443:127.0.0.1 \
+    -o /dev/null -w '%{http_code}\n' -F "file=@/tmp/quick-e2e-rl.txt" \
+    https://demo.quick.localhost:8443/api/files | grep -c '^429$' || true)
+rm -f /tmp/quick-e2e-rl.txt
+[ "${limited:-0}" -ge 1 ] || fail "no 429 across 15 parallel uploads"
+echo "    $limited of 15 burst requests were throttled"
+
 echo "==> identity API without NetBird configured fails loudly"
 me=$($CURL https://demo.quick.localhost:8443/api/me)
 echo "$me" | grep -q "identity resolver not configured" \

@@ -3,6 +3,8 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"regexp"
@@ -19,7 +21,14 @@ type Server struct {
 	resolver    *NetbirdResolver
 	policies    *PolicyStore
 	hub         *Hub
+	files       *FileStore
+	ai          *AIProxy
+	maxUpload   int64
 	quickDomain string
+
+	dbLimit   *RateLimiter
+	fileLimit *RateLimiter
+	aiLimit   *RateLimiter
 }
 
 // requestHost is the host the browser addressed. Caddy overwrites
@@ -35,6 +44,19 @@ func requestHost(r *http.Request) string {
 }
 
 func (s *Server) routes() *http.ServeMux {
+	// Lazy defaults keep tests terse; production wiring overrides these
+	// in main. /api/authz is deliberately unlimited — Caddy consults it
+	// for every static file request.
+	if s.dbLimit == nil {
+		s.dbLimit = NewRateLimiter(25, 50)
+	}
+	if s.fileLimit == nil {
+		s.fileLimit = NewRateLimiter(2, 10)
+	}
+	if s.aiLimit == nil {
+		s.aiLimit = NewRateLimiter(0.5, 10)
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
@@ -42,12 +64,83 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/me", s.handleMe)
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.handleWS)
-	mux.HandleFunc("GET /api/db/{collection}", s.handleList)
-	mux.HandleFunc("POST /api/db/{collection}", s.handleCreate)
-	mux.HandleFunc("GET /api/db/{collection}/{id}", s.handleGet)
-	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.handleUpdate)
-	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.handleDelete)
+	mux.HandleFunc("GET /api/db/{collection}", limited(s.dbLimit, s.handleList))
+	mux.HandleFunc("POST /api/db/{collection}", limited(s.dbLimit, s.handleCreate))
+	mux.HandleFunc("GET /api/db/{collection}/{id}", limited(s.dbLimit, s.handleGet))
+	mux.HandleFunc("PUT /api/db/{collection}/{id}", limited(s.dbLimit, s.handleUpdate))
+	mux.HandleFunc("DELETE /api/db/{collection}/{id}", limited(s.dbLimit, s.handleDelete))
+	mux.HandleFunc("POST /api/files", limited(s.fileLimit, s.handleUpload))
+	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
+	mux.HandleFunc("POST /api/ai/chat", limited(s.aiLimit, s.handleAIChat))
 	return mux
+}
+
+const defaultMaxUpload = 25 << 20
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	if s.files == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"file store not configured: set QUICK_S3_ENDPOINT and credentials")
+		return
+	}
+	site := siteFromHost(requestHost(r), s.quickDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
+		return
+	}
+	maxUpload := s.maxUpload
+	if maxUpload == 0 {
+		maxUpload = defaultMaxUpload
+	}
+	r.Body = http.MaxBytesReader(w, r.Body, maxUpload)
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		var tooLarge *http.MaxBytesError
+		if errors.As(err, &tooLarge) {
+			httpError(w, http.StatusRequestEntityTooLarge,
+				fmt.Sprintf("upload exceeds the %d MB limit", maxUpload>>20))
+			return
+		}
+		httpError(w, http.StatusBadRequest, `multipart form field "file" is required`)
+		return
+	}
+	defer file.Close()
+
+	stored, err := s.files.Put(r.Context(), site, header.Filename,
+		header.Header.Get("Content-Type"), file, header.Size)
+	if err != nil {
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not store the file")
+		return
+	}
+	writeJSON(w, http.StatusCreated, stored)
+}
+
+func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
+	if s.files == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"file store not configured: set QUICK_S3_ENDPOINT and credentials")
+		return
+	}
+	site, id, name := r.PathValue("site"), r.PathValue("id"), r.PathValue("name")
+	obj, contentType, err := s.files.Get(r.Context(), site, id, name)
+	if errors.Is(err, ErrNotFound) {
+		httpError(w, http.StatusNotFound, "file not found")
+		return
+	}
+	if err != nil {
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not read the file")
+		return
+	}
+	defer obj.Close()
+
+	w.Header().Set("Content-Type", contentType)
+	// IDs are random per upload, so content at a URL never changes.
+	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	if _, err := io.Copy(w, obj); err != nil {
+		log.Printf("files: stream %s/%s/%s: %v", site, id, name, err)
+	}
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
