@@ -112,6 +112,11 @@ await posts.delete(doc.id);
 Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
 up to 1 MB.
 
+Collections are private to this site, except collections named
+\`shared-*\`: those are global and readable/writable by every Quick site.
+Use the prefix deliberately — for cross-site libraries, leaderboards,
+and the like.
+
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.
 

@@ -35,6 +35,17 @@ func TestScopeFor(t *testing.T) {
 		t.Errorf("scopeFor(mysite, posts) = %q, want %q", scope, "mysite")
 	}
 
+	// shared-* collections live in one global namespace for all sites.
+	for _, site := range []string{"mysite", "othersite"} {
+		scope, err := scopeFor(site, "shared-libs")
+		if err != nil {
+			t.Fatalf("scopeFor(%s, shared-libs): unexpected error %v", site, err)
+		}
+		if scope != sharedScope {
+			t.Errorf("scopeFor(%s, shared-libs) = %q, want %q", site, scope, sharedScope)
+		}
+	}
+
 	if _, err := scopeFor("", "posts"); err == nil {
 		t.Error("scopeFor with empty site: want error, got nil")
 	}

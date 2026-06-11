@@ -51,11 +51,17 @@ Sites load `/quick.js` from their own origin (Caddy serves it on every
 host, and routes `/api/*` to the shared backend — same-origin, no CORS):
 
 ```js
-const me = await quick.me();                      // { email, name, peer_name, peer_ip }
+const me = await quick.me();                      // { email, name, peer_name, peer_ip, groups }
 const posts = quick.db.collection('posts');
 await posts.create({ title: 'Hello Quick DB' });
 await posts.list();
 ```
+
+Collections are private to their site, with one exception: collections
+named `shared-*` live in a single global namespace that every site can
+read and write — that's how cross-site libraries (leaderboards,
+comments, analytics) share data. The prefix makes sharing an explicit,
+visible choice.
 
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/quick.js`.

@@ -81,6 +81,38 @@ func TestDocStoreCRUD(t *testing.T) {
 	}
 }
 
+func TestSharedCollectionsCrossSites(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+
+	scopeA, err := scopeFor("it-site-a", "shared-it-libs")
+	if err != nil {
+		t.Fatalf("scopeFor: %v", err)
+	}
+	scopeB, err := scopeFor("it-site-b", "shared-it-libs")
+	if err != nil {
+		t.Fatalf("scopeFor: %v", err)
+	}
+	if scopeA != scopeB {
+		t.Fatalf("shared scopes differ: %q vs %q", scopeA, scopeB)
+	}
+
+	doc, err := store.Create(ctx, scopeA, "shared-it-libs", map[string]any{"lib": "cursors"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	t.Cleanup(func() { store.Delete(ctx, scopeA, "shared-it-libs", doc.ID) })
+
+	// Written via site A's scope, readable via site B's.
+	got, err := store.Get(ctx, scopeB, "shared-it-libs", doc.ID)
+	if err != nil {
+		t.Fatalf("Get via other site's scope: %v", err)
+	}
+	if got.Data["lib"] != "cursors" {
+		t.Errorf("Get returned data %+v", got.Data)
+	}
+}
+
 func TestDocStoreScopeIsolation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
