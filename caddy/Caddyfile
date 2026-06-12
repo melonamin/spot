@@ -1,20 +1,20 @@
-# Quick: wildcard host -> site folder, /api -> shared backend.
+# Spot: wildcard host -> site folder, /api -> shared backend.
 #
-# Dev runs on quick.localhost with Caddy's internal CA. For production,
+# Dev runs on spot.localhost with Caddy's internal CA. For production,
 # set the real domain and switch `tls internal` to a DNS-01 challenge
 # (e.g. the caddy-dns/cloudflare module) so the wildcard cert is publicly
 # trusted. The {labels.N} index in the wildcard block selects the site
 # name: it counts host labels from the right, so for a 2-label
-# QUICK_DOMAIN (quick.localhost) the site is {labels.2}; a 4-label domain
-# (quick.corp.example.com) needs {labels.4}.
+# SPOT_DOMAIN (spot.localhost) the site is {labels.2}; a 4-label domain
+# (spot.corp.example.com) needs {labels.4}.
 
-{$QUICK_DOMAIN:quick.localhost} {
+{$SPOT_DOMAIN:spot.localhost} {
 	tls internal
 
 	handle /api/* {
 		# Overwrite (not append) the X-Forwarded-* headers: identity and
 		# scoping depend on them, and clients can set them in fetch().
-		reverse_proxy {$QUICK_API_UPSTREAM:quick-api:8080} {
+		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
 			header_up X-Forwarded-For {client_ip}
 			header_up X-Forwarded-Host {host}
 		}
@@ -26,13 +26,13 @@
 	}
 }
 
-*.{$QUICK_DOMAIN:quick.localhost} {
+*.{$SPOT_DOMAIN:spot.localhost} {
 	tls internal
 
-	# Per-site allowlists: a site ships _access.json, quick-api enforces
+	# Per-site allowlists: a site ships _access.json, spot-api enforces
 	# it. Runs before every handler so files and the DB API are gated
 	# alike. No policy file means open — the platform default.
-	forward_auth {$QUICK_API_UPSTREAM:quick-api:8080} {
+	forward_auth {$SPOT_API_UPSTREAM:spot-api:8080} {
 		uri /api/authz
 		header_up X-Forwarded-For {client_ip}
 		header_up X-Forwarded-Host {host}
@@ -41,16 +41,16 @@
 	handle /api/* {
 		# Overwrite (not append) the X-Forwarded-* headers: identity and
 		# scoping depend on them, and clients can set them in fetch().
-		reverse_proxy {$QUICK_API_UPSTREAM:quick-api:8080} {
+		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
 			header_up X-Forwarded-For {client_ip}
 			header_up X-Forwarded-Host {host}
 		}
 	}
 
 	# Every site gets the SDK at a stable same-origin path.
-	handle /quick.js {
+	handle /spot.js {
 		root * /srv/sdk
-		rewrite * /quick.js
+		rewrite * /spot.js
 		file_server
 	}
 

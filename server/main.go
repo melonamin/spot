@@ -1,4 +1,4 @@
-// quick-api is the shared backend for all Quick sites. It provides the
+// spot-api is the shared backend for all Spot sites. It provides the
 // document store, and resolves visitor identity from the NetBird mesh.
 package main
 
@@ -24,7 +24,7 @@ var schemaSQL string
 type config struct {
 	Port            string
 	DatabaseURL     string
-	QuickDomain     string
+	SpotDomain      string
 	SitesDir        string
 	NetbirdAPIURL   string
 	NetbirdAPIToken string
@@ -39,21 +39,21 @@ func loadConfig() (config, error) {
 	cfg := config{
 		Port:            envOr("PORT", "8080"),
 		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		QuickDomain:     os.Getenv("QUICK_DOMAIN"),
-		SitesDir:        envOr("QUICK_SITES_DIR", "/srv/sites"),
+		SpotDomain:      os.Getenv("SPOT_DOMAIN"),
+		SitesDir:        envOr("SPOT_SITES_DIR", "/srv/sites"),
 		NetbirdAPIURL:   os.Getenv("NETBIRD_API_URL"),
 		NetbirdAPIToken: os.Getenv("NETBIRD_API_TOKEN"),
-		S3Endpoint:      os.Getenv("QUICK_S3_ENDPOINT"),
-		S3AccessKey:     os.Getenv("QUICK_S3_ACCESS_KEY"),
-		S3SecretKey:     os.Getenv("QUICK_S3_SECRET_KEY"),
-		UploadsBucket:   envOr("QUICK_UPLOADS_BUCKET", "quick-uploads"),
+		S3Endpoint:      os.Getenv("SPOT_S3_ENDPOINT"),
+		S3AccessKey:     os.Getenv("SPOT_S3_ACCESS_KEY"),
+		S3SecretKey:     os.Getenv("SPOT_S3_SECRET_KEY"),
+		UploadsBucket:   envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
 		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
 	}
-	if cfg.QuickDomain == "" {
-		return cfg, errors.New("QUICK_DOMAIN is required (e.g. quick.localhost)")
+	if cfg.SpotDomain == "" {
+		return cfg, errors.New("SPOT_DOMAIN is required (e.g. spot.localhost)")
 	}
 	return cfg, nil
 }
@@ -123,7 +123,7 @@ func main() {
 		}
 		log.Printf("files: storing uploads in %s/%s", cfg.S3Endpoint, cfg.UploadsBucket)
 	} else {
-		log.Printf("files: QUICK_S3_ENDPOINT not set, /api/files will return 503")
+		log.Printf("files: SPOT_S3_ENDPOINT not set, /api/files will return 503")
 	}
 
 	var ai *AIProxy
@@ -135,13 +135,13 @@ func main() {
 	}
 
 	srv := &Server{
-		store:       store,
-		resolver:    resolver,
-		policies:    NewPolicyStore(cfg.SitesDir, 5*time.Second),
-		hub:         hub,
-		files:       files,
-		ai:          ai,
-		quickDomain: cfg.QuickDomain,
+		store:      store,
+		resolver:   resolver,
+		policies:   NewPolicyStore(cfg.SitesDir, 5*time.Second),
+		hub:        hub,
+		files:      files,
+		ai:         ai,
+		spotDomain: cfg.SpotDomain,
 	}
 
 	httpSrv := &http.Server{
@@ -157,7 +157,7 @@ func main() {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("quick-api listening on :%s (domain %s)", cfg.Port, cfg.QuickDomain)
+	log.Printf("spot-api listening on :%s (domain %s)", cfg.Port, cfg.SpotDomain)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}

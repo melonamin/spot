@@ -86,8 +86,8 @@ func TestNetbirdResolver(t *testing.T) {
 }
 
 func TestHandleMeUnconfigured(t *testing.T) {
-	srv := &Server{quickDomain: "quick.localhost"}
-	req := httptest.NewRequest(http.MethodGet, "http://mysite.quick.localhost/api/me", nil)
+	srv := &Server{spotDomain: "spot.localhost"}
+	req := httptest.NewRequest(http.MethodGet, "http://mysite.spot.localhost/api/me", nil)
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {

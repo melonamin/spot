@@ -40,14 +40,14 @@ func newClaudeAPI(t *testing.T, lastBody *map[string]any) *httptest.Server {
 func aiTestServer(t *testing.T, upstream string) *Server {
 	t.Helper()
 	return &Server{
-		ai:          NewAIProxy("test-key", option.WithBaseURL(upstream)),
-		quickDomain: "quick.localhost",
+		ai:         NewAIProxy("test-key", option.WithBaseURL(upstream)),
+		spotDomain: "spot.localhost",
 	}
 }
 
 func postChat(t *testing.T, srv *Server, body string) *httptest.ResponseRecorder {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "http://demo.quick.localhost/api/ai/chat",
+	req := httptest.NewRequest(http.MethodPost, "http://demo.spot.localhost/api/ai/chat",
 		strings.NewReader(body))
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
@@ -135,7 +135,7 @@ func TestAIChatValidation(t *testing.T) {
 		t.Errorf("bad role: status %d, want 400", rec.Code)
 	}
 
-	unconfigured := &Server{quickDomain: "quick.localhost"}
+	unconfigured := &Server{spotDomain: "spot.localhost"}
 	if rec := postChat(t, unconfigured, `{"messages": [{"role": "user", "content": "x"}]}`); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("unconfigured proxy: status %d, want 503", rec.Code)
 	}

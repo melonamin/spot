@@ -1,4 +1,4 @@
-name: quick
+name: spot
 
 services:
   rustfs:
@@ -25,8 +25,8 @@ services:
     command:
       - |
         until rclone lsd rustfs: >/dev/null 2>&1; do sleep 1; done
-        rclone mkdir rustfs:quick-sites
-        rclone mkdir rustfs:quick-uploads
+        rclone mkdir rustfs:spot-sites
+        rclone mkdir rustfs:spot-uploads
     depends_on:
       - rustfs
     restart: "no"
@@ -46,7 +46,7 @@ services:
         if grep -q ' /mnt/sites .* fuse\.rclone ' /proc/self/mountinfo; then
             fusermount3 -uz /mnt/sites
         fi
-        exec rclone mount rustfs:quick-sites /mnt/sites \
+        exec rclone mount rustfs:spot-sites /mnt/sites \
           --allow-other --allow-non-empty --read-only \
           --dir-cache-time=5s --attr-timeout=5s
     cap_add:
@@ -69,29 +69,29 @@ services:
   postgres:
     image: postgres:17-alpine
     environment:
-      POSTGRES_USER: quick
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-quick}
-      POSTGRES_DB: quick
+      POSTGRES_USER: spot
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spot}
+      POSTGRES_DB: spot
     ports:
       - "5433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U quick -d quick"]
+      test: ["CMD-SHELL", "pg_isready -U spot -d spot"]
       interval: 2s
       timeout: 3s
       retries: 30
 
-  quick-api:
+  spot-api:
     build: ./server
     environment:
-      DATABASE_URL: postgres://quick:${POSTGRES_PASSWORD:-quick}@postgres:5432/quick?sslmode=disable
-      QUICK_DOMAIN: ${QUICK_DOMAIN:-quick.localhost}
-      QUICK_SITES_DIR: /srv/sites
-      QUICK_S3_ENDPOINT: rustfs:9000
-      QUICK_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      QUICK_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      QUICK_UPLOADS_BUCKET: quick-uploads
+      DATABASE_URL: postgres://spot:${POSTGRES_PASSWORD:-spot}@postgres:5432/spot?sslmode=disable
+      SPOT_DOMAIN: ${SPOT_DOMAIN:-spot.localhost}
+      SPOT_SITES_DIR: /srv/sites
+      SPOT_S3_ENDPOINT: rustfs:9000
+      SPOT_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
+      SPOT_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
+      SPOT_UPLOADS_BUCKET: spot-uploads
       NETBIRD_API_URL: ${NETBIRD_API_URL:-}
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -122,7 +122,7 @@ services:
         bind:
           propagation: rslave
     depends_on:
-      - quick-api
+      - spot-api
       - rclone-mount
     restart: unless-stopped
 

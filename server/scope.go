@@ -10,19 +10,19 @@ import (
 var collectionRe = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 
 // siteFromHost extracts the site name from a request host. For host
-// "mysite.quick.example.com" and quickDomain "quick.example.com" it
+// "mysite.spot.example.com" and spotDomain "spot.example.com" it
 // returns "mysite". It returns "" for the apex domain, for hosts outside
-// quickDomain, and for nested subdomains (a.b.quick.example.com).
-func siteFromHost(host, quickDomain string) string {
+// spotDomain, and for nested subdomains (a.b.spot.example.com).
+func siteFromHost(host, spotDomain string) string {
 	if h, _, err := net.SplitHostPort(host); err == nil {
 		host = h
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	quickDomain = strings.ToLower(quickDomain)
-	if host == quickDomain {
+	spotDomain = strings.ToLower(spotDomain)
+	if host == spotDomain {
 		return ""
 	}
-	sub, found := strings.CutSuffix(host, "."+quickDomain)
+	sub, found := strings.CutSuffix(host, "."+spotDomain)
 	if !found || strings.Contains(sub, ".") || sub == "" {
 		return ""
 	}

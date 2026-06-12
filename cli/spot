@@ -1,29 +1,29 @@
 #!/bin/sh
-# quick — deploy static sites to the Quick platform.
+# spot — deploy static sites to the Spot platform.
 #
-# Configuration via environment (or ~/.config/quick/env, sourced if present):
-#   QUICK_S3_ENDPOINT    S3 endpoint of the RustFS instance (default http://localhost:9000)
-#   QUICK_S3_ACCESS_KEY  access key (default rustfsadmin)
-#   QUICK_S3_SECRET_KEY  secret key (default rustfsadmin)
-#   QUICK_DOMAIN         domain sites are served under (default quick.localhost)
+# Configuration via environment (or ~/.config/spot/env, sourced if present):
+#   SPOT_S3_ENDPOINT    S3 endpoint of the RustFS instance (default http://localhost:9000)
+#   SPOT_S3_ACCESS_KEY  access key (default rustfsadmin)
+#   SPOT_S3_SECRET_KEY  secret key (default rustfsadmin)
+#   SPOT_DOMAIN         domain sites are served under (default spot.localhost)
 set -eu
 
-[ -f "${HOME}/.config/quick/env" ] && . "${HOME}/.config/quick/env"
+[ -f "${HOME}/.config/spot/env" ] && . "${HOME}/.config/spot/env"
 
-QUICK_S3_ENDPOINT=${QUICK_S3_ENDPOINT:-http://localhost:9000}
-QUICK_S3_ACCESS_KEY=${QUICK_S3_ACCESS_KEY:-rustfsadmin}
-QUICK_S3_SECRET_KEY=${QUICK_S3_SECRET_KEY:-rustfsadmin}
-QUICK_S3_BUCKET=${QUICK_S3_BUCKET:-quick-sites}
-QUICK_DOMAIN=${QUICK_DOMAIN:-quick.localhost}
+SPOT_S3_ENDPOINT=${SPOT_S3_ENDPOINT:-http://localhost:9000}
+SPOT_S3_ACCESS_KEY=${SPOT_S3_ACCESS_KEY:-rustfsadmin}
+SPOT_S3_SECRET_KEY=${SPOT_S3_SECRET_KEY:-rustfsadmin}
+SPOT_S3_BUCKET=${SPOT_S3_BUCKET:-spot-sites}
+SPOT_DOMAIN=${SPOT_DOMAIN:-spot.localhost}
 
 usage() {
     cat <<'EOF'
-usage: quick <command>
+usage: spot <command>
 
 commands:
   deploy [name] [dir]   sync a directory (default .) to the site <name>
                         (default: current directory name)
-  init                  write the Quick agent skill into ./.claude/skills/quick
+  init                  write the Spot agent skill into ./.claude/skills/spot
 EOF
     exit 1
 }
@@ -32,22 +32,22 @@ EOF
 # a local rclone; falls back to the rclone docker image.
 run_rclone() {
     if command -v rclone >/dev/null 2>&1; then
-        RCLONE_CONFIG_QUICK_TYPE=s3 \
-        RCLONE_CONFIG_QUICK_PROVIDER=Minio \
-        RCLONE_CONFIG_QUICK_ENDPOINT="$QUICK_S3_ENDPOINT" \
-        RCLONE_CONFIG_QUICK_ACCESS_KEY_ID="$QUICK_S3_ACCESS_KEY" \
-        RCLONE_CONFIG_QUICK_SECRET_ACCESS_KEY="$QUICK_S3_SECRET_KEY" \
-        RCLONE_CONFIG_QUICK_FORCE_PATH_STYLE=true \
+        RCLONE_CONFIG_SPOT_TYPE=s3 \
+        RCLONE_CONFIG_SPOT_PROVIDER=Minio \
+        RCLONE_CONFIG_SPOT_ENDPOINT="$SPOT_S3_ENDPOINT" \
+        RCLONE_CONFIG_SPOT_ACCESS_KEY_ID="$SPOT_S3_ACCESS_KEY" \
+        RCLONE_CONFIG_SPOT_SECRET_ACCESS_KEY="$SPOT_S3_SECRET_KEY" \
+        RCLONE_CONFIG_SPOT_FORCE_PATH_STYLE=true \
         rclone "$@"
     else
         docker run --rm --network host \
             -v "$PWD:/work" -w /work \
-            -e RCLONE_CONFIG_QUICK_TYPE=s3 \
-            -e RCLONE_CONFIG_QUICK_PROVIDER=Minio \
-            -e RCLONE_CONFIG_QUICK_ENDPOINT="$QUICK_S3_ENDPOINT" \
-            -e RCLONE_CONFIG_QUICK_ACCESS_KEY_ID="$QUICK_S3_ACCESS_KEY" \
-            -e RCLONE_CONFIG_QUICK_SECRET_ACCESS_KEY="$QUICK_S3_SECRET_KEY" \
-            -e RCLONE_CONFIG_QUICK_FORCE_PATH_STYLE=true \
+            -e RCLONE_CONFIG_SPOT_TYPE=s3 \
+            -e RCLONE_CONFIG_SPOT_PROVIDER=Minio \
+            -e RCLONE_CONFIG_SPOT_ENDPOINT="$SPOT_S3_ENDPOINT" \
+            -e RCLONE_CONFIG_SPOT_ACCESS_KEY_ID="$SPOT_S3_ACCESS_KEY" \
+            -e RCLONE_CONFIG_SPOT_SECRET_ACCESS_KEY="$SPOT_S3_SECRET_KEY" \
+            -e RCLONE_CONFIG_SPOT_FORCE_PATH_STYLE=true \
             rclone/rclone:latest "$@"
     fi
 }
@@ -65,43 +65,43 @@ deploy() {
         echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
         exit 1
     fi
-    echo "deploying $dir -> $name.$QUICK_DOMAIN"
-    ( cd "$dir" && run_rclone sync . "quick:$QUICK_S3_BUCKET/$name" )
-    echo "live: https://$name.$QUICK_DOMAIN/"
+    echo "deploying $dir -> $name.$SPOT_DOMAIN"
+    ( cd "$dir" && run_rclone sync . "spot:$SPOT_S3_BUCKET/$name" )
+    echo "live: https://$name.$SPOT_DOMAIN/"
 }
 
 init() {
-    mkdir -p .claude/skills/quick
-    cat > .claude/skills/quick/SKILL.md <<EOF
+    mkdir -p .claude/skills/spot
+    cat > .claude/skills/spot/SKILL.md <<EOF
 ---
-name: quick
-description: Build and deploy sites on Quick, the internal hosting platform. Use when creating or updating a Quick site, or when a site needs storage or identity.
+name: spot
+description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs storage or identity.
 ---
 
-# Quick
+# Spot
 
-Quick hosts static sites for everyone on the internal network. A site is a
-folder with an index.html. Deploy with \`quick deploy <name>\` from the site
-directory; it is then live at https://<name>.$QUICK_DOMAIN/.
+Spot hosts static sites for everyone on the internal network. A site is a
+folder with an index.html. Deploy with \`spot deploy <name>\` from the site
+directory; it is then live at https://<name>.$SPOT_DOMAIN/.
 
 There is no build step and no framework. Plain HTML/CSS/JS works best.
 
 ## Backend SDK
 
-Load the SDK with \`<script src="/quick.js"></script>\`. Everything is
+Load the SDK with \`<script src="/spot.js"></script>\`. Everything is
 same-origin and zero-config — no API keys, no auth code.
 
 ### Identity
 
 \`\`\`js
-const me = await quick.me();
+const me = await spot.me();
 // { email, name, peer_name, peer_ip } — resolved from the NetBird mesh
 \`\`\`
 
 ### Database (schemaless document collections, private to this site)
 
 \`\`\`js
-const posts = quick.db.collection('posts');
+const posts = spot.db.collection('posts');
 const doc = await posts.create({ title: 'Hello' }); // { id, data, created_at, updated_at }
 const docs = await posts.list({ limit: 100 });      // newest first
 await posts.get(doc.id);
@@ -113,7 +113,7 @@ Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
 up to 1 MB.
 
 Collections are private to this site, except collections named
-\`shared-*\`: those are global and readable/writable by every Quick site.
+\`shared-*\`: those are global and readable/writable by every Spot site.
 Use the prefix deliberately — for cross-site libraries, leaderboards,
 and the like.
 
@@ -138,7 +138,7 @@ after writes.
 Call Claude from the browser — keys live on the server:
 
 \`\`\`js
-const res = await quick.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
 // res = { text, model, stop_reason, usage }
 // Optional second-level fields in the request: model, system, max_tokens.
 \`\`\`
@@ -146,7 +146,7 @@ const res = await quick.ai.chat([{ role: 'user', content: 'Summarize my tasks' }
 ### File uploads
 
 \`\`\`js
-const stored = await quick.files.upload(fileInput.files[0]);
+const stored = await spot.files.upload(fileInput.files[0]);
 // stored = { id, name, size, content_type, url } — url serves the file
 // from any site, content is immutable per upload (25 MB max).
 \`\`\`
@@ -172,7 +172,7 @@ Entries with an @ match the visitor's email; all others match a NetBird
 group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
 EOF
-    echo "wrote .claude/skills/quick/SKILL.md"
+    echo "wrote .claude/skills/spot/SKILL.md"
 }
 
 cmd=${1:-help}

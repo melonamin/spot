@@ -1,4 +1,4 @@
-module quick/server
+module spot/server
 
 go 1.26
 

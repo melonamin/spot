@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Quick demo guestbook</title>
+  <title>Spot demo guestbook</title>
   <style>
     body { font: 16px/1.6 system-ui, sans-serif; max-width: 36rem; margin: 3rem auto; padding: 0 1rem; }
     li { margin: 0.4rem 0; }
@@ -12,7 +12,7 @@
   </style>
 </head>
 <body>
-  <h1>Quick demo guestbook</h1>
+  <h1>Spot demo guestbook</h1>
   <p id="who">Resolving who you are…</p>
   <form id="form">
     <input id="message" placeholder="Leave a message" required>
@@ -20,9 +20,9 @@
   </form>
   <ul id="entries"></ul>
 
-  <script src="/quick.js"></script>
+  <script src="/spot.js"></script>
   <script>
-    const entries = quick.db.collection('entries');
+    const entries = spot.db.collection('entries');
     const list = document.getElementById('entries');
 
     // Stored data is rendered as text, never as HTML.
@@ -48,12 +48,12 @@
     document.getElementById('form').addEventListener('submit', async (e) => {
       e.preventDefault();
       const input = document.getElementById('message');
-      const me = await quick.me().catch(() => null);
+      const me = await spot.me().catch(() => null);
       await entries.create({ message: input.value, from: me ? me.name : null });
       input.value = '';
     });
 
-    quick.me()
+    spot.me()
       .then((me) => { document.getElementById('who').textContent = `Hi ${me.name} (${me.email})`; })
       .catch(() => { document.getElementById('who').textContent = 'Identity unavailable (no NetBird resolver configured).'; });
 

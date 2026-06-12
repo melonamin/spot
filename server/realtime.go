@@ -11,7 +11,7 @@ import (
 	"github.com/jackc/pgx/v5"
 )
 
-const notifyChannel = "quick_docs"
+const notifyChannel = "spot_docs"
 
 // docChange is the NOTIFY payload: coordinates only, never document
 // data, since NOTIFY payloads are capped at 8000 bytes and documents

@@ -1,6 +1,6 @@
-// Quick browser SDK. Every site loads this from its own origin:
+// Spot browser SDK. Every site loads this from its own origin:
 //
-//   <script src="/quick.js"></script>
+//   <script src="/spot.js"></script>
 //
 // All calls are same-origin: Caddy routes /api/* on every site host to
 // the shared backend, so there is no CORS and no configuration.
@@ -13,7 +13,7 @@
     if (res.status === 204) return null;
     const body = await res.json().catch(() => null);
     if (!res.ok) {
-      throw new Error((body && body.error) || `quick: HTTP ${res.status}`);
+      throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
     }
     return body;
   };
@@ -57,7 +57,7 @@
     },
   });
 
-  window.quick = {
+  window.spot = {
     // Who is visiting, according to the NetBird mesh.
     me: () => api('/api/me'),
     db: { collection },
@@ -78,7 +78,7 @@
         const res = await fetch('/api/files', { method: 'POST', body: form });
         const body = await res.json().catch(() => null);
         if (!res.ok) {
-          throw new Error((body && body.error) || `quick: HTTP ${res.status}`);
+          throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
         }
         return body;
       },

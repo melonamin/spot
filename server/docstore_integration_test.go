@@ -14,10 +14,10 @@ import (
 //	just up
 //	just test-integration
 func testDSN() string {
-	if dsn := os.Getenv("QUICK_TEST_DATABASE_URL"); dsn != "" {
+	if dsn := os.Getenv("SPOT_TEST_DATABASE_URL"); dsn != "" {
 		return dsn
 	}
-	return "postgres://quick:quick@localhost:5433/quick?sslmode=disable"
+	return "postgres://spot:spot@localhost:5433/spot?sslmode=disable"
 }
 
 func newTestStore(t *testing.T) *DocStore {

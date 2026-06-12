@@ -1,19 +1,22 @@
-# Quick
+# Spot
 
-A self-hosted clone of [Shopify's Quick](https://shopify.engineering/quick):
-drop a folder of HTML, get a site on the internal network. No frameworks,
-no pipelines, no per-site config.
+Drop a folder, get a spot.
+
+Spot is a self-hosted internal hosting platform inspired by
+[Shopify's Quick](https://shopify.engineering/quick): drop a folder of
+HTML, get a site on the internal network. No frameworks, no pipelines,
+no per-site config.
 
 ```
 employee device (NetBird peer)
         │  wireguard mesh — NetBird policy decides who reaches the VM
         ▼
-quick VM (NetBird peer)
-  ├─ Caddy        wildcard *.quick.<domain>: site files + /api + /quick.js
-  ├─ quick-api    Go: document DB, identity from NetBird peer IPs
+spot VM (NetBird peer)
+  ├─ Caddy        wildcard *.spot.<domain>: site files + /api + /spot.js
+  ├─ spot-api    Go: document DB, identity from NetBird peer IPs
   ├─ Postgres     JSONB document store
-  ├─ RustFS       S3 buckets quick-sites / quick-uploads
-  └─ rclone       FUSE-mounts quick-sites read-only for Caddy
+  ├─ RustFS       S3 buckets spot-sites / spot-uploads
+  └─ rclone       FUSE-mounts spot-sites read-only for Caddy
 ```
 
 Authentication is the mesh itself: only NetBird peers can reach the VM,
@@ -24,17 +27,17 @@ the NetBird management API — no cookies, no OIDC redirects.
 ## Run it
 
 ```sh
-just up        # full stack on https://*.quick.localhost:8443
+just up        # full stack on https://*.spot.localhost:8443
 just e2e       # end-to-end: deploy demo site, exercise serving + DB API
 ```
 
 Deploy any folder with an `index.html`:
 
 ```sh
-cli/quick deploy mysite     # -> https://mysite.quick.localhost:8443/
+cli/spot deploy mysite     # -> https://mysite.spot.localhost:8443/
 ```
 
-`cli/quick init` writes an agent skill into the current project so coding
+`cli/spot init` writes an agent skill into the current project so coding
 agents know the SDK without reading docs.
 
 ## Tests
@@ -47,13 +50,13 @@ just e2e                # full stack through Caddy
 
 ## SDK
 
-Sites load `/quick.js` from their own origin (Caddy serves it on every
+Sites load `/spot.js` from their own origin (Caddy serves it on every
 host, and routes `/api/*` to the shared backend — same-origin, no CORS):
 
 ```js
-const me = await quick.me();                      // { email, name, peer_name, peer_ip, groups }
-const posts = quick.db.collection('posts');
-await posts.create({ title: 'Hello Quick DB' });
+const me = await spot.me();                      // { email, name, peer_name, peer_ip, groups }
+const posts = spot.db.collection('posts');
+await posts.create({ title: 'Hello Spot DB' });
 await posts.list();
 ```
 
@@ -77,7 +80,7 @@ const unsubscribe = posts.subscribe({
 ```
 
 A consequence of the same-origin routing: sites cannot serve their own
-files under `/api/` or at `/quick.js`.
+files under `/api/` or at `/spot.js`.
 
 ## Access control
 
@@ -90,7 +93,7 @@ itself by shipping an `_access.json` at its root:
 
 Entries containing `@` match the visitor's email; everything else
 matches a NetBird group name (device groups and the owner's
-auto-groups). Caddy consults `quick-api` (`forward_auth` → `/api/authz`)
+auto-groups). Caddy consults `spot-api` (`forward_auth` → `/api/authz`)
 on every request, so the policy covers static files and the site's
 database API alike. Restricted sites **fail closed**: an unparseable
 policy or an unreachable identity resolver denies access rather than
@@ -98,7 +101,7 @@ allowing it.
 
 Two consequences to be aware of:
 
-- The policy protects *visibility*, not *integrity*: Quick has no site
+- The policy protects *visibility*, not *integrity*: Spot has no site
   ownership, so anyone on the mesh can redeploy a site, including its
   `_access.json`. If a site ever needs real ownership, that requires
   per-site deploy credentials — deliberately not built.
@@ -107,7 +110,7 @@ Two consequences to be aware of:
 
 ## Production notes
 
-- **DNS**: publish `*.quick.<domain>` as an A record pointing at the VM's
+- **DNS**: publish `*.spot.<domain>` as an A record pointing at the VM's
   NetBird IP. Off-mesh clients can resolve it but cannot route to it.
 - **Source IP must be the peer IP** — identity resolves the request's
   source address against the NetBird peer list, so the front proxy has to
@@ -121,7 +124,7 @@ Two consequences to be aware of:
   wildcard challenge (e.g. the caddy-dns/cloudflare module) for publicly
   trusted certs. Also bump the `{labels.N}` index to match your domain's
   label count (see the comment in the Caddyfile).
-- **NetBird**: create an access policy `employees -> quick-vm:443`, and a
+- **NetBird**: create an access policy `employees -> spot-vm:443`, and a
   service-account PAT for `NETBIRD_API_URL`/`NETBIRD_API_TOKEN` so the
   API can resolve peer IPs to users.
 - **RustFS** is alpha (v1.0.0-alpha, single-node). Sites are regenerable,
@@ -133,11 +136,11 @@ Two consequences to be aware of:
 ## Files and AI
 
 Uploads go through the server (browsers never see storage credentials)
-into the `quick-uploads` bucket; download URLs are immutable and work
+into the `spot-uploads` bucket; download URLs are immutable and work
 from any site:
 
 ```js
-const stored = await quick.files.upload(file);  // { id, name, size, content_type, url }
+const stored = await spot.files.upload(file);  // { id, name, size, content_type, url }
 ```
 
 The content type is sniffed from the bytes, not the client's claim.
@@ -153,7 +156,7 @@ in `.env`); sites call Claude with zero configuration. Defaults:
 request with `model`, `system`, `max_tokens`:
 
 ```js
-const res = await quick.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
 console.log(res.text);
 ```
 

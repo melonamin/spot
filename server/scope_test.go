@@ -3,20 +3,20 @@ package main
 import "testing"
 
 func TestSiteFromHost(t *testing.T) {
-	const domain = "quick.localhost"
+	const domain = "spot.localhost"
 	tests := []struct {
 		host string
 		want string
 	}{
-		{"mysite.quick.localhost", "mysite"},
-		{"mysite.quick.localhost:8443", "mysite"},
-		{"MySite.Quick.Localhost", "mysite"},
-		{"mysite.quick.localhost.", "mysite"},
-		{"quick.localhost", ""},
-		{"quick.localhost:8443", ""},
-		{"a.b.quick.localhost", ""},
+		{"mysite.spot.localhost", "mysite"},
+		{"mysite.spot.localhost:8443", "mysite"},
+		{"MySite.Spot.Localhost", "mysite"},
+		{"mysite.spot.localhost.", "mysite"},
+		{"spot.localhost", ""},
+		{"spot.localhost:8443", ""},
+		{"a.b.spot.localhost", ""},
 		{"evil.example.com", ""},
-		{"notquick.localhost", ""},
+		{"notspot.localhost", ""},
 		{"", ""},
 	}
 	for _, tt := range tests {

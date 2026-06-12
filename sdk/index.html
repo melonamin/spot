@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Quick</title>
+  <title>Spot</title>
   <style>
     body { font: 16px/1.6 system-ui, sans-serif; max-width: 42rem; margin: 4rem auto; padding: 0 1rem; }
     code, pre { background: #f4f4f4; border-radius: 4px; }
@@ -12,18 +12,18 @@
   </style>
 </head>
 <body>
-  <h1>Quick</h1>
-  <p>Drop a folder of HTML, get a site. Deploy from any directory:</p>
-  <pre>quick deploy mysite</pre>
-  <p>Your site is live at <code>https://mysite.&lt;quick-domain&gt;/</code> and
+  <h1>Spot</h1>
+  <p>Drop a folder, get a spot. Deploy from any directory:</p>
+  <pre>spot deploy mysite</pre>
+  <p>Your site is live at <code>https://mysite.&lt;spot-domain&gt;/</code> and
      every page can use the zero-config backend:</p>
-  <pre>&lt;script src="/quick.js"&gt;&lt;/script&gt;
+  <pre>&lt;script src="/spot.js"&gt;&lt;/script&gt;
 &lt;script&gt;
-  const posts = quick.db.collection('posts');
-  await posts.create({ title: 'Hello Quick DB' });
-  const me = await quick.me(); // { email, name, peer_name, peer_ip }
+  const posts = spot.db.collection('posts');
+  await posts.create({ title: 'Hello Spot DB' });
+  const me = await spot.me(); // { email, name, peer_name, peer_ip }
 &lt;/script&gt;</pre>
-  <p>Run <code>quick init</code> in a project to teach your coding agent
+  <p>Run <code>spot init</code> in a project to teach your coding agent
      the whole API.</p>
 </body>
 </html>

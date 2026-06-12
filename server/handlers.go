@@ -19,14 +19,14 @@ import (
 var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Server struct {
-	store       *DocStore
-	resolver    *NetbirdResolver
-	policies    *PolicyStore
-	hub         *Hub
-	files       *FileStore
-	ai          *AIProxy
-	maxUpload   int64
-	quickDomain string
+	store      *DocStore
+	resolver   *NetbirdResolver
+	policies   *PolicyStore
+	hub        *Hub
+	files      *FileStore
+	ai         *AIProxy
+	maxUpload  int64
+	spotDomain string
 
 	dbLimit   *RateLimiter
 	fileLimit *RateLimiter
@@ -77,7 +77,7 @@ func (s *Server) routes() *http.ServeMux {
 	return mux
 }
 
-// sameOriginOnly rejects browser-originated cross-site API calls. Quick
+// sameOriginOnly rejects browser-originated cross-site API calls. Spot
 // identity is ambient mesh identity, not a per-site CSRF token, so a
 // site must not be able to spend a visitor's authorization on another
 // site by targeting that site's /api paths.
@@ -116,10 +116,10 @@ const defaultMaxUpload = 25 << 20
 func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 	if s.files == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"file store not configured: set QUICK_S3_ENDPOINT and credentials")
+			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
 		return
 	}
-	site := siteFromHost(requestHost(r), s.quickDomain)
+	site := siteFromHost(requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
 		return
@@ -167,7 +167,7 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if s.files == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"file store not configured: set QUICK_S3_ENDPOINT and credentials")
+			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
 		return
 	}
 	site, id, name := r.PathValue("site"), r.PathValue("id"), r.PathValue("name")
@@ -227,7 +227,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // mesh; sites with one fail CLOSED whenever the policy or the visitor's
 // identity cannot be established.
 func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
-	site := siteFromHost(requestHost(r), s.quickDomain)
+	site := siteFromHost(requestHost(r), s.spotDomain)
 	if site == "" {
 		w.WriteHeader(http.StatusOK)
 		return
@@ -273,7 +273,7 @@ type wsRequest struct {
 // receives Event messages; scoping follows the same rules as the
 // database API (site-private, shared-* global).
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	site := siteFromHost(requestHost(r), s.quickDomain)
+	site := siteFromHost(requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "websocket API must be called from a site subdomain")
 		return
@@ -339,7 +339,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 // response itself when the request is not a valid site request.
 func (s *Server) scope(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	collection := r.PathValue("collection")
-	site := siteFromHost(requestHost(r), s.quickDomain)
+	site := siteFromHost(requestHost(r), s.spotDomain)
 	scope, err := scopeFor(site, collection)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())

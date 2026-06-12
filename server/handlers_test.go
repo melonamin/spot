@@ -12,11 +12,11 @@ import (
 )
 
 func TestSameOriginOnly(t *testing.T) {
-	srv := &Server{quickDomain: "quick.localhost"}
+	srv := &Server{spotDomain: "spot.localhost"}
 
 	call := func(origin string) int {
-		req := httptest.NewRequest(http.MethodGet, "http://quick-api/api/me", nil)
-		req.Header.Set("X-Forwarded-Host", "demo.quick.localhost")
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/me", nil)
+		req.Header.Set("X-Forwarded-Host", "demo.spot.localhost")
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}
@@ -25,13 +25,13 @@ func TestSameOriginOnly(t *testing.T) {
 		return rec.Code
 	}
 
-	if got := call("https://demo.quick.localhost"); got != http.StatusServiceUnavailable {
+	if got := call("https://demo.spot.localhost"); got != http.StatusServiceUnavailable {
 		t.Fatalf("same-origin API request = %d, want downstream 503", got)
 	}
 	if got := call(""); got != http.StatusServiceUnavailable {
 		t.Fatalf("non-browser API request without Origin = %d, want downstream 503", got)
 	}
-	if got := call("https://evil.quick.localhost"); got != http.StatusForbidden {
+	if got := call("https://evil.spot.localhost"); got != http.StatusForbidden {
 		t.Fatalf("cross-site API request = %d, want 403", got)
 	}
 	if got := call("not a url"); got != http.StatusForbidden {
@@ -41,8 +41,8 @@ func TestSameOriginOnly(t *testing.T) {
 
 func TestWebSocketRequiresSameOrigin(t *testing.T) {
 	srv := &Server{
-		hub:         NewHub(),
-		quickDomain: "quick.localhost",
+		hub:        NewHub(),
+		spotDomain: "spot.localhost",
 	}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
@@ -53,7 +53,7 @@ func TestWebSocketRequiresSameOrigin(t *testing.T) {
 		defer cancel()
 		conn, res, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 			HTTPHeader: http.Header{
-				"X-Forwarded-Host": []string{"demo.quick.localhost"},
+				"X-Forwarded-Host": []string{"demo.spot.localhost"},
 				"Origin":           []string{origin},
 			},
 		})
@@ -69,10 +69,10 @@ func TestWebSocketRequiresSameOrigin(t *testing.T) {
 		return res.StatusCode, err
 	}
 
-	if got, err := dial("http://demo.quick.localhost"); err != nil || got != http.StatusSwitchingProtocols {
+	if got, err := dial("http://demo.spot.localhost"); err != nil || got != http.StatusSwitchingProtocols {
 		t.Fatalf("same-origin websocket = status %d, err %v; want 101", got, err)
 	}
-	if got, err := dial("http://evil.quick.localhost"); err == nil || got != http.StatusForbidden {
+	if got, err := dial("http://evil.spot.localhost"); err == nil || got != http.StatusForbidden {
 		t.Fatalf("cross-site websocket = status %d, err %v; want 403", got, err)
 	}
 }

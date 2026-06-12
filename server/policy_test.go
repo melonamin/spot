@@ -100,9 +100,9 @@ func authzServer(t *testing.T, dir string) *Server {
 	api := newNetbirdAPI(t, &requests)
 	t.Cleanup(api.Close)
 	return &Server{
-		policies:    NewPolicyStore(dir, 0),
-		resolver:    NewNetbirdResolver(api.URL, "test-token", time.Minute),
-		quickDomain: "quick.localhost",
+		policies:   NewPolicyStore(dir, 0),
+		resolver:   NewNetbirdResolver(api.URL, "test-token", time.Minute),
+		spotDomain: "spot.localhost",
 	}
 }
 
@@ -114,7 +114,7 @@ func TestHandleAuthz(t *testing.T) {
 	srv := authzServer(t, dir)
 
 	authz := func(host, peerIP string) int {
-		req := httptest.NewRequest(http.MethodGet, "http://quick-api/api/authz", nil)
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/authz", nil)
 		req.Header.Set("X-Forwarded-Host", host)
 		req.Header.Set("X-Forwarded-For", peerIP)
 		rec := httptest.NewRecorder()
@@ -128,13 +128,13 @@ func TestHandleAuthz(t *testing.T) {
 		ip   string
 		want int
 	}{
-		{"open site, unknown peer", "anything.quick.localhost", "10.0.0.1", 200},
-		{"apex always open", "quick.localhost", "10.0.0.1", 200},
-		{"allowed by email", "secret.quick.localhost", "100.64.0.7", 200},
-		{"denied", "secret.quick.localhost", "100.64.0.9", 403},
-		{"unknown peer denied", "secret.quick.localhost", "10.9.9.9", 403},
-		{"allowed by group", "bygroup.quick.localhost", "100.64.0.7", 200},
-		{"broken policy fails closed", "broken.quick.localhost", "100.64.0.7", 503},
+		{"open site, unknown peer", "anything.spot.localhost", "10.0.0.1", 200},
+		{"apex always open", "spot.localhost", "10.0.0.1", 200},
+		{"allowed by email", "secret.spot.localhost", "100.64.0.7", 200},
+		{"denied", "secret.spot.localhost", "100.64.0.9", 403},
+		{"unknown peer denied", "secret.spot.localhost", "10.9.9.9", 403},
+		{"allowed by group", "bygroup.spot.localhost", "100.64.0.7", 200},
+		{"broken policy fails closed", "broken.spot.localhost", "100.64.0.7", 503},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -148,17 +148,17 @@ func TestHandleAuthz(t *testing.T) {
 func TestHandleAuthzRestrictedWithoutResolver(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
-	srv := &Server{policies: NewPolicyStore(dir, 0), quickDomain: "quick.localhost"}
+	srv := &Server{policies: NewPolicyStore(dir, 0), spotDomain: "spot.localhost"}
 
-	req := httptest.NewRequest(http.MethodGet, "http://quick-api/api/authz", nil)
-	req.Header.Set("X-Forwarded-Host", "secret.quick.localhost")
+	req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/authz", nil)
+	req.Header.Set("X-Forwarded-Host", "secret.spot.localhost")
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("restricted site without resolver = %d, want 503 (fail closed)", rec.Code)
 	}
 
-	req.Header.Set("X-Forwarded-Host", "open.quick.localhost")
+	req.Header.Set("X-Forwarded-Host", "open.spot.localhost")
 	rec = httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {

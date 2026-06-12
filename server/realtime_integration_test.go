@@ -27,17 +27,17 @@ func TestRealtimeEndToEnd(t *testing.T) {
 	go listener.Run(ctx)
 
 	srv := &Server{
-		store:       store,
-		hub:         hub,
-		policies:    NewPolicyStore(t.TempDir(), 0),
-		quickDomain: "quick.localhost",
+		store:      store,
+		hub:        hub,
+		policies:   NewPolicyStore(t.TempDir(), 0),
+		spotDomain: "spot.localhost",
 	}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
 	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/ws"
 	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
-		HTTPHeader: http.Header{"X-Forwarded-Host": []string{"it-rt.quick.localhost"}},
+		HTTPHeader: http.Header{"X-Forwarded-Host": []string{"it-rt.spot.localhost"}},
 	})
 	if err != nil {
 		t.Fatalf("websocket dial: %v", err)

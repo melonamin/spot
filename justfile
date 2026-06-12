@@ -1,9 +1,9 @@
-# Quick: internal hosting platform prototype.
+# Spot: internal hosting platform prototype.
 
 default:
     @just --list
 
-# Bring the whole stack up (Caddy on https://*.quick.localhost:8443).
+# Bring the whole stack up (Caddy on https://*.spot.localhost:8443).
 up:
     mkdir -p data/sites
     docker compose up -d --build
@@ -35,4 +35,4 @@ e2e:
 
 # Deploy the demo guestbook to the local stack.
 deploy-demo:
-    cd examples/demo && ../../cli/quick deploy demo
+    cd examples/demo && ../../cli/spot deploy demo

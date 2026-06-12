@@ -18,15 +18,15 @@ import (
 // TestFileUploadRoundtrip exercises the upload and download handlers
 // against the real RustFS from the compose stack (`just up` first).
 func TestFileUploadRoundtrip(t *testing.T) {
-	endpoint := os.Getenv("QUICK_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
 	if endpoint == "" {
 		endpoint = "localhost:9000"
 	}
-	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "quick-uploads")
+	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-uploads")
 	if err != nil {
 		t.Fatalf("file store: %v", err)
 	}
-	srv := &Server{files: files, quickDomain: "quick.localhost"}
+	srv := &Server{files: files, spotDomain: "spot.localhost"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
@@ -45,7 +45,7 @@ func TestFileUploadRoundtrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("X-Forwarded-Host", "it-files.quick.localhost")
+	req.Header.Set("X-Forwarded-Host", "it-files.spot.localhost")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("upload: %v", err)
@@ -94,15 +94,15 @@ func TestFileUploadRoundtrip(t *testing.T) {
 // upload is sniffed (not trusted) and served as a sandboxed attachment
 // so a browser never executes it in the viewer's site origin.
 func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
-	endpoint := os.Getenv("QUICK_TEST_S3_ENDPOINT")
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
 	if endpoint == "" {
 		endpoint = "localhost:9000"
 	}
-	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "quick-uploads")
+	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-uploads")
 	if err != nil {
 		t.Fatalf("file store: %v", err)
 	}
-	srv := &Server{files: files, quickDomain: "quick.localhost"}
+	srv := &Server{files: files, spotDomain: "spot.localhost"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
@@ -121,7 +121,7 @@ func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
 
 	req, _ := http.NewRequest(http.MethodPost, ts.URL+"/api/files", &form)
 	req.Header.Set("Content-Type", writer.FormDataContentType())
-	req.Header.Set("X-Forwarded-Host", "it-files.quick.localhost")
+	req.Header.Set("X-Forwarded-Host", "it-files.spot.localhost")
 	res, err := http.DefaultClient.Do(req)
 	if err != nil {
 		t.Fatalf("upload: %v", err)
