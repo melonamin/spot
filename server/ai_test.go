@@ -120,6 +120,33 @@ func TestAIChatOverrides(t *testing.T) {
 	}
 }
 
+func TestAIChatCustomUpstream(t *testing.T) {
+	var upstreamBody map[string]any
+	api := newClaudeAPI(t, &upstreamBody)
+	defer api.Close()
+	// The config-driven constructor: a base URL routes requests to the
+	// custom upstream, empty means the real Claude API. A set-but-empty
+	// ANTHROPIC_BASE_URL in the process environment (compose renders an
+	// unset variable that way) must not override the configured value.
+	t.Setenv("ANTHROPIC_BASE_URL", "")
+	srv := &Server{
+		ai:         NewAIProxyWithUpstream("test-key", api.URL),
+		spotDomain: "spot.localhost",
+	}
+
+	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "Say hello"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat via custom upstream: status %d body %s", rec.Code, rec.Body)
+	}
+	var res aiChatResponse
+	if err := json.Unmarshal(rec.Body.Bytes(), &res); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if res.Text != "Hello from Claude" {
+		t.Errorf("response = %+v", res)
+	}
+}
+
 func TestAIChatValidation(t *testing.T) {
 	api := newClaudeAPI(t, &map[string]any{})
 	defer api.Close()

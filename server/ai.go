@@ -30,6 +30,19 @@ func NewAIProxy(apiKey string, opts ...option.RequestOption) *AIProxy {
 	return &AIProxy{client: anthropic.NewClient(opts...)}
 }
 
+// NewAIProxyWithUpstream builds the proxy against a custom
+// Anthropic-compatible base URL (an LLM gateway or proxy). An empty
+// baseURL means the Claude API itself — pinned explicitly, because the
+// SDK honors a set-but-empty ANTHROPIC_BASE_URL in the environment
+// (which is how compose renders an unset variable) and would otherwise
+// dial a URL of "".
+func NewAIProxyWithUpstream(apiKey, baseURL string) *AIProxy {
+	if baseURL == "" {
+		baseURL = "https://api.anthropic.com/"
+	}
+	return NewAIProxy(apiKey, option.WithBaseURL(baseURL))
+}
+
 type aiChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`

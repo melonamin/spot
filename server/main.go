@@ -22,34 +22,36 @@ import (
 var schemaSQL string
 
 type config struct {
-	Port            string
-	DatabaseURL     string
-	SpotDomain      string
-	SitesDir        string
-	NetbirdAPIURL   string
-	NetbirdAPIToken string
-	S3Endpoint      string
-	S3AccessKey     string
-	S3SecretKey     string
-	UploadsBucket   string
-	SitesBucket     string
-	AnthropicAPIKey string
+	Port             string
+	DatabaseURL      string
+	SpotDomain       string
+	SitesDir         string
+	NetbirdAPIURL    string
+	NetbirdAPIToken  string
+	S3Endpoint       string
+	S3AccessKey      string
+	S3SecretKey      string
+	UploadsBucket    string
+	SitesBucket      string
+	AnthropicAPIKey  string
+	AnthropicBaseURL string
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		Port:            envOr("PORT", "8080"),
-		DatabaseURL:     os.Getenv("DATABASE_URL"),
-		SpotDomain:      os.Getenv("SPOT_DOMAIN"),
-		SitesDir:        envOr("SPOT_SITES_DIR", "/srv/sites"),
-		NetbirdAPIURL:   os.Getenv("NETBIRD_API_URL"),
-		NetbirdAPIToken: os.Getenv("NETBIRD_API_TOKEN"),
-		S3Endpoint:      os.Getenv("SPOT_S3_ENDPOINT"),
-		S3AccessKey:     os.Getenv("SPOT_S3_ACCESS_KEY"),
-		S3SecretKey:     os.Getenv("SPOT_S3_SECRET_KEY"),
-		UploadsBucket:   envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
-		SitesBucket:     envOr("SPOT_SITES_BUCKET", "spot-sites"),
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
+		Port:             envOr("PORT", "8080"),
+		DatabaseURL:      os.Getenv("DATABASE_URL"),
+		SpotDomain:       os.Getenv("SPOT_DOMAIN"),
+		SitesDir:         envOr("SPOT_SITES_DIR", "/srv/sites"),
+		NetbirdAPIURL:    os.Getenv("NETBIRD_API_URL"),
+		NetbirdAPIToken:  os.Getenv("NETBIRD_API_TOKEN"),
+		S3Endpoint:       os.Getenv("SPOT_S3_ENDPOINT"),
+		S3AccessKey:      os.Getenv("SPOT_S3_ACCESS_KEY"),
+		S3SecretKey:      os.Getenv("SPOT_S3_SECRET_KEY"),
+		UploadsBucket:    envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
+		SitesBucket:      envOr("SPOT_SITES_BUCKET", "spot-sites"),
+		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -136,8 +138,12 @@ func main() {
 
 	var ai *AIProxy
 	if cfg.AnthropicAPIKey != "" {
-		ai = NewAIProxy(cfg.AnthropicAPIKey)
-		log.Printf("ai: proxying to the Claude API")
+		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
+		if cfg.AnthropicBaseURL != "" {
+			log.Printf("ai: proxying to %s", cfg.AnthropicBaseURL)
+		} else {
+			log.Printf("ai: proxying to the Claude API")
+		}
 	} else {
 		log.Printf("ai: ANTHROPIC_API_KEY not set, /api/ai/chat will return 503")
 	}
