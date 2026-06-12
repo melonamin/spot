@@ -14,9 +14,12 @@
 	handle /api/* {
 		# Overwrite (not append) the X-Forwarded-* headers: identity and
 		# scoping depend on them, and clients can set them in fetch().
+		# {hostport} (not {host}): the backend compares this against the
+		# browser's Origin header, which keeps a non-default port — with
+		# {host} every browser POST on a dev port would look cross-site.
 		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
 			header_up X-Forwarded-For {client_ip}
-			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Host {hostport}
 		}
 	}
 
@@ -35,7 +38,7 @@
 	forward_auth {$SPOT_API_UPSTREAM:spot-api:8080} {
 		uri /api/authz
 		header_up X-Forwarded-For {client_ip}
-		header_up X-Forwarded-Host {host}
+		header_up X-Forwarded-Host {hostport}
 	}
 
 	handle /api/* {
@@ -43,7 +46,7 @@
 		# scoping depend on them, and clients can set them in fetch().
 		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
 			header_up X-Forwarded-For {client_ip}
-			header_up X-Forwarded-Host {host}
+			header_up X-Forwarded-Host {hostport}
 		}
 	}
 
