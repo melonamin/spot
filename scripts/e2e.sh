@@ -12,6 +12,12 @@ fail() {
     exit 1
 }
 
+echo "==> the served CLI matches the repo CLI"
+# sdk/spot is the copy install.sh downloads from the apex; Caddy's mount
+# can't follow a symlink out of sdk/, so a copy is structural — this
+# guard is what keeps it from drifting.
+diff -q cli/spot sdk/spot >/dev/null || fail "sdk/spot has drifted from cli/spot — copy cli/spot over it"
+
 echo "==> starting stack"
 mkdir -p data/sites
 export SPOT_DEV_IDENTITY_EMAIL=${SPOT_DEV_IDENTITY_EMAIL:-e2e@localhost}

@@ -20,6 +20,7 @@
       --accent: #5a4bf0;
       --go: #23b14d;
       --bad: #d92d2d;
+      --paper: #fff7d6;
       --font-logo: 'Pacifico', 'Brush Script MT', cursive;
       --font-mono: 'Space Mono', ui-monospace, 'SF Mono', monospace;
     }
@@ -35,6 +36,7 @@
         var(--field);
       background-size: 44px 44px, 44px 44px, auto;
     }
+    body.modal-open { overflow: hidden; }
 
     .stage {
       min-height: 100svh;
@@ -45,6 +47,35 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
+    }
+
+    .install-trigger {
+      position: fixed;
+      top: 22px;
+      right: 22px;
+      z-index: 20;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      border: 3px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 5px 6px 0 var(--ink);
+      padding: 10px 16px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .install-trigger:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: 7px 8px 0 var(--ink);
+    }
+    .install-trigger span:first-child {
+      font-size: 15px;
+      letter-spacing: 0;
     }
 
     /* The logo is three stacked copies of the same text: an offset
@@ -123,7 +154,11 @@
 
     .pick:focus-visible,
     .launch:focus-visible,
-    .linkish:focus-visible {
+    .linkish:focus-visible,
+    .install-trigger:focus-visible,
+    .copy:focus-visible,
+    .modal-close:focus-visible,
+    .tab:focus-visible {
       outline: 3px solid var(--ink);
       outline-offset: 3px;
     }
@@ -183,8 +218,9 @@
     .card.shake { animation: shake .4s ease both; }
 
     .launchrow {
-      display: flex;
-      gap: 18px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 16px 18px;
       width: min(640px, 100%);
       margin-top: 28px;
     }
@@ -241,6 +277,59 @@
     .launch:active:not(:disabled) { transform: translate(3px, 4px); box-shadow: 2px 2px 0 var(--ink); }
     .launch:disabled { opacity: .8; cursor: wait; }
 
+    .accessbox {
+      grid-column: 1 / -1;
+      display: grid;
+      grid-template-columns: auto minmax(0, 1fr);
+      gap: 10px 16px;
+      align-items: center;
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      box-shadow: 7px 8px 0 var(--ink);
+      padding: 13px 16px 14px;
+    }
+    .access-label {
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .select-shell {
+      position: relative;
+      min-width: 0;
+    }
+    #accessmode {
+      width: 100%;
+      appearance: none;
+      border: 2px solid var(--ink);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--ink);
+      padding: 12px 42px 12px 14px;
+      font: 700 13px/1.35 var(--font-mono);
+      cursor: pointer;
+    }
+    #accessmode:disabled {
+      color: var(--mutedink);
+      cursor: wait;
+    }
+    .access-caret {
+      position: absolute;
+      top: 50%;
+      right: 15px;
+      transform: translateY(-50%);
+      color: var(--ink);
+      font: 700 12px/1 var(--font-mono);
+      pointer-events: none;
+    }
+    .accessnote {
+      grid-column: 1 / -1;
+      min-height: 20px;
+      font: 400 12px/1.6 var(--font-mono);
+      color: var(--mutedink);
+    }
+
     footer {
       margin-top: 48px;
       font: 400 12px/2 var(--font-mono);
@@ -251,6 +340,141 @@
       background: rgba(0, 0, 0, .28);
       padding: 2px 7px;
       border-radius: 6px;
+    }
+
+    .install-modal[hidden] { display: none; }
+    .install-modal {
+      position: fixed;
+      inset: 0;
+      z-index: 30;
+      display: grid;
+      place-items: center;
+      padding: 24px;
+      background: rgba(21, 18, 30, .58);
+    }
+    .install-panel {
+      width: min(720px, 100%);
+      max-height: calc(100svh - 48px);
+      overflow: auto;
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 22px;
+      box-shadow: 12px 14px 0 var(--ink);
+      padding: 24px;
+    }
+    .modal-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 18px;
+      margin-bottom: 22px;
+    }
+    .modal-kicker {
+      margin: 0 0 8px;
+      font: 700 12px/1.4 var(--font-mono);
+      letter-spacing: .24em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .modal-title {
+      margin: 0;
+      font: 700 clamp(20px, 4vw, 31px)/1.25 var(--font-mono);
+      letter-spacing: .03em;
+    }
+    .modal-close {
+      flex: 0 0 auto;
+      width: 40px;
+      height: 40px;
+      border: 3px solid var(--ink);
+      border-radius: 12px;
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 4px 5px 0 var(--ink);
+      font: 700 22px/1 var(--font-mono);
+      cursor: pointer;
+    }
+    .tabs {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 10px;
+      margin-bottom: 18px;
+    }
+    .tab {
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 4px 5px 0 var(--ink);
+      padding: 14px 16px;
+      font: 700 13px/1 var(--font-mono);
+      letter-spacing: .16em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .tab[aria-selected="true"] {
+      background: var(--accent);
+      color: #fff;
+      transform: translate(2px, 3px);
+      box-shadow: 2px 2px 0 var(--ink);
+    }
+    .install-pane[hidden] { display: none; }
+    .install-pane {
+      display: grid;
+      gap: 14px;
+    }
+    .step {
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      background: #fff;
+      padding: 18px;
+    }
+    .step-label {
+      margin: 0 0 10px;
+      font: 700 12px/1.5 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .command-row {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      gap: 12px;
+      align-items: stretch;
+    }
+    .command {
+      overflow-x: auto;
+      min-height: 50px;
+      margin: 0;
+      border: 2px solid var(--ink);
+      border-radius: 12px;
+      background: var(--ink);
+      color: #fff;
+      padding: 14px 15px;
+      font: 700 13px/1.6 var(--font-mono);
+      white-space: nowrap;
+    }
+    .copy {
+      min-width: 94px;
+      border: 3px solid var(--ink);
+      border-radius: 12px;
+      background: var(--go);
+      color: #fff;
+      box-shadow: 4px 5px 0 var(--ink);
+      padding: 0 14px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .copy:hover {
+      transform: translate(-1px, -1px);
+      box-shadow: 5px 6px 0 var(--ink);
+    }
+    .note {
+      margin: 12px 0 0;
+      font: 400 12px/1.7 var(--font-mono);
+      color: var(--mutedink);
     }
 
     #confetti {
@@ -271,8 +495,35 @@
     }
 
     @media (max-width: 560px) {
-      .launchrow { flex-direction: column; }
+      .stage { padding-top: 92px; }
+      .install-trigger {
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%);
+        white-space: nowrap;
+      }
+      .install-trigger:hover {
+        transform: translate(-50%, -2px);
+      }
+      .launchrow { grid-template-columns: 1fr; }
       .launch { padding: 19px 30px; }
+      .accessbox {
+        grid-template-columns: 1fr;
+      }
+      .install-panel {
+        padding: 18px;
+        border-radius: 18px;
+      }
+      .modal-head {
+        align-items: flex-start;
+      }
+      .tabs,
+      .command-row {
+        grid-template-columns: 1fr;
+      }
+      .copy {
+        min-height: 48px;
+      }
     }
     @media (prefers-reduced-motion: reduce) {
       * { animation: none !important; transition: none !important; }
@@ -280,6 +531,11 @@
   </style>
 </head>
 <body>
+  <button type="button" class="install-trigger" id="install-open">
+    <span aria-hidden="true">&gt;_</span>
+    <span>Install CLI</span>
+  </button>
+
   <div class="stage">
     <h1 class="logo" data-text="Spot">Spot</h1>
     <p class="tagline">Drop a folder, get a spot.</p>
@@ -318,12 +574,69 @@
         <span class="suffix" id="suffix"></span>
       </label>
       <button class="launch" id="launch" type="submit">Launch</button>
+      <label class="accessbox" for="accessmode">
+        <span class="access-label">Access</span>
+        <span class="select-shell">
+          <select id="accessmode" name="access" aria-describedby="accessnote"></select>
+          <span class="access-caret" aria-hidden="true">v</span>
+        </span>
+        <span class="accessnote" id="accessnote"></span>
+      </label>
     </form>
 
     <footer>
       prefer a terminal? <code>spot deploy &lt;name&gt;</code> ships the current folder
       &nbsp;·&nbsp; <code>spot init</code> teaches your coding agent the SDK
     </footer>
+  </div>
+
+  <div class="install-modal" id="install-modal" role="dialog" aria-modal="true"
+       aria-labelledby="install-title" hidden>
+    <div class="install-panel">
+      <div class="modal-head">
+        <div>
+          <p class="modal-kicker">Spot tools</p>
+          <h2 class="modal-title" id="install-title">Install once, deploy anywhere.</h2>
+        </div>
+        <button type="button" class="modal-close" id="install-close" aria-label="Close install dialog">×</button>
+      </div>
+
+      <div class="tabs" role="tablist" aria-label="Install mode">
+        <button type="button" class="tab" id="terminal-tab" role="tab" aria-selected="true"
+                aria-controls="terminal-pane" data-pane="terminal-pane">Terminal</button>
+        <button type="button" class="tab" id="agent-tab" role="tab" aria-selected="false"
+                aria-controls="agent-pane" data-pane="agent-pane">Agent</button>
+      </div>
+
+      <section class="install-pane" id="terminal-pane" role="tabpanel" aria-labelledby="terminal-tab">
+        <div class="step">
+          <p class="step-label">Install the CLI</p>
+          <div class="command-row">
+            <pre class="command"><code id="install-command"></code></pre>
+            <button type="button" class="copy" data-copy="install-command">Copy</button>
+          </div>
+          <p class="note">The installer saves Spot to <code>~/.local/bin/spot</code> and pins this server in <code>~/.config/spot/env</code>.</p>
+        </div>
+        <div class="step">
+          <p class="step-label">Deploy from a project</p>
+          <div class="command-row">
+            <pre class="command"><code id="deploy-command">spot deploy my-site</code></pre>
+            <button type="button" class="copy" data-copy="deploy-command">Copy</button>
+          </div>
+        </div>
+      </section>
+
+      <section class="install-pane" id="agent-pane" role="tabpanel" aria-labelledby="agent-tab" hidden>
+        <div class="step">
+          <p class="step-label">Copy this to an agent</p>
+          <div class="command-row">
+            <pre class="command"><code id="agent-command"></code></pre>
+            <button type="button" class="copy" data-copy="agent-command">Copy</button>
+          </div>
+          <p class="note">That page tells the agent to install the CLI, run <code>spot init</code>, and use the Spot SDK skill for deploys.</p>
+        </div>
+      </section>
+    </div>
   </div>
 
   <input type="file" id="filepick" webkitdirectory hidden>
@@ -336,10 +649,69 @@
       const card = $('card'), idle = $('idle'), ready = $('ready'), live = $('live');
       const launchRow = $('launchrow'), nameInput = $('sitename'), launchBtn = $('launch');
       const errorEl = $('error'), filePick = $('filepick');
+      const accessSelect = $('accessmode'), accessNote = $('accessnote');
+      const modal = $('install-modal'), installOpen = $('install-open'), installClose = $('install-close');
 
       $('suffix').textContent = '.' + location.host;
+      $('install-command').textContent = 'curl -fsSL ' + location.origin + '/install.sh | sh -s -- ' + location.origin;
+      $('agent-command').textContent = 'Read this and follow it: ' + location.origin + '/agent.md';
+
+      // --- install dialog ---------------------------------------------------
+      const openInstall = () => {
+        modal.hidden = false;
+        document.body.classList.add('modal-open');
+        installClose.focus();
+      };
+      const closeInstall = () => {
+        modal.hidden = true;
+        document.body.classList.remove('modal-open');
+        installOpen.focus();
+      };
+      installOpen.addEventListener('click', openInstall);
+      installClose.addEventListener('click', closeInstall);
+      modal.addEventListener('click', (e) => {
+        if (e.target === modal) closeInstall();
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !modal.hidden) closeInstall();
+      });
+
+      for (const tab of document.querySelectorAll('.tab')) {
+        tab.addEventListener('click', () => {
+          for (const other of document.querySelectorAll('.tab')) {
+            const selected = other === tab;
+            other.setAttribute('aria-selected', selected ? 'true' : 'false');
+            $(other.dataset.pane).hidden = !selected;
+          }
+        });
+      }
+
+      const copyText = async (text) => {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const field = document.createElement('textarea');
+        field.value = text;
+        field.setAttribute('readonly', '');
+        field.style.position = 'fixed';
+        field.style.left = '-9999px';
+        document.body.appendChild(field);
+        field.select();
+        document.execCommand('copy');
+        field.remove();
+      };
+      for (const button of document.querySelectorAll('.copy')) {
+        const label = button.textContent;
+        button.addEventListener('click', async () => {
+          await copyText($(button.dataset.copy).textContent);
+          button.textContent = 'Copied';
+          setTimeout(() => { button.textContent = label; }, 1400);
+        });
+      }
 
       let picked = [];        // [{ path, file }], paths site-relative
+      let identity = null;
       let launching = false;
 
       const junkSeg = (seg) => seg.startsWith('.') || seg === 'node_modules' || seg === 'Thumbs.db';
@@ -396,10 +768,87 @@
         $('summary').textContent = list.length + ' file' + (list.length === 1 ? '' : 's') + ' ready to deploy';
         $('detail').textContent = fmtSize(total);
         nameInput.value = sanitizeName(suggestion || root) || randomName();
+        renderAccessOptions();
         show(ready);
         nameInput.focus();
         nameInput.select();
       };
+
+      const accessFile = () => picked.find((f) => f.path === '_access.json');
+
+      const option = (value, label) => {
+        const el = document.createElement('option');
+        el.value = value;
+        el.textContent = label;
+        return el;
+      };
+
+      const renderAccessOptions = () => {
+        const previous = accessSelect.value;
+        const folderPolicy = accessFile();
+        accessSelect.replaceChildren(option('open', 'Open to everyone on the mesh'));
+        if (identity && identity.email) {
+          accessSelect.appendChild(option('me', 'Only me (' + identity.email + ')'));
+        }
+        if (identity && identity.groups) {
+          for (const group of identity.groups) {
+            accessSelect.appendChild(option('group:' + group, 'Only ' + group));
+          }
+        }
+        if (folderPolicy) {
+          accessSelect.appendChild(option('folder', 'Use folder _access.json'));
+        }
+        if ([...accessSelect.options].some((opt) => opt.value === previous)) {
+          accessSelect.value = previous;
+        } else if (folderPolicy) {
+          accessSelect.value = 'folder';
+        } else {
+          accessSelect.value = 'open';
+        }
+        updateAccessNote();
+      };
+
+      const updateAccessNote = () => {
+        const value = accessSelect.value;
+        if (value === 'open') {
+          accessNote.textContent = 'No _access.json will be deployed.';
+        } else if (value === 'me') {
+          accessNote.textContent = 'Deploys _access.json for ' + identity.email + '.';
+        } else if (value.startsWith('group:')) {
+          accessNote.textContent = 'Deploys _access.json for ' + value.slice('group:'.length) + '.';
+        } else {
+          accessNote.textContent = 'Keeps the _access.json already in this folder.';
+        }
+      };
+
+      const accessPolicyFile = () => {
+        const value = accessSelect.value;
+        let allow = null;
+        if (value === 'me' && identity && identity.email) allow = [identity.email];
+        if (value.startsWith('group:')) allow = [value.slice('group:'.length)];
+        if (!allow) return null;
+        return new File(
+          [JSON.stringify({ allow }, null, 2) + '\n'],
+          '_access.json',
+          { type: 'application/json' }
+        );
+      };
+
+      const loadIdentity = async () => {
+        accessSelect.disabled = true;
+        try {
+          const res = await fetch('/api/me');
+          if (res.ok) identity = await res.json();
+        } catch {
+          identity = null;
+        } finally {
+          accessSelect.disabled = false;
+          if (picked.length) renderAccessOptions();
+        }
+      };
+      accessSelect.addEventListener('change', updateAccessNote);
+      renderAccessOptions();
+      loadIdentity();
 
       // --- picking --------------------------------------------------------
       const openPicker = () => filePick.click();
@@ -499,17 +948,25 @@
         form.append('site', site);
         // The filename of each part carries the file's site-relative
         // path — the deploy API reconstructs the folder from it.
-        for (const { path, file } of picked) form.append('files', file, path);
+        for (const { path, file } of picked) {
+          if (path !== '_access.json' || accessSelect.value === 'folder') {
+            form.append('files', file, path);
+          }
+        }
+        const policy = accessPolicyFile();
+        if (policy) form.append('files', policy, '_access.json');
 
         launching = true;
         launchBtn.disabled = true;
         nameInput.disabled = true;
+        accessSelect.disabled = true;
         launchBtn.textContent = 'Launching';
 
         const done = (ok, message) => {
           launching = false;
           launchBtn.disabled = false;
           nameInput.disabled = false;
+          accessSelect.disabled = false;
           launchBtn.textContent = 'Launch';
           if (!ok) return fail(message);
           const url = 'https://' + site + '.' + location.host + '/';
