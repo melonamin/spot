@@ -29,10 +29,10 @@ services:
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
       # Host-networked Caddy connects through the published loopback
       # port, but Docker's userland proxy SNATs that to the compose
-      # network's gateway — spot-api never sees 127.0.0.1. Trust the
-      # docker bridge ranges (only platform containers live there);
-      # override with the exact gateway IP to narrow further.
-      SPOT_TRUSTED_PROXIES: "${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}"
+      # network's gateway — spot-api never sees 127.0.0.1. The network
+      # subnet is pinned below precisely so this trust can name the
+      # exact gateway instead of a whole docker range.
+      SPOT_TRUSTED_PROXIES: "${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.28.0.1/32}"
 
   # On the mesh, everything is served through Caddy: keep the S3 and
   # Postgres ports off the network. Containers reach them over the
@@ -58,3 +58,15 @@ services:
       SPOT_TLS_MODE: "${SPOT_TLS_MODE:-tls-internal}"
       SPOT_SITE_LABEL: "${SPOT_SITE_LABEL:-2}"
       CF_API_TOKEN: "${CF_API_TOKEN:-}"
+
+# Pin the compose network so the userland-proxy source IP (the gateway)
+# is a stable, nameable address for SPOT_TRUSTED_PROXIES — trusting a
+# single /32 instead of every docker bridge on the host. Changing an
+# existing deployment's subnet needs `docker compose down` first (the
+# network must be recreated; volumes are untouched).
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1
