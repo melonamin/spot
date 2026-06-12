@@ -99,6 +99,7 @@ func (s *Server) routes() http.Handler {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
 	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
+	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.handleWS)
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
@@ -346,6 +347,45 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, id)
+}
+
+const maxAccessSuggestions = 20
+
+// handleAccessSuggestions powers the deployer's access picker: it
+// searches the NetBird directory for users (by email) and groups (by
+// name) matching ?q. Like /api/deploy it only answers on the apex — the
+// picker lives on the platform page, and a deployed site must not be
+// able to harvest the org directory through a visitor's identity.
+func (s *Server) handleAccessSuggestions(w http.ResponseWriter, r *http.Request) {
+	if siteFromHost(s.requestHost(r), s.spotDomain) != "" {
+		httpError(w, http.StatusBadRequest,
+			"the access directory is served on the platform root, not on site subdomains")
+		return
+	}
+	if _, ok := s.resolveIdentity(w, r, "access"); !ok {
+		return
+	}
+	out := make([]AccessSuggestion, 0, maxAccessSuggestions)
+	dir, ok := s.resolver.(DirectoryResolver)
+	query := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
+	if ok && query != "" {
+		suggestions, err := dir.Directory(r.Context())
+		if err != nil {
+			log.Printf("access suggestions: %v", err)
+			httpError(w, http.StatusBadGateway, "could not reach the identity directory")
+			return
+		}
+		for _, sug := range suggestions {
+			if strings.Contains(strings.ToLower(sug.Label), query) ||
+				strings.Contains(strings.ToLower(sug.Meta), query) {
+				out = append(out, sug)
+				if len(out) >= maxAccessSuggestions {
+					break
+				}
+			}
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"suggestions": out})
 }
 
 // handleAuthz answers Caddy's forward_auth subrequest for every site

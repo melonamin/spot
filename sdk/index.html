@@ -982,6 +982,7 @@
         picked = list;
         selectedAccess = [];
         accessSearch.value = '';
+        directoryOptions = [];
         const total = list.reduce((n, f) => n + f.file.size, 0);
         $('summary').textContent = list.length + ' file' + (list.length === 1 ? '' : 's') + ' ready to deploy';
         $('detail').textContent = fmtSize(total);
@@ -996,12 +997,41 @@
       const hasSelectedAccess = (entry) =>
         selectedAccess.some((item) => accessKey(item) === accessKey(entry));
 
+      // Directory matches from the server for the current query, plus the
+      // visitor's own identity, which is always offered first.
+      let directoryOptions = [];
       const knownAccessOptions = () => {
         const options = [];
         if (identity && identity.email) {
           options.push({ type: 'user', value: identity.email, label: identity.email, meta: 'You' });
         }
+        for (const entry of directoryOptions) {
+          if (!options.some((o) => accessKey(o) === accessKey(entry))) options.push(entry);
+        }
         return options;
+      };
+
+      // The access directory (NetBird users + groups) is searched
+      // server-side; debounce so typing doesn't fire a request per key.
+      let suggestTimer = null;
+      let suggestSeq = 0;
+      const fetchSuggestions = (query) => {
+        const seq = ++suggestSeq;
+        clearTimeout(suggestTimer);
+        if (!query) { directoryOptions = []; return; }
+        suggestTimer = setTimeout(async () => {
+          try {
+            const res = await fetch('/api/access/suggestions?q=' + encodeURIComponent(query));
+            if (!res.ok) return;
+            const body = await res.json();
+            if (seq !== suggestSeq) return; // a newer query already won
+            directoryOptions = Array.isArray(body.suggestions) ? body.suggestions : [];
+            renderAccessResults();
+          } catch {
+            // directory unavailable (e.g. dev without NetBird) — the
+            // custom-email entry still lets you restrict a site.
+          }
+        }, 180);
       };
 
       const customAccessEntry = (raw) => {
@@ -1034,7 +1064,7 @@
           const empty = document.createElement('p');
           empty.className = 'accessnote';
           empty.textContent = query && !query.includes('@')
-            ? 'Enter an email address to restrict this site.'
+            ? 'No matching users or groups — type a full email to add one.'
             : 'No matching users.';
           accessResults.appendChild(empty);
           return;
@@ -1047,7 +1077,7 @@
           button.setAttribute('role', 'option');
           button.setAttribute('aria-selected', selected ? 'true' : 'false');
           button.innerHTML =
-            '<span class="choice-icon" aria-hidden="true">@</span>' +
+            '<span class="choice-icon" aria-hidden="true">' + (entry.type === 'group' ? '#' : '@') + '</span>' +
             '<span class="choice-main"></span>' +
             '<span class="choice-mark">' + (selected ? 'On' : '') + '</span>';
           button.querySelector('.choice-main').textContent = entry.label;
@@ -1133,10 +1163,14 @@
       accessClear.addEventListener('click', () => {
         selectedAccess = [];
         accessSearch.value = '';
+        directoryOptions = [];
         renderAccess();
         accessSearch.focus();
       });
-      accessSearch.addEventListener('input', renderAccessResults);
+      accessSearch.addEventListener('input', () => {
+        fetchSuggestions(accessSearch.value.trim());
+        renderAccessResults();
+      });
       accessSearch.addEventListener('keydown', (e) => {
         if (e.key === 'Enter') {
           const entry = customAccessEntry(accessSearch.value);

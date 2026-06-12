@@ -213,5 +213,15 @@ else
     esac
 fi
 
+echo "==> access directory: apex answers, site subdomain refused"
+# The dev static resolver has no NetBird directory, so the list is empty
+# — but the endpoint must still answer on the apex and refuse on sites,
+# matching /api/deploy's apex-only rule.
+sug=$($CURL "https://spot.localhost:8443/api/access/suggestions?q=any")
+echo "$sug" | grep -q '"suggestions"' || fail "apex suggestions did not return a list: $sug"
+code=$(curl -sk --resolve demo.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{http_code}' \
+    "https://demo.spot.localhost:8443/api/access/suggestions?q=any")
+[ "$code" = "400" ] || fail "suggestions from a site subdomain returned $code, want 400"
+
 echo ""
 echo "E2E PASS"

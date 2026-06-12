@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -82,6 +83,93 @@ func TestNetbirdResolver(t *testing.T) {
 	// (peers + users + groups = 3 requests).
 	if requests != 3 {
 		t.Errorf("API requests = %d, want 3 (cached)", requests)
+	}
+}
+
+func TestNetbirdDirectory(t *testing.T) {
+	requests := 0
+	api := newNetbirdAPI(t, &requests)
+	defer api.Close()
+
+	r := NewNetbirdResolver(api.URL, "test-token", time.Minute)
+	dir, err := r.Directory(context.Background())
+	if err != nil {
+		t.Fatalf("Directory: %v", err)
+	}
+	// One user (by email) and two groups, users sorted before groups.
+	want := []AccessSuggestion{
+		{Type: "user", Value: "sasha@example.com", Label: "sasha@example.com", Meta: "Sasha"},
+		{Type: "group", Value: "engineering", Label: "engineering", Meta: "Group"},
+		{Type: "group", Value: "laptops", Label: "laptops", Meta: "Group"},
+	}
+	if len(dir) != len(want) {
+		t.Fatalf("Directory = %+v, want %+v", dir, want)
+	}
+	for i := range want {
+		if dir[i] != want[i] {
+			t.Errorf("Directory[%d] = %+v, want %+v", i, dir[i], want[i])
+		}
+	}
+}
+
+func TestAccessSuggestionsEndpoint(t *testing.T) {
+	requests := 0
+	api := newNetbirdAPI(t, &requests)
+	defer api.Close()
+	srv := &Server{
+		resolver:   NewNetbirdResolver(api.URL, "test-token", time.Minute),
+		spotDomain: "spot.localhost",
+	}
+
+	suggest := func(host, query string) (int, []AccessSuggestion) {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://"+host+"/api/access/suggestions?q="+query, nil)
+		req.Host = host
+		req.RemoteAddr = "100.64.0.7:40000" // a known peer, so identity resolves
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		var body struct {
+			Suggestions []AccessSuggestion `json:"suggestions"`
+		}
+		_ = json.Unmarshal(rec.Body.Bytes(), &body)
+		return rec.Code, body.Suggestions
+	}
+
+	// A group match on the apex.
+	code, got := suggest("spot.localhost", "laptop")
+	if code != http.StatusOK || len(got) != 1 || got[0].Value != "laptops" || got[0].Type != "group" {
+		t.Fatalf("q=laptop: code %d, got %+v", code, got)
+	}
+	// A user match by email/name.
+	if code, got = suggest("spot.localhost", "sasha"); code != http.StatusOK || len(got) != 1 || got[0].Value != "sasha@example.com" {
+		t.Fatalf("q=sasha: code %d, got %+v", code, got)
+	}
+	// Empty query returns nothing rather than dumping the directory.
+	if code, got = suggest("spot.localhost", ""); code != http.StatusOK || len(got) != 0 {
+		t.Fatalf("empty q: code %d, got %+v", code, got)
+	}
+	// Apex-only: a site subdomain must not reach the directory.
+	if code, _ = suggest("demo.spot.localhost", "sasha"); code != http.StatusBadRequest {
+		t.Fatalf("site-host suggestions: code %d, want 400", code)
+	}
+}
+
+func TestAccessSuggestionsWithoutDirectory(t *testing.T) {
+	// The dev static resolver has identity but no directory: the endpoint
+	// answers 200 with an empty list rather than erroring.
+	srv := &Server{
+		resolver:   NewStaticResolver("dev@example.com", "Dev", nil),
+		spotDomain: "spot.localhost",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://spot.localhost/api/access/suggestions?q=any", nil)
+	req.Host = "spot.localhost"
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("static resolver suggestions: code %d, want 200", rec.Code)
+	}
+	if !strings.Contains(rec.Body.String(), `"suggestions":[]`) {
+		t.Errorf("static resolver suggestions body = %s, want empty list", rec.Body.String())
 	}
 }
 

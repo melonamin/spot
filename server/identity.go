@@ -26,6 +26,23 @@ type IdentityResolver interface {
 	Resolve(ctx context.Context, ip string) (Identity, bool, error)
 }
 
+// AccessSuggestion is one allowlist candidate for the deployer's access
+// picker: a NetBird user (matched by email) or group (matched by name).
+// Value is the literal string written into _access.json.
+type AccessSuggestion struct {
+	Type  string `json:"type"` // "user" | "group"
+	Value string `json:"value"`
+	Label string `json:"label"`
+	Meta  string `json:"meta"`
+}
+
+// DirectoryResolver optionally lists the org's users and groups for the
+// access picker. Resolvers without a directory (the dev static one)
+// simply don't implement it.
+type DirectoryResolver interface {
+	Directory(ctx context.Context) ([]AccessSuggestion, error)
+}
+
 // NetbirdResolver maps WireGuard peer IPs to users via the NetBird
 // management API, caching the peer and user lists for ttl.
 type NetbirdResolver struct {
@@ -36,6 +53,7 @@ type NetbirdResolver struct {
 
 	mu        sync.Mutex
 	byIP      map[string]Identity
+	directory []AccessSuggestion
 	fetchedAt time.Time
 }
 
@@ -51,16 +69,37 @@ func NewNetbirdResolver(apiURL, token string, ttl time.Duration) *NetbirdResolve
 func (r *NetbirdResolver) Resolve(ctx context.Context, ip string) (Identity, bool, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if time.Since(r.fetchedAt) >= r.ttl {
-		byIP, err := r.fetch(ctx)
-		if err != nil {
-			return Identity{}, false, err
-		}
-		r.byIP = byIP
-		r.fetchedAt = time.Now()
+	if err := r.ensureFresh(ctx); err != nil {
+		return Identity{}, false, err
 	}
 	id, ok := r.byIP[ip]
 	return id, ok, nil
+}
+
+// Directory returns the cached user/group list for the access picker.
+func (r *NetbirdResolver) Directory(ctx context.Context) ([]AccessSuggestion, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if err := r.ensureFresh(ctx); err != nil {
+		return nil, err
+	}
+	out := make([]AccessSuggestion, len(r.directory))
+	copy(out, r.directory)
+	return out, nil
+}
+
+// ensureFresh refreshes the peer map and directory if the cache is
+// stale. The caller must hold r.mu.
+func (r *NetbirdResolver) ensureFresh(ctx context.Context) error {
+	if r.byIP != nil && time.Since(r.fetchedAt) < r.ttl {
+		return nil
+	}
+	byIP, directory, err := r.fetch(ctx)
+	if err != nil {
+		return err
+	}
+	r.byIP, r.directory, r.fetchedAt = byIP, directory, time.Now()
+	return nil
 }
 
 type netbirdPeer struct {
@@ -82,18 +121,18 @@ type netbirdUser struct {
 	AutoGroups []string `json:"auto_groups"`
 }
 
-func (r *NetbirdResolver) fetch(ctx context.Context) (map[string]Identity, error) {
+func (r *NetbirdResolver) fetch(ctx context.Context) (map[string]Identity, []AccessSuggestion, error) {
 	var peers []netbirdPeer
 	if err := r.get(ctx, "/api/peers", &peers); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var users []netbirdUser
 	if err := r.get(ctx, "/api/users", &users); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	var groups []netbirdGroupRef
 	if err := r.get(ctx, "/api/groups", &groups); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	usersByID := make(map[string]netbirdUser, len(users))
@@ -130,7 +169,42 @@ func (r *NetbirdResolver) fetch(ctx context.Context) (map[string]Identity, error
 		sort.Strings(id.Groups)
 		byIP[p.IP] = id
 	}
-	return byIP, nil
+
+	return byIP, buildDirectory(users, groups), nil
+}
+
+// buildDirectory turns the NetBird user and group lists into access
+// picker suggestions: users matched by email, groups by name. The Label
+// is the literal _access.json entry; Meta is descriptive only.
+func buildDirectory(users []netbirdUser, groups []netbirdGroupRef) []AccessSuggestion {
+	directory := make([]AccessSuggestion, 0, len(users)+len(groups))
+	for _, u := range users {
+		if u.Email == "" {
+			continue // service accounts have no email to allowlist
+		}
+		meta := u.Name
+		if meta == "" {
+			meta = "User"
+		}
+		directory = append(directory, AccessSuggestion{
+			Type: "user", Value: u.Email, Label: u.Email, Meta: meta,
+		})
+	}
+	for _, g := range groups {
+		if g.Name == "" {
+			continue
+		}
+		directory = append(directory, AccessSuggestion{
+			Type: "group", Value: g.Name, Label: g.Name, Meta: "Group",
+		})
+	}
+	sort.SliceStable(directory, func(i, j int) bool {
+		if directory[i].Type != directory[j].Type {
+			return directory[i].Type == "user" // users before groups
+		}
+		return strings.ToLower(directory[i].Label) < strings.ToLower(directory[j].Label)
+	})
+	return directory
 }
 
 func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
