@@ -103,6 +103,13 @@ downloaded=$($CURL "https://demo.spot.localhost:8443$url")
 [ "$downloaded" = "$payload" ] || fail "downloaded content differs: $downloaded"
 rm -f /tmp/spot-e2e-upload.txt
 
+# The CLI deploys above drew from /api/deploy's per-peer budget (1 per
+# 2s, burst 3). On re-runs the wait loops short-circuit (old content is
+# already live), so deploys bunch up — refill the bucket between steps
+# rather than flaking on the rate limit.
+refill_deploy_budget() { sleep 4; }
+
+refill_deploy_budget
 echo "==> web deploy: multipart deploy through the apex /api/deploy"
 webdir=$(mktemp -d)
 printf '<h1>spot web deploy</h1>' > "$webdir/index.html"
@@ -129,6 +136,7 @@ css=$(curl -sk --resolve webdeploy.spot.localhost:8443:127.0.0.1 \
 [ "$css" = "p{color:red}" ] || fail "nested file not served: $css"
 echo "    web-deployed site is live"
 
+refill_deploy_budget
 echo "==> web deploy: redeploy removes stale files"
 deployed=$($CURL -F 'site=webdeploy' \
     -F "files=@$webdir/index.html;filename=index.html" \
@@ -147,6 +155,7 @@ done
 [ -n "$ok" ] || fail "stale file still served after redeploy (got $code)"
 rm -rf "$webdir"
 
+refill_deploy_budget
 echo "==> web deploy: refused from a site subdomain"
 code=$(curl -sk --resolve demo.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{http_code}' \
     -F 'site=demo' -F "files=@scripts/e2e.sh;filename=index.html" \

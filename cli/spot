@@ -1,20 +1,27 @@
 #!/bin/sh
 # spot — deploy static sites to the Spot platform.
 #
-# Configuration via environment (or ~/.config/spot/env, sourced if present):
-#   SPOT_S3_ENDPOINT    S3 endpoint of the RustFS instance (default http://localhost:9000)
-#   SPOT_S3_ACCESS_KEY  access key (default rustfsadmin)
-#   SPOT_S3_SECRET_KEY  secret key (default rustfsadmin)
-#   SPOT_DOMAIN         domain sites are served under (default spot.localhost)
+# Deploys go through the platform's deploy API (the same endpoint the
+# apex web deployer uses), so the only configuration is where the
+# platform lives. Via environment (or ~/.config/spot/env, sourced if
+# present):
+#   SPOT_URL   apex URL of the Spot deployment
+#              (default https://spot.localhost:8443)
 set -eu
 
 [ -f "${HOME}/.config/spot/env" ] && . "${HOME}/.config/spot/env"
 
-SPOT_S3_ENDPOINT=${SPOT_S3_ENDPOINT:-http://localhost:9000}
-SPOT_S3_ACCESS_KEY=${SPOT_S3_ACCESS_KEY:-rustfsadmin}
-SPOT_S3_SECRET_KEY=${SPOT_S3_SECRET_KEY:-rustfsadmin}
-SPOT_S3_BUCKET=${SPOT_S3_BUCKET:-spot-sites}
-SPOT_DOMAIN=${SPOT_DOMAIN:-spot.localhost}
+SPOT_URL=${SPOT_URL:-https://spot.localhost:8443}
+SPOT_URL=${SPOT_URL%/}
+SPOT_SCHEME=${SPOT_URL%%://*}
+SPOT_HOSTPORT=${SPOT_URL#*://}
+SPOT_DOMAIN=${SPOT_HOSTPORT%%:*}
+
+# Dev serves on Caddy's internal CA; localhost is trusted implicitly.
+case $SPOT_DOMAIN in
+    localhost|*.localhost) SPOT_CURL_OPTS=-k ;;
+    *) SPOT_CURL_OPTS= ;;
+esac
 
 usage() {
     cat <<'EOF'
@@ -26,30 +33,6 @@ commands:
   init                  write the Spot agent skill into ./.claude/skills/spot
 EOF
     exit 1
-}
-
-# Runs rclone with the S3 remote configured from the environment. Prefers
-# a local rclone; falls back to the rclone docker image.
-run_rclone() {
-    if command -v rclone >/dev/null 2>&1; then
-        RCLONE_CONFIG_SPOT_TYPE=s3 \
-        RCLONE_CONFIG_SPOT_PROVIDER=Minio \
-        RCLONE_CONFIG_SPOT_ENDPOINT="$SPOT_S3_ENDPOINT" \
-        RCLONE_CONFIG_SPOT_ACCESS_KEY_ID="$SPOT_S3_ACCESS_KEY" \
-        RCLONE_CONFIG_SPOT_SECRET_ACCESS_KEY="$SPOT_S3_SECRET_KEY" \
-        RCLONE_CONFIG_SPOT_FORCE_PATH_STYLE=true \
-        rclone "$@"
-    else
-        docker run --rm --network host \
-            -v "$PWD:/work" -w /work \
-            -e RCLONE_CONFIG_SPOT_TYPE=s3 \
-            -e RCLONE_CONFIG_SPOT_PROVIDER=Minio \
-            -e RCLONE_CONFIG_SPOT_ENDPOINT="$SPOT_S3_ENDPOINT" \
-            -e RCLONE_CONFIG_SPOT_ACCESS_KEY_ID="$SPOT_S3_ACCESS_KEY" \
-            -e RCLONE_CONFIG_SPOT_SECRET_ACCESS_KEY="$SPOT_S3_SECRET_KEY" \
-            -e RCLONE_CONFIG_SPOT_FORCE_PATH_STYLE=true \
-            rclone/rclone:latest "$@"
-    fi
 }
 
 deploy() {
@@ -66,8 +49,29 @@ deploy() {
         exit 1
     fi
     echo "deploying $dir -> $name.$SPOT_DOMAIN"
-    ( cd "$dir" && run_rclone sync . "spot:$SPOT_S3_BUCKET/$name" )
-    echo "live: https://$name.$SPOT_DOMAIN/"
+
+    # One -F part per file, the filename carrying the site-relative path
+    # — the shape /api/deploy expects. The server syncs: files absent
+    # from the upload are removed from the live site. Dot directories
+    # (.git and friends) stay home; the server drops them anyway.
+    set -- -F "site=$name"
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        f=${f#./}
+        set -- "$@" -F "files=@$f;filename=$f"
+    done <<EOF
+$(cd "$dir" && find . -name '.?*' -prune -o -type f -print)
+EOF
+
+    out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
+        "$@" "$SPOT_URL/api/deploy")
+    status=$(printf '%s' "$out" | tail -n 1)
+    body=$(printf '%s' "$out" | sed '$d')
+    if [ "$status" != "200" ]; then
+        echo "error: deploy failed (HTTP $status): $body" >&2
+        exit 1
+    fi
+    echo "live: $SPOT_SCHEME://$name.$SPOT_HOSTPORT/"
 }
 
 init() {
@@ -82,7 +86,7 @@ description: Build and deploy sites on Spot, the internal hosting platform. Use 
 
 Spot hosts static sites for everyone on the internal network. A site is a
 folder with an index.html. Deploy with \`spot deploy <name>\` from the site
-directory; it is then live at https://<name>.$SPOT_DOMAIN/.
+directory; it is then live at $SPOT_SCHEME://<name>.$SPOT_HOSTPORT/.
 
 There is no build step and no framework. Plain HTML/CSS/JS works best.
 

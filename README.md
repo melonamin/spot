@@ -37,13 +37,18 @@ Deploy any folder with an `index.html`:
 cli/spot deploy mysite     # -> https://mysite.spot.localhost:8443/
 ```
 
+The CLI targets `SPOT_URL` (default `https://spot.localhost:8443`); set
+it to a deployment's apex — e.g. `https://spot.corp.example.com` — or
+persist it in `~/.config/spot/env`.
+
 Or skip the terminal: the apex page (`https://spot.localhost:8443/`) is
-a deployer — drop a folder on it, pick a name, hit Launch. It posts the
-files to `POST /api/deploy` on the apex, which syncs them into the same
-`spot-sites` bucket the CLI uses (stale files are removed, like `rclone
-sync`). The endpoint only answers on the apex host, so a deployed
-site's JavaScript can never redeploy other sites with a visitor's
-browser.
+a deployer — drop a folder on it, pick a name, hit Launch. CLI and page
+both post the files to `POST /api/deploy` on the apex, which syncs them
+into the `spot-sites` bucket (stale files are removed, like `rclone
+sync`). Going through the server means deployers never hold storage
+credentials, and the endpoint only answers on the apex host, so a
+deployed site's JavaScript can never redeploy other sites with a
+visitor's browser.
 
 `cli/spot init` writes an agent skill into the current project so coding
 agents know the SDK without reading docs.
@@ -159,7 +164,9 @@ For stricter isolation in production, serve `/api/files` from a separate
 cookieless domain.
 
 The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
-in `.env`); sites call Claude with zero configuration. Defaults:
+in `.env`); sites call Claude with zero configuration. Set
+`ANTHROPIC_BASE_URL` to route the proxy through an Anthropic-compatible
+gateway instead of the Claude API. Defaults:
 `claude-opus-4-8`, adaptive thinking, 16K max tokens — overridable per
 request with `model`, `system`, `max_tokens`:
 
