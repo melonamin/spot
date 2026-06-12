@@ -156,6 +156,10 @@
     .launch:focus-visible,
     .linkish:focus-visible,
     .install-trigger:focus-visible,
+    .access-trigger:focus-visible,
+    .access-clear:focus-visible,
+    .access-choice:focus-visible,
+    .access-chip button:focus-visible,
     .copy:focus-visible,
     .modal-close:focus-visible,
     .tab:focus-visible {
@@ -219,12 +223,12 @@
 
     .launchrow {
       display: grid;
-      grid-template-columns: minmax(0, 1fr) auto;
-      gap: 16px 18px;
+      grid-template-columns: minmax(0, 1fr) auto auto;
+      gap: 18px;
       width: min(640px, 100%);
       margin-top: 28px;
     }
-    /* display:flex above would defeat the hidden attribute */
+    /* display:grid above would defeat the hidden attribute */
     .launchrow[hidden] { display: none; }
     .namebox {
       flex: 1;
@@ -277,55 +281,225 @@
     .launch:active:not(:disabled) { transform: translate(3px, 4px); box-shadow: 2px 2px 0 var(--ink); }
     .launch:disabled { opacity: .8; cursor: wait; }
 
-    .accessbox {
-      grid-column: 1 / -1;
-      display: grid;
-      grid-template-columns: auto minmax(0, 1fr);
-      gap: 10px 16px;
-      align-items: center;
-      background: var(--card);
-      border: 3px solid var(--ink);
-      border-radius: 16px;
-      box-shadow: 7px 8px 0 var(--ink);
-      padding: 13px 16px 14px;
-    }
-    .access-label {
-      font: 700 12px/1 var(--font-mono);
-      letter-spacing: .18em;
-      text-transform: uppercase;
-      color: var(--mutedink);
-    }
-    .select-shell {
+    .access-wrap {
       position: relative;
       min-width: 0;
     }
-    #accessmode {
+    .access-trigger {
+      height: 100%;
+      min-height: 61px;
+      display: inline-flex;
+      align-items: center;
+      gap: 10px;
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 7px 8px 0 var(--ink);
+      padding: 0 16px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+    }
+    .access-trigger:hover:not(:disabled),
+    .access-trigger[aria-expanded="true"] {
+      transform: translate(-2px, -2px);
+      box-shadow: 9px 10px 0 var(--ink);
+    }
+    .access-trigger.restricted {
+      background: var(--accent);
+      color: #fff;
+    }
+    .access-trigger:disabled {
+      opacity: .8;
+      cursor: wait;
+    }
+    .access-trigger svg {
+      width: 20px;
+      height: 20px;
+      flex: 0 0 auto;
+    }
+    .access-popover[hidden] { display: none; }
+    .access-popover {
+      position: absolute;
+      z-index: 25;
+      top: calc(100% + 14px);
+      right: 0;
+      width: min(390px, calc(100vw - 48px));
+      border: 3px solid var(--ink);
+      border-radius: 18px;
+      background: var(--card);
+      box-shadow: 10px 12px 0 var(--ink);
+      padding: 16px;
+      text-align: left;
+    }
+    .access-popover::before {
+      content: "";
+      position: absolute;
+      top: -10px;
+      right: 34px;
+      width: 16px;
+      height: 16px;
+      background: var(--card);
+      border-left: 3px solid var(--ink);
+      border-top: 3px solid var(--ink);
+      transform: rotate(45deg);
+    }
+    .access-head {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .access-kicker,
+    .access-title {
+      margin: 0;
+      font-family: var(--font-mono);
+    }
+    .access-kicker {
+      font-size: 11px;
+      line-height: 1;
+      font-weight: 700;
+      letter-spacing: .22em;
+      text-transform: uppercase;
+      color: var(--accent);
+    }
+    .access-title {
+      margin-top: 7px;
+      font-size: 15px;
+      line-height: 1.45;
+      font-weight: 700;
+      color: var(--ink);
+    }
+    .access-clear {
+      flex: 0 0 auto;
+      border: 2px solid var(--ink);
+      border-radius: 10px;
+      background: #fff;
+      color: var(--ink);
+      padding: 9px 10px;
+      font: 700 11px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .access-search {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      border: 2px solid var(--ink);
+      border-radius: 12px;
+      background: #fff;
+      padding: 0 12px;
+    }
+    .access-search svg {
+      width: 18px;
+      height: 18px;
+      color: var(--mutedink);
+      flex: 0 0 auto;
+    }
+    #access-search {
+      min-width: 0;
       width: 100%;
-      appearance: none;
+      border: 0;
+      outline: 0;
+      background: transparent;
+      color: var(--ink);
+      padding: 13px 0;
+      font: 700 13px/1.2 var(--font-mono);
+    }
+    #access-search::placeholder { color: var(--mutedink); opacity: .8; }
+    .access-results {
+      display: grid;
+      gap: 8px;
+      max-height: 210px;
+      overflow: auto;
+      margin-top: 12px;
+    }
+    .access-choice {
+      display: grid;
+      grid-template-columns: 28px minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 10px;
+      width: 100%;
       border: 2px solid var(--ink);
       border-radius: 12px;
       background: #fff;
       color: var(--ink);
-      padding: 12px 42px 12px 14px;
-      font: 700 13px/1.35 var(--font-mono);
+      padding: 10px;
+      text-align: left;
+      font: 700 12px/1.25 var(--font-mono);
       cursor: pointer;
     }
-    #accessmode:disabled {
-      color: var(--mutedink);
-      cursor: wait;
+    .access-choice[aria-selected="true"] {
+      background: #f3f1ff;
     }
-    .access-caret {
-      position: absolute;
-      top: 50%;
-      right: 15px;
-      transform: translateY(-50%);
+    .choice-icon {
+      width: 28px;
+      height: 28px;
+      display: grid;
+      place-items: center;
+      border-radius: 9px;
+      background: var(--ink);
+      color: #fff;
+      font-size: 12px;
+    }
+    .choice-main {
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .choice-meta {
+      display: block;
+      margin-top: 4px;
+      color: var(--mutedink);
+      font-size: 10px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .choice-mark {
+      color: var(--accent);
+      font-size: 12px;
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .access-selected {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 12px;
+    }
+    .access-chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      max-width: 100%;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      padding: 7px 9px 7px 11px;
+      font: 700 11px/1 var(--font-mono);
+    }
+    .access-chip span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .access-chip button {
+      border: 0;
+      background: transparent;
       color: var(--ink);
-      font: 700 12px/1 var(--font-mono);
-      pointer-events: none;
+      padding: 0;
+      font: 700 14px/1 var(--font-mono);
+      cursor: pointer;
     }
     .accessnote {
-      grid-column: 1 / -1;
       min-height: 20px;
+      margin: 12px 0 0;
       font: 400 12px/1.6 var(--font-mono);
       color: var(--mutedink);
     }
@@ -507,8 +681,20 @@
       }
       .launchrow { grid-template-columns: 1fr; }
       .launch { padding: 19px 30px; }
-      .accessbox {
-        grid-template-columns: 1fr;
+      .access-trigger {
+        width: 100%;
+        justify-content: center;
+        padding: 19px 20px;
+      }
+      .access-popover {
+        left: 0;
+        right: auto;
+        width: 100%;
+      }
+      .access-popover::before {
+        left: 50%;
+        right: auto;
+        transform: translateX(-50%) rotate(45deg);
       }
       .install-panel {
         padding: 18px;
@@ -574,14 +760,40 @@
         <span class="suffix" id="suffix"></span>
       </label>
       <button class="launch" id="launch" type="submit">Launch</button>
-      <label class="accessbox" for="accessmode">
-        <span class="access-label">Access</span>
-        <span class="select-shell">
-          <select id="accessmode" name="access" aria-describedby="accessnote"></select>
-          <span class="access-caret" aria-hidden="true">v</span>
-        </span>
-        <span class="accessnote" id="accessnote"></span>
-      </label>
+      <div class="access-wrap">
+        <button class="access-trigger" id="access-open" type="button"
+                aria-haspopup="dialog" aria-expanded="false" aria-controls="access-popover">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <rect width="14" height="10" x="5" y="11" rx="2"/>
+            <path d="M8 11V8a4 4 0 0 1 8 0v3"/>
+          </svg>
+          <span id="access-status">Public</span>
+        </button>
+        <section class="access-popover" id="access-popover" role="dialog"
+                 aria-labelledby="access-title" hidden>
+          <div class="access-head">
+            <div>
+              <p class="access-kicker">Access</p>
+              <p class="access-title" id="access-title">Public unless you add users</p>
+            </div>
+            <button class="access-clear" id="access-clear" type="button">Clear</button>
+          </div>
+          <label class="access-search" for="access-search">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+                 stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <circle cx="11" cy="11" r="7"/>
+              <path d="m20 20-3.5-3.5"/>
+            </svg>
+            <input id="access-search" type="search" autocomplete="off"
+                   placeholder="Search users by email">
+          </label>
+          <div class="access-results" id="access-results" role="listbox"
+               aria-label="Access suggestions"></div>
+          <div class="access-selected" id="access-selected"></div>
+          <p class="accessnote" id="accessnote"></p>
+        </section>
+      </div>
     </form>
 
     <footer>
@@ -649,7 +861,10 @@
       const card = $('card'), idle = $('idle'), ready = $('ready'), live = $('live');
       const launchRow = $('launchrow'), nameInput = $('sitename'), launchBtn = $('launch');
       const errorEl = $('error'), filePick = $('filepick');
-      const accessSelect = $('accessmode'), accessNote = $('accessnote');
+      const accessWrap = document.querySelector('.access-wrap'), accessOpen = $('access-open');
+      const accessPopover = $('access-popover'), accessStatus = $('access-status');
+      const accessSearch = $('access-search'), accessResults = $('access-results');
+      const accessSelected = $('access-selected'), accessClear = $('access-clear'), accessNote = $('accessnote');
       const modal = $('install-modal'), installOpen = $('install-open'), installClose = $('install-close');
 
       $('suffix').textContent = '.' + location.host;
@@ -712,6 +927,7 @@
 
       let picked = [];        // [{ path, file }], paths site-relative
       let identity = null;
+      let selectedAccess = [];
       let launching = false;
 
       const junkSeg = (seg) => seg.startsWith('.') || seg === 'node_modules' || seg === 'Thumbs.db';
@@ -764,69 +980,135 @@
           list = list.map((f) => ({ path: f.path.slice(first.length + 1), file: f.file }));
         }
         picked = list;
+        selectedAccess = [];
+        accessSearch.value = '';
         const total = list.reduce((n, f) => n + f.file.size, 0);
         $('summary').textContent = list.length + ' file' + (list.length === 1 ? '' : 's') + ' ready to deploy';
         $('detail').textContent = fmtSize(total);
         nameInput.value = sanitizeName(suggestion || root) || randomName();
-        renderAccessOptions();
+        renderAccess();
         show(ready);
         nameInput.focus();
         nameInput.select();
       };
 
-      const accessFile = () => picked.find((f) => f.path === '_access.json');
+      const accessKey = (entry) => entry.type + ':' + entry.value.toLowerCase();
+      const hasSelectedAccess = (entry) =>
+        selectedAccess.some((item) => accessKey(item) === accessKey(entry));
 
-      const option = (value, label) => {
-        const el = document.createElement('option');
-        el.value = value;
-        el.textContent = label;
-        return el;
-      };
-
-      const renderAccessOptions = () => {
-        const previous = accessSelect.value;
-        const folderPolicy = accessFile();
-        accessSelect.replaceChildren(option('open', 'Open to everyone on the mesh'));
+      const knownAccessOptions = () => {
+        const options = [];
         if (identity && identity.email) {
-          accessSelect.appendChild(option('me', 'Only me (' + identity.email + ')'));
+          options.push({ type: 'user', value: identity.email, label: identity.email, meta: 'You' });
         }
-        if (identity && identity.groups) {
-          for (const group of identity.groups) {
-            accessSelect.appendChild(option('group:' + group, 'Only ' + group));
-          }
-        }
-        if (folderPolicy) {
-          accessSelect.appendChild(option('folder', 'Use folder _access.json'));
-        }
-        if ([...accessSelect.options].some((opt) => opt.value === previous)) {
-          accessSelect.value = previous;
-        } else if (folderPolicy) {
-          accessSelect.value = 'folder';
-        } else {
-          accessSelect.value = 'open';
-        }
-        updateAccessNote();
+        return options;
       };
 
-      const updateAccessNote = () => {
-        const value = accessSelect.value;
-        if (value === 'open') {
-          accessNote.textContent = 'No _access.json will be deployed.';
-        } else if (value === 'me') {
-          accessNote.textContent = 'Deploys _access.json for ' + identity.email + '.';
-        } else if (value.startsWith('group:')) {
-          accessNote.textContent = 'Deploys _access.json for ' + value.slice('group:'.length) + '.';
+      const customAccessEntry = (raw) => {
+        const value = raw.trim();
+        if (!value) return null;
+        if (value.includes('@')) return { type: 'user', value, label: value, meta: 'Email' };
+        return null;
+      };
+
+      const toggleAccessEntry = (entry) => {
+        if (hasSelectedAccess(entry)) {
+          selectedAccess = selectedAccess.filter((item) => accessKey(item) !== accessKey(entry));
         } else {
-          accessNote.textContent = 'Keeps the _access.json already in this folder.';
+          selectedAccess = [...selectedAccess, entry];
         }
+        renderAccess();
+      };
+
+      const renderAccessResults = () => {
+        const query = accessSearch.value.trim().toLowerCase();
+        let options = knownAccessOptions().filter((entry) =>
+          !query || entry.label.toLowerCase().includes(query) || entry.meta.toLowerCase().includes(query)
+        );
+        const custom = customAccessEntry(accessSearch.value);
+        if (custom && !options.some((entry) => accessKey(entry) === accessKey(custom))) {
+          options = [...options, custom];
+        }
+        accessResults.replaceChildren();
+        if (!options.length) {
+          const empty = document.createElement('p');
+          empty.className = 'accessnote';
+          empty.textContent = query && !query.includes('@')
+            ? 'Enter an email address to restrict this site.'
+            : 'No matching users.';
+          accessResults.appendChild(empty);
+          return;
+        }
+        for (const entry of options) {
+          const selected = hasSelectedAccess(entry);
+          const button = document.createElement('button');
+          button.type = 'button';
+          button.className = 'access-choice';
+          button.setAttribute('role', 'option');
+          button.setAttribute('aria-selected', selected ? 'true' : 'false');
+          button.innerHTML =
+            '<span class="choice-icon" aria-hidden="true">@</span>' +
+            '<span class="choice-main"></span>' +
+            '<span class="choice-mark">' + (selected ? 'On' : '') + '</span>';
+          button.querySelector('.choice-main').textContent = entry.label;
+          const meta = document.createElement('span');
+          meta.className = 'choice-meta';
+          meta.textContent = entry.meta;
+          button.querySelector('.choice-main').appendChild(meta);
+          button.addEventListener('click', () => toggleAccessEntry(entry));
+          accessResults.appendChild(button);
+        }
+      };
+
+      const renderSelectedAccess = () => {
+        accessSelected.replaceChildren();
+        for (const entry of selectedAccess) {
+          const chip = document.createElement('span');
+          chip.className = 'access-chip';
+          const label = document.createElement('span');
+          label.textContent = entry.label;
+          const remove = document.createElement('button');
+          remove.type = 'button';
+          remove.setAttribute('aria-label', 'Remove ' + entry.label);
+          remove.textContent = 'x';
+          remove.addEventListener('click', () => toggleAccessEntry(entry));
+          chip.append(label, remove);
+          accessSelected.appendChild(chip);
+        }
+      };
+
+      const renderAccess = () => {
+        const count = selectedAccess.length;
+        if (count === 0) {
+          accessStatus.textContent = 'Public';
+          accessNote.textContent = 'No _access.json will be deployed.';
+        } else if (count === 1) {
+          accessStatus.textContent = 'Locked';
+          accessNote.textContent = 'Deploys _access.json for ' + selectedAccess[0].label + '.';
+        } else {
+          accessStatus.textContent = count + ' selected';
+          accessNote.textContent = 'Deploys _access.json for selected users.';
+        }
+        accessOpen.classList.toggle('restricted', count > 0);
+        renderAccessResults();
+        renderSelectedAccess();
+      };
+
+      const openAccess = () => {
+        accessPopover.hidden = false;
+        accessOpen.setAttribute('aria-expanded', 'true');
+        renderAccess();
+        accessSearch.focus();
+      };
+
+      const closeAccess = () => {
+        accessPopover.hidden = true;
+        accessOpen.setAttribute('aria-expanded', 'false');
       };
 
       const accessPolicyFile = () => {
-        const value = accessSelect.value;
-        let allow = null;
-        if (value === 'me' && identity && identity.email) allow = [identity.email];
-        if (value.startsWith('group:')) allow = [value.slice('group:'.length)];
-        if (!allow) return null;
+        if (!selectedAccess.length) return null;
+        const allow = selectedAccess.map((entry) => entry.value);
         return new File(
           [JSON.stringify({ allow }, null, 2) + '\n'],
           '_access.json',
@@ -835,19 +1117,44 @@
       };
 
       const loadIdentity = async () => {
-        accessSelect.disabled = true;
         try {
           const res = await fetch('/api/me');
           if (res.ok) identity = await res.json();
         } catch {
           identity = null;
         } finally {
-          accessSelect.disabled = false;
-          if (picked.length) renderAccessOptions();
+          renderAccess();
         }
       };
-      accessSelect.addEventListener('change', updateAccessNote);
-      renderAccessOptions();
+      accessOpen.addEventListener('click', () => {
+        if (accessPopover.hidden) openAccess();
+        else closeAccess();
+      });
+      accessClear.addEventListener('click', () => {
+        selectedAccess = [];
+        accessSearch.value = '';
+        renderAccess();
+        accessSearch.focus();
+      });
+      accessSearch.addEventListener('input', renderAccessResults);
+      accessSearch.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') {
+          const entry = customAccessEntry(accessSearch.value);
+          if (entry) {
+            e.preventDefault();
+            toggleAccessEntry(entry);
+            accessSearch.value = '';
+          }
+        }
+        if (e.key === 'Escape') closeAccess();
+      });
+      document.addEventListener('click', (e) => {
+        if (!accessPopover.hidden && !accessWrap.contains(e.target)) closeAccess();
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && !accessPopover.hidden) closeAccess();
+      });
+      renderAccess();
       loadIdentity();
 
       // --- picking --------------------------------------------------------
@@ -858,6 +1165,8 @@
       $('again').addEventListener('click', () => {
         picked = [];
         filePick.value = '';
+        selectedAccess = [];
+        accessSearch.value = '';
         clearError();
         show(idle);
       });
@@ -949,7 +1258,7 @@
         // The filename of each part carries the file's site-relative
         // path — the deploy API reconstructs the folder from it.
         for (const { path, file } of picked) {
-          if (path !== '_access.json' || accessSelect.value === 'folder') {
+          if (path !== '_access.json') {
             form.append('files', file, path);
           }
         }
@@ -959,14 +1268,15 @@
         launching = true;
         launchBtn.disabled = true;
         nameInput.disabled = true;
-        accessSelect.disabled = true;
+        accessOpen.disabled = true;
+        closeAccess();
         launchBtn.textContent = 'Launching';
 
         const done = (ok, message) => {
           launching = false;
           launchBtn.disabled = false;
           nameInput.disabled = false;
-          accessSelect.disabled = false;
+          accessOpen.disabled = false;
           launchBtn.textContent = 'Launch';
           if (!ok) return fail(message);
           const url = 'https://' + site + '.' + location.host + '/';
@@ -998,7 +1308,7 @@
         if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
         const colors = ['#ffffff', '#ffd23f', '#3ddc68', '#ff5d5d', '#4cc9f0', '#f7258b', '#ff9f1c'];
         const box = $('confetti');
-        box.replaceChildren();
+        const frag = document.createDocumentFragment();
         for (let i = 0; i < 110; i++) {
           const piece = document.createElement('i');
           const size = 6 + Math.random() * 9;
@@ -1012,8 +1322,9 @@
             '--spin:' + (360 + Math.random() * 540) + 'deg;' +
             'animation-duration:' + (2.4 + Math.random() * 1.8) + 's;' +
             'animation-delay:' + (Math.random() * .5) + 's;';
-          box.appendChild(piece);
+          frag.appendChild(piece);
         }
+        box.replaceChildren(frag);
         setTimeout(() => box.replaceChildren(), 5200);
       };
 
