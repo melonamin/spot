@@ -437,6 +437,10 @@
     .access-choice[aria-selected="true"] {
       background: #f3f1ff;
     }
+    .access-choice.active {
+      outline: 3px solid var(--accent);
+      outline-offset: -3px;
+    }
     .choice-icon {
       width: 28px;
       height: 28px;
@@ -785,7 +789,8 @@
               <circle cx="11" cy="11" r="7"/>
               <path d="m20 20-3.5-3.5"/>
             </svg>
-            <input id="access-search" type="search" autocomplete="off"
+            <input id="access-search" type="search" role="combobox" aria-expanded="false"
+                   aria-controls="access-results" aria-autocomplete="list" autocomplete="off"
                    placeholder="Search users by email">
           </label>
           <div class="access-results" id="access-results" role="listbox"
@@ -1000,6 +1005,8 @@
       // Directory matches from the server for the current query, plus the
       // visitor's own identity, which is always offered first.
       let directoryOptions = [];
+      let optionButtons = [];  // currently rendered choice buttons
+      let activeIndex = 0;     // keyboard-highlighted option
       const knownAccessOptions = () => {
         const options = [];
         if (identity && identity.email) {
@@ -1060,7 +1067,10 @@
           options = [...options, custom];
         }
         accessResults.replaceChildren();
+        optionButtons = [];
         if (!options.length) {
+          activeIndex = -1;
+          accessSearch.removeAttribute('aria-activedescendant');
           const empty = document.createElement('p');
           empty.className = 'accessnote';
           empty.textContent = query && !query.includes('@')
@@ -1073,6 +1083,7 @@
           const selected = hasSelectedAccess(entry);
           const button = document.createElement('button');
           button.type = 'button';
+          button.id = 'access-opt-' + optionButtons.length;
           button.className = 'access-choice';
           button.setAttribute('role', 'option');
           button.setAttribute('aria-selected', selected ? 'true' : 'false');
@@ -1085,8 +1096,29 @@
           meta.className = 'choice-meta';
           meta.textContent = entry.meta;
           button.querySelector('.choice-main').appendChild(meta);
-          button.addEventListener('click', () => toggleAccessEntry(entry));
+          // Stop the click bubbling to the document outside-click handler:
+          // toggling re-renders the list, detaching this node, which would
+          // otherwise read as a click outside the popover and close it.
+          button.addEventListener('click', (e) => { e.stopPropagation(); toggleAccessEntry(entry); });
           accessResults.appendChild(button);
+          optionButtons.push(button);
+        }
+        if (activeIndex < 0 || activeIndex >= optionButtons.length) activeIndex = 0;
+        applyActive();
+      };
+
+      // applyActive reflects keyboard-navigation state: highlights the
+      // active option, points aria-activedescendant at it, and keeps it
+      // in view. Distinct from aria-selected, which marks allowlisted
+      // entries.
+      const applyActive = () => {
+        optionButtons.forEach((b, i) => b.classList.toggle('active', i === activeIndex));
+        const active = optionButtons[activeIndex];
+        if (active) {
+          accessSearch.setAttribute('aria-activedescendant', active.id);
+          active.scrollIntoView({ block: 'nearest' });
+        } else {
+          accessSearch.removeAttribute('aria-activedescendant');
         }
       };
 
@@ -1101,7 +1133,7 @@
           remove.type = 'button';
           remove.setAttribute('aria-label', 'Remove ' + entry.label);
           remove.textContent = 'x';
-          remove.addEventListener('click', () => toggleAccessEntry(entry));
+          remove.addEventListener('click', (e) => { e.stopPropagation(); toggleAccessEntry(entry); });
           chip.append(label, remove);
           accessSelected.appendChild(chip);
         }
@@ -1127,6 +1159,8 @@
       const openAccess = () => {
         accessPopover.hidden = false;
         accessOpen.setAttribute('aria-expanded', 'true');
+        accessSearch.setAttribute('aria-expanded', 'true');
+        activeIndex = 0;
         renderAccess();
         accessSearch.focus();
       };
@@ -1134,6 +1168,8 @@
       const closeAccess = () => {
         accessPopover.hidden = true;
         accessOpen.setAttribute('aria-expanded', 'false');
+        accessSearch.setAttribute('aria-expanded', 'false');
+        accessOpen.focus();
       };
 
       const accessPolicyFile = () => {
@@ -1168,19 +1204,31 @@
         accessSearch.focus();
       });
       accessSearch.addEventListener('input', () => {
+        activeIndex = 0; // highlight the first match as the list changes
         fetchSuggestions(accessSearch.value.trim());
         renderAccessResults();
       });
       accessSearch.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          const entry = customAccessEntry(accessSearch.value);
-          if (entry) {
-            e.preventDefault();
-            toggleAccessEntry(entry);
-            accessSearch.value = '';
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          if (optionButtons.length) {
+            activeIndex = Math.min(optionButtons.length - 1, activeIndex + 1);
+            applyActive();
           }
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          if (optionButtons.length) {
+            activeIndex = Math.max(0, activeIndex - 1);
+            applyActive();
+          }
+        } else if (e.key === 'Enter') {
+          // Toggle the highlighted option (a directory match or the
+          // typed-email entry); selecting keeps the popover open.
+          e.preventDefault();
+          if (optionButtons[activeIndex]) optionButtons[activeIndex].click();
+        } else if (e.key === 'Escape') {
+          closeAccess();
         }
-        if (e.key === 'Escape') closeAccess();
       });
       document.addEventListener('click', (e) => {
         if (!accessPopover.hidden && !accessWrap.contains(e.target)) closeAccess();
