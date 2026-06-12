@@ -933,6 +933,7 @@
       let picked = [];        // [{ path, file }], paths site-relative
       let identity = null;
       let selectedAccess = [];
+      let accessFileWarning = ''; // set when an uploaded _access.json can't be read
       let launching = false;
 
       const junkSeg = (seg) => seg.startsWith('.') || seg === 'node_modules' || seg === 'Thumbs.db';
@@ -969,7 +970,7 @@
         return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       };
 
-      const setFiles = (files, suggestion) => {
+      const setFiles = async (files, suggestion) => {
         clearError();
         let list = files.filter((f) => !isJunk(f.path));
         if (!list.length) return fail('That folder is empty');
@@ -988,6 +989,18 @@
         selectedAccess = [];
         accessSearch.value = '';
         directoryOptions = [];
+        accessFileWarning = '';
+        // Seed the access picker from an uploaded _access.json so an
+        // existing allowlist is shown — and preserved on redeploy —
+        // rather than silently dropped (which would publish the site).
+        const accessFile = list.find((f) => f.path === '_access.json');
+        if (accessFile) {
+          const parsed = await readAccessPolicy(accessFile.file);
+          selectedAccess = parsed.entries;
+          if (!parsed.ok) {
+            accessFileWarning = "Could not read the folder's _access.json — set access here.";
+          }
+        }
         const total = list.reduce((n, f) => n + f.file.size, 0);
         $('summary').textContent = list.length + ' file' + (list.length === 1 ? '' : 's') + ' ready to deploy';
         $('detail').textContent = fmtSize(total);
@@ -1001,6 +1014,28 @@
       const accessKey = (entry) => entry.type + ':' + entry.value.toLowerCase();
       const hasSelectedAccess = (entry) =>
         selectedAccess.some((item) => accessKey(item) === accessKey(entry));
+
+      // readAccessPolicy turns an uploaded _access.json into picker chips:
+      // allow entries with "@" are users, the rest are groups (matching
+      // the server's policy semantics). ok is false on unreadable JSON.
+      const readAccessPolicy = async (file) => {
+        try {
+          const data = JSON.parse(await file.text());
+          const allow = Array.isArray(data.allow) ? data.allow : [];
+          const entries = [];
+          for (const raw of allow) {
+            if (typeof raw !== 'string' || !raw.trim()) continue;
+            const value = raw.trim();
+            const entry = value.includes('@')
+              ? { type: 'user', value, label: value, meta: 'From file' }
+              : { type: 'group', value, label: value, meta: 'Group' };
+            if (!entries.some((e) => accessKey(e) === accessKey(entry))) entries.push(entry);
+          }
+          return { entries, ok: true };
+        } catch {
+          return { entries: [], ok: false };
+        }
+      };
 
       // Directory matches from the server for the current query, plus the
       // visitor's own identity, which is always offered first.
@@ -1143,7 +1178,7 @@
         const count = selectedAccess.length;
         if (count === 0) {
           accessStatus.textContent = 'Public';
-          accessNote.textContent = 'No _access.json will be deployed.';
+          accessNote.textContent = accessFileWarning || 'No _access.json will be deployed.';
         } else if (count === 1) {
           accessStatus.textContent = 'Locked';
           accessNote.textContent = 'Deploys _access.json for ' + selectedAccess[0].label + '.';
