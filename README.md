@@ -54,8 +54,9 @@ credentials, and the endpoint only answers on the apex host, so a
 deployed site's JavaScript can never redeploy other sites with a
 visitor's browser.
 
-`cli/spot init` writes an agent skill into the current project so coding
-agents know the SDK without reading docs.
+`cli/spot init` writes an agent skill for Claude Code, Codex, or Pi,
+either into the current project or the user's global agent skills
+directory, so coding agents know the SDK without reading docs.
 
 ## Tests
 

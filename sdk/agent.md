@@ -1,7 +1,7 @@
 # Spot Agent Setup
 
 You are working with a Spot server. Install the Spot CLI, initialize the
-project skill, then deploy static sites through this server.
+agent skill, then deploy static sites through this server.
 
 Use the origin that served this document. For example, if this document
 URL is `https://spot.corp.example.com/agent.md`, run:
@@ -13,7 +13,7 @@ curl -fsSL https://spot.corp.example.com/install.sh | sh -s -- https://spot.corp
 Then, inside the project:
 
 ```sh
-spot init
+spot init --yes
 spot deploy <site-name>
 ```
 
@@ -24,6 +24,7 @@ without a build step. Load the browser SDK with:
 <script src="/spot.js"></script>
 ```
 
-After `spot init`, read `.claude/skills/spot/SKILL.md` before building or
-deploying Spot sites. The skill documents identity, database, realtime,
-AI, file uploads, access control, and deployment conventions.
+After `spot init`, read the generated `spot/SKILL.md` for the selected
+agent before building or deploying Spot sites. The skill documents
+identity, database, realtime, AI, file uploads, access control, and
+deployment conventions.

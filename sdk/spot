@@ -31,7 +31,15 @@ usage: spot <command>
 commands:
   deploy [name] [dir]   sync a directory (default .) to the site <name>
                         (default: current directory name)
-  init                  write the Spot agent skill into ./.claude/skills/spot
+  init [options]        write the Spot agent skill for Claude, Codex, or Pi
+
+init options:
+  --agent <list>        comma-separated agents: claude,codex,pi
+  --all-agents          install for every supported agent
+  --scope <scope>       project or user
+  --yes, -y             accept detected defaults without prompting
+  --force               overwrite existing skill files
+  --dry-run             print target files without writing
 EOF
     exit 1
 }
@@ -75,9 +83,198 @@ EOF
     echo "live: $SPOT_SCHEME://$name.$SPOT_HOSTPORT/"
 }
 
-init() {
-    mkdir -p .claude/skills/spot
-    cat > .claude/skills/spot/SKILL.md <<EOF
+agent_label() {
+    case $1 in
+        claude) echo "Claude Code" ;;
+        codex)  echo "Codex" ;;
+        pi)     echo "Pi" ;;
+        *)      echo "$1" ;;
+    esac
+}
+
+validate_agent() {
+    case $1 in
+        claude|codex|pi) ;;
+        *)
+            echo "error: unsupported agent '$1' (want claude, codex, or pi)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+validate_scope() {
+    case $1 in
+        project|user) ;;
+        *)
+            echo "error: unsupported scope '$1' (want project or user)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+project_skill_path() {
+    case $1 in
+        claude) echo ".claude/skills/spot/SKILL.md" ;;
+        codex)  echo ".codex/skills/spot/SKILL.md" ;;
+        pi)     echo ".pi/skills/spot/SKILL.md" ;;
+    esac
+}
+
+user_skill_path() {
+    case $1 in
+        claude) echo "${CLAUDE_HOME:-$HOME/.claude}/skills/spot/SKILL.md" ;;
+        codex)  echo "${CODEX_HOME:-$HOME/.codex}/skills/spot/SKILL.md" ;;
+        pi)     echo "${PI_HOME:-$HOME/.pi}/skills/spot/SKILL.md" ;;
+    esac
+}
+
+skill_path() {
+    case $2 in
+        project) project_skill_path "$1" ;;
+        user)    user_skill_path "$1" ;;
+    esac
+}
+
+agent_detect() {
+    case $1 in
+        claude)
+            [ -d .claude ] && { echo "project .claude/ exists"; return 0; }
+            [ -d "${CLAUDE_HOME:-$HOME/.claude}" ] && { echo "user ~/.claude/ exists"; return 0; }
+            command -v claude >/dev/null 2>&1 && { echo "claude command found"; return 0; }
+            ;;
+        codex)
+            [ -d .codex ] && { echo "project .codex/ exists"; return 0; }
+            [ -d "${CODEX_HOME:-$HOME/.codex}" ] && { echo "user ~/.codex/ exists"; return 0; }
+            command -v codex >/dev/null 2>&1 && { echo "codex command found"; return 0; }
+            ;;
+        pi)
+            [ -d .pi ] && { echo "project .pi/ exists"; return 0; }
+            [ -d "${PI_HOME:-$HOME/.pi}" ] && { echo "user ~/.pi/ exists"; return 0; }
+            command -v pi >/dev/null 2>&1 && { echo "pi command found"; return 0; }
+            ;;
+    esac
+    echo "not detected"
+    return 1
+}
+
+is_project_dir() {
+    [ -d .git ] && return 0
+    [ -d .claude ] && return 0
+    [ -d .codex ] && return 0
+    [ -d .pi ] && return 0
+    [ -f package.json ] && return 0
+    [ -f go.mod ] && return 0
+    [ -f pyproject.toml ] && return 0
+    [ -f index.html ] && return 0
+    if command -v git >/dev/null 2>&1 && git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+        return 0
+    fi
+    return 1
+}
+
+agent_in_list() {
+    needle=$1
+    for item in $selected_agents; do
+        [ "$item" = "$needle" ] && return 0
+    done
+    return 1
+}
+
+add_agent() {
+    validate_agent "$1"
+    if ! agent_in_list "$1"; then
+        selected_agents="${selected_agents}${selected_agents:+ }$1"
+    fi
+}
+
+add_agent_list() {
+    for agent in $(printf '%s' "$1" | tr ',' ' '); do
+        [ -n "$agent" ] && add_agent "$agent"
+    done
+}
+
+default_agents() {
+    selected_agents=
+    for agent in claude codex pi; do
+        if agent_detect "$agent" >/dev/null 2>&1; then
+            add_agent "$agent"
+        fi
+    done
+    [ -n "$selected_agents" ] || add_agent claude
+}
+
+print_agent_picker() {
+    echo "Which agents should get the Spot skill?"
+    for agent in claude codex pi; do
+        mark=" "
+        agent_in_list "$agent" && mark="x"
+        if reason=$(agent_detect "$agent"); then
+            status="detected: $reason"
+        else
+            status="$reason"
+        fi
+        printf '  [%s] %s  %s\n' "$mark" "$(agent_label "$agent")" "$status"
+    done
+}
+
+prompt_scope() {
+    default_scope=project
+    is_project_dir || default_scope=user
+
+    echo "Where should Spot instructions be installed?"
+    if [ "$default_scope" = project ]; then
+        echo "  1) Project skill (recommended): ./<agent>/skills/spot/SKILL.md"
+        echo "  2) User skill: ~/.<agent>/skills/spot/SKILL.md"
+    else
+        echo "  1) User skill (recommended): ~/.<agent>/skills/spot/SKILL.md"
+        echo "  2) Project skill: ./<agent>/skills/spot/SKILL.md"
+    fi
+    printf 'Scope [%s]: ' "$default_scope"
+    IFS= read -r answer || answer=
+    case ${answer:-$default_scope} in
+        1)
+            if [ "$default_scope" = project ]; then init_scope=project; else init_scope=user; fi
+            ;;
+        2)
+            if [ "$default_scope" = project ]; then init_scope=user; else init_scope=project; fi
+            ;;
+        p|project) init_scope=project ;;
+        u|user)    init_scope=user ;;
+        *)
+            echo "error: unsupported scope '$answer' (want project or user)" >&2
+            exit 1
+            ;;
+    esac
+}
+
+prompt_agents() {
+    default_agents
+    print_agent_picker
+    printf 'Agents [%s]: ' "$(printf '%s' "$selected_agents" | tr ' ' ',')"
+    IFS= read -r answer || answer=
+    if [ -n "$answer" ]; then
+        selected_agents=
+        add_agent_list "$answer"
+    fi
+}
+
+confirm_write() {
+    echo "Install Spot skill for:"
+    echo "  scope: $init_scope"
+    echo "  agents: $(printf '%s' "$selected_agents" | tr ' ' ',')"
+    for agent in $selected_agents; do
+        echo "  - $(skill_path "$agent" "$init_scope")"
+    done
+    printf 'Write files? [Y/n]: '
+    IFS= read -r answer || answer=
+    case ${answer:-y} in
+        y|Y|yes|YES) ;;
+        *) echo "cancelled"; exit 0 ;;
+    esac
+}
+
+render_skill() {
+    cat <<EOF
 ---
 name: spot
 description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs storage or identity.
@@ -180,13 +377,123 @@ API. It is an allowlist, not a secret — permitted visitors can read it.
 The first deploy of a site claims it. Later deploys, including changes
 to \`_access.json\`, require the same owner identity or a platform admin.
 EOF
-    echo "wrote .claude/skills/spot/SKILL.md"
+}
+
+write_skill() {
+    target=$1
+
+    if [ "$init_dry_run" = 1 ]; then
+        echo "would write $target"
+        return 0
+    fi
+
+    if [ -e "$target" ] && [ "$init_force" != 1 ]; then
+        echo "skipped $target (exists; use --force)"
+        return 0
+    fi
+
+    mkdir -p "${target%/*}"
+    render_skill > "$target"
+    echo "wrote $target"
+}
+
+init() {
+    init_scope=
+    selected_agents=
+    explicit_agents=0
+    all_agents=0
+    init_yes=0
+    init_force=0
+    init_dry_run=0
+
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --agent)
+                [ $# -gt 1 ] || { echo "error: --agent needs a value" >&2; exit 1; }
+                explicit_agents=1
+                add_agent_list "$2"
+                shift 2
+                ;;
+            --agent=*)
+                explicit_agents=1
+                add_agent_list "${1#--agent=}"
+                shift
+                ;;
+            --all-agents)
+                all_agents=1
+                shift
+                ;;
+            --scope)
+                [ $# -gt 1 ] || { echo "error: --scope needs a value" >&2; exit 1; }
+                validate_scope "$2"
+                init_scope=$2
+                shift 2
+                ;;
+            --scope=*)
+                init_scope=${1#--scope=}
+                validate_scope "$init_scope"
+                shift
+                ;;
+            --yes|-y)
+                init_yes=1
+                shift
+                ;;
+            --force)
+                init_force=1
+                shift
+                ;;
+            --dry-run)
+                init_dry_run=1
+                shift
+                ;;
+            --help|-h)
+                usage
+                ;;
+            *)
+                echo "error: unknown init option '$1'" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    if [ "$all_agents" = 1 ] && [ "$explicit_agents" = 1 ]; then
+        echo "error: use either --agent or --all-agents, not both" >&2
+        exit 1
+    fi
+
+    if [ -z "$init_scope" ]; then
+        if [ "$init_yes" = 1 ] || ! [ -t 0 ]; then
+            if is_project_dir; then init_scope=project; else init_scope=user; fi
+        else
+            prompt_scope
+        fi
+    fi
+
+    if [ "$all_agents" = 1 ]; then
+        selected_agents="claude codex pi"
+    elif [ "$explicit_agents" != 1 ]; then
+        if [ "$init_yes" = 1 ] || ! [ -t 0 ]; then
+            default_agents
+        else
+            prompt_agents
+        fi
+    fi
+
+    [ -n "$selected_agents" ] || { echo "error: no agents selected" >&2; exit 1; }
+
+    if [ "$init_yes" != 1 ] && [ "$init_dry_run" != 1 ] && [ -t 0 ]; then
+        confirm_write
+    fi
+
+    for agent in $selected_agents; do
+        write_skill "$(skill_path "$agent" "$init_scope")"
+    done
 }
 
 cmd=${1:-help}
 [ $# -gt 0 ] && shift
 case $cmd in
     deploy) deploy "$@" ;;
-    init)   init ;;
+    init)   init "$@" ;;
     *)      usage ;;
 esac
