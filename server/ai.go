@@ -80,6 +80,10 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 			"AI proxy not configured: set ANTHROPIC_API_KEY")
 		return
 	}
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
 	var req aiChatRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := dec.Decode(&req); err != nil {

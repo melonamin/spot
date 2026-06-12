@@ -75,10 +75,13 @@ func (f *FileStore) Get(ctx context.Context, site, id, name string) (io.ReadClos
 	}
 	stat, err := obj.Stat()
 	if err != nil {
-		obj.Close()
+		closeErr := obj.Close()
 		var resp minio.ErrorResponse
 		if errors.As(err, &resp) && resp.Code == "NoSuchKey" {
 			return nil, "", ErrNotFound
+		}
+		if closeErr != nil {
+			return nil, "", fmt.Errorf("stat file %s: %w", key, errors.Join(err, closeErr))
 		}
 		return nil, "", fmt.Errorf("stat file %s: %w", key, err)
 	}

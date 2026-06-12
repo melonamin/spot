@@ -27,13 +27,25 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("site store: %v", err)
 	}
-	srv := &Server{sites: sites, spotDomain: "spot.localhost"}
+	db, err := openDB(context.Background(), testDSN())
+	if err != nil {
+		t.Fatalf("connect deploy registry database (is `just up` running?): %v", err)
+	}
+	defer db.Close()
+	srv := &Server{
+		sites:      sites,
+		deployAuth: NewSiteRegistry(db, nil),
+		resolver:   NewStaticResolver("it-deployer@example.com", "Integration Deployer", nil),
+		spotDomain: "spot.localhost",
+	}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
 	const site = "it-deploy"
 	ctx := context.Background()
 	cleanup := func() {
+		db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = $1`, site)
+		db.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site)
 		paths, err := sites.List(ctx, site)
 		if err != nil {
 			t.Logf("cleanup list: %v", err)
@@ -115,6 +127,15 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	if stat.ContentType != "text/html; charset=utf-8" {
 		t.Errorf("index.html content type = %q, want text/html", stat.ContentType)
 	}
+
+	srv.resolver = NewStaticResolver("intruder@example.com", "Intruder", nil)
+	code, _ = deploy(map[string]string{
+		"index.html": "<h1>owned?</h1>",
+	})
+	if code != http.StatusForbidden {
+		t.Fatalf("redeploy by non-owner: status %d, want 403", code)
+	}
+	srv.resolver = NewStaticResolver("it-deployer@example.com", "Integration Deployer", nil)
 
 	// Redeploy without old.txt: sync semantics must remove it.
 	code, body = deploy(map[string]string{

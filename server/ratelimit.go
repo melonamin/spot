@@ -1,7 +1,6 @@
 package main
 
 import (
-	"net/http"
 	"sync"
 	"time"
 
@@ -52,18 +51,5 @@ func (l *RateLimiter) prune() {
 		if v.lastSeen.Before(cutoff) {
 			delete(l.visitors, key)
 		}
-	}
-}
-
-// limited wraps a handler with a rate limiter keyed by the caller's
-// peer IP.
-func limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !l.Allow(clientIP(r)) {
-			w.Header().Set("Retry-After", "1")
-			httpError(w, http.StatusTooManyRequests, "rate limit exceeded, slow down")
-			return
-		}
-		next(w, r)
 	}
 }

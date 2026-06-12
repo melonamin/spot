@@ -151,8 +151,8 @@ const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]
 
 \`\`\`js
 const stored = await spot.files.upload(fileInput.files[0]);
-// stored = { id, name, size, content_type, url } — url serves the file
-// from any site, content is immutable per upload (25 MB max).
+// stored = { id, name, size, content_type, url } — content is immutable
+// per upload (25 MB max). If this site is restricted, downloads are too.
 \`\`\`
 
 ### Rate limits
@@ -175,6 +175,9 @@ Sites are open to everyone by default. To restrict a site, deploy an
 Entries with an @ match the visitor's email; all others match a NetBird
 group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
+
+The first deploy of a site claims it. Later deploys, including changes
+to \`_access.json\`, require the same owner identity or a platform admin.
 EOF
     echo "wrote .claude/skills/spot/SKILL.md"
 }

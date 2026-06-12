@@ -105,7 +105,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"site store not configured: set SPOT_S3_ENDPOINT and credentials")
 		return
 	}
-	if siteFromHost(requestHost(r), s.spotDomain) != "" {
+	if siteFromHost(s.requestHost(r), s.spotDomain) != "" {
 		httpError(w, http.StatusBadRequest,
 			"the deploy API is served on the platform root, not on site subdomains")
 		return
@@ -161,10 +161,38 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	if s.deployAuth == nil {
+		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
+		return
+	}
+	actor, ok := s.requireDeployIdentity(w, r)
+	if !ok {
+		return
+	}
+	authz, err := s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
+	if errors.Is(err, ErrDeployForbidden) {
+		s.recordDeployAudit(r, DeployAuditEvent{
+			Site:       site,
+			Actor:      actor,
+			Action:     "deploy",
+			Status:     "denied",
+			Message:    "actor is not the site owner or a platform admin",
+			FileCount:  len(files),
+			TotalBytes: totalDeployBytes(files),
+		})
+		httpError(w, http.StatusForbidden, "only the site owner or a platform admin can deploy this site")
+		return
+	}
+	if err != nil {
+		log.Printf("deploy %s: authorize: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not authorize deploy")
+		return
+	}
 
 	existing, err := s.sites.List(r.Context(), site)
 	if err != nil {
 		log.Printf("deploy %s: %v", site, err)
+		s.recordDeployFailure(r, site, actor, authz.Action, files, "could not read current files")
 		httpError(w, http.StatusInternalServerError, "could not read the site's current files")
 		return
 	}
@@ -172,6 +200,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	for _, f := range files {
 		if err := s.sites.Put(r.Context(), site, f.path, contentTypeFor(f.path, f.data), f.data); err != nil {
 			log.Printf("deploy %s: %v", site, err)
+			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not store "+f.path)
 			httpError(w, http.StatusInternalServerError, "could not store "+f.path)
 			return
 		}
@@ -183,16 +212,45 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
 			log.Printf("deploy %s: %v", site, err)
+			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not remove stale file "+old)
 			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
 			return
 		}
 	}
 
+	s.recordDeployAudit(r, DeployAuditEvent{
+		Site:       site,
+		Actor:      actor,
+		Action:     authz.Action,
+		Status:     "success",
+		FileCount:  len(files),
+		TotalBytes: totalDeployBytes(files),
+	})
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,
 		"url":   "https://" + site + "." + s.spotDomain + "/",
 		"files": len(files),
 	})
+}
+
+func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
+	s.recordDeployAudit(r, DeployAuditEvent{
+		Site:       site,
+		Actor:      actor,
+		Action:     action,
+		Status:     "failed",
+		Message:    message,
+		FileCount:  len(files),
+		TotalBytes: totalDeployBytes(files),
+	})
+}
+
+func totalDeployBytes(files []deployFile) int64 {
+	var total int64
+	for _, f := range files {
+		total += int64(len(f.data))
+	}
+	return total
 }
 
 func deployReadError(w http.ResponseWriter, err error) {

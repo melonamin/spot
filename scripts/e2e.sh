@@ -14,6 +14,10 @@ fail() {
 
 echo "==> starting stack"
 mkdir -p data/sites
+export SPOT_DEV_IDENTITY_EMAIL=${SPOT_DEV_IDENTITY_EMAIL:-e2e@localhost}
+export SPOT_DEV_IDENTITY_NAME=${SPOT_DEV_IDENTITY_NAME:-Spot E2E}
+export NETBIRD_API_URL=
+export NETBIRD_API_TOKEN=
 docker compose up -d --build
 
 echo "==> waiting for Caddy and the API"
@@ -188,15 +192,20 @@ rm -f /tmp/spot-e2e-rl.txt
 [ "${limited:-0}" -ge 1 ] || fail "no 429 across 15 parallel uploads"
 echo "    $limited of 15 burst requests were throttled"
 
-echo "==> identity API without a matching NetBird peer fails loudly"
+echo "==> identity API"
 me_file=$(mktemp)
 code=$($CURL -o "$me_file" -w '%{http_code}' https://demo.spot.localhost:8443/api/me)
 me=$(cat "$me_file")
 rm -f "$me_file"
-case "$code:$me" in
-    503:*"identity resolver not configured"*|404:*"no NetBird peer matches"*) ;;
-    *) fail "/api/me returned $code $me, want 503 missing resolver or 404 unmatched peer" ;;
-esac
+if [ "$code" = "200" ]; then
+    echo "$me" | grep -q "\"email\":\"$SPOT_DEV_IDENTITY_EMAIL\"" \
+        || fail "/api/me returned unexpected dev identity: $me"
+else
+    case "$code:$me" in
+        503:*"identity resolver not configured"*|404:*"no identity matches"*) ;;
+        *) fail "/api/me returned $code $me, want dev identity or fail-loud resolver error" ;;
+    esac
+fi
 
 echo ""
 echo "E2E PASS"

@@ -100,9 +100,10 @@ func authzServer(t *testing.T, dir string) *Server {
 	api := newNetbirdAPI(t, &requests)
 	t.Cleanup(api.Close)
 	return &Server{
-		policies:   NewPolicyStore(dir, 0),
-		resolver:   NewNetbirdResolver(api.URL, "test-token", time.Minute),
-		spotDomain: "spot.localhost",
+		policies:       NewPolicyStore(dir, 0),
+		resolver:       NewNetbirdResolver(api.URL, "test-token", time.Minute),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
 	}
 }
 
@@ -148,7 +149,11 @@ func TestHandleAuthz(t *testing.T) {
 func TestHandleAuthzRestrictedWithoutResolver(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
-	srv := &Server{policies: NewPolicyStore(dir, 0), spotDomain: "spot.localhost"}
+	srv := &Server{
+		policies:       NewPolicyStore(dir, 0),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/authz", nil)
 	req.Header.Set("X-Forwarded-Host", "secret.spot.localhost")
@@ -164,4 +169,57 @@ func TestHandleAuthzRestrictedWithoutResolver(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Errorf("open site without resolver = %d, want 200 (default open)", rec.Code)
 	}
+}
+
+func TestRestrictedSiteDBAPICannotBypassCaddy(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
+	srv := authzServer(t, dir)
+
+	// This models a direct request to spot-api with a chosen Host header,
+	// not a Caddy forward_auth subrequest. The backend must still apply
+	// the site's policy before touching the document store.
+	req := httptest.NewRequest(http.MethodGet, "http://secret.spot.localhost/api/db/posts", nil)
+	req.RemoteAddr = "100.64.0.9:12345"
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("direct restricted DB request = %d, want 403", rec.Code)
+	}
+}
+
+func TestRestrictedFileDownloadsCheckSitePolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
+	srv := authzServer(t, dir)
+	srv.files = mustTestFileStore(t)
+
+	denied := httptest.NewRequest(http.MethodGet,
+		"http://spot-api/api/files/secret/00000000000000000000000000000000/report.txt", nil)
+	denied.Header.Set("X-Forwarded-Host", "secret.spot.localhost")
+	denied.Header.Set("X-Forwarded-For", "100.64.0.9")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, denied)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("restricted file download by denied peer = %d, want 403", rec.Code)
+	}
+
+	allowed := httptest.NewRequest(http.MethodGet,
+		"http://spot-api/api/files/secret/00000000000000000000000000000000/report.txt", nil)
+	allowed.Header.Set("X-Forwarded-Host", "secret.spot.localhost")
+	allowed.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, allowed)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("allowed peer should pass policy and hit the unavailable store: got %d, want 500", rec.Code)
+	}
+}
+
+func mustTestFileStore(t *testing.T) *FileStore {
+	t.Helper()
+	files, err := NewFileStore("localhost:1", "k", "s", "spot-uploads")
+	if err != nil {
+		t.Fatalf("file store: %v", err)
+	}
+	return files
 }

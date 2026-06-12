@@ -27,6 +27,7 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
+      SPOT_TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
 
   # On the mesh, everything is served through Caddy: keep the S3 and
   # Postgres ports off the network. Containers reach them over the

@@ -7,8 +7,8 @@ services:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
     ports:
-      - "9000:9000"
-      - "9001:9001"
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
     volumes:
       - rustfs-data:/data
 
@@ -73,7 +73,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spot}
       POSTGRES_DB: spot
     ports:
-      - "5433:5432"
+      - "127.0.0.1:5433:5432"
     volumes:
       - pg-data:/var/lib/postgresql/data
     healthcheck:
@@ -98,6 +98,12 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       SPOT_AI_MODEL: ${SPOT_AI_MODEL:-}
+      SPOT_TRUSTED_PROXIES: ${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      SPOT_ADMIN_EMAILS: ${SPOT_ADMIN_EMAILS:-}
+      SPOT_ADMIN_GROUPS: ${SPOT_ADMIN_GROUPS:-}
+      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-}
+      SPOT_DEV_IDENTITY_NAME: ${SPOT_DEV_IDENTITY_NAME:-Spot Dev}
+      SPOT_DEV_IDENTITY_GROUPS: ${SPOT_DEV_IDENTITY_GROUPS:-}
     volumes:
       # Same FUSE-propagated view as Caddy; _access.json policies are
       # read from here.

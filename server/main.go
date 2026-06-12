@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -22,20 +23,25 @@ import (
 var schemaSQL string
 
 type config struct {
-	Port             string
-	DatabaseURL      string
-	SpotDomain       string
-	SitesDir         string
-	NetbirdAPIURL    string
-	NetbirdAPIToken  string
-	S3Endpoint       string
-	S3AccessKey      string
-	S3SecretKey      string
-	UploadsBucket    string
-	SitesBucket      string
-	AnthropicAPIKey  string
-	AnthropicBaseURL string
-	AIModel          string
+	Port              string
+	DatabaseURL       string
+	SpotDomain        string
+	SitesDir          string
+	NetbirdAPIURL     string
+	NetbirdAPIToken   string
+	S3Endpoint        string
+	S3AccessKey       string
+	S3SecretKey       string
+	UploadsBucket     string
+	SitesBucket       string
+	AnthropicAPIKey   string
+	AnthropicBaseURL  string
+	AIModel           string
+	TrustedProxies    string
+	AdminAllow        []string
+	DevIdentityEmail  string
+	DevIdentityName   string
+	DevIdentityGroups []string
 }
 
 func loadConfig() (config, error) {
@@ -54,6 +60,14 @@ func loadConfig() (config, error) {
 		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		AnthropicBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
 		AIModel:          os.Getenv("SPOT_AI_MODEL"),
+		TrustedProxies:   envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
+		AdminAllow: append(
+			splitList(os.Getenv("SPOT_ADMIN_EMAILS")),
+			splitList(os.Getenv("SPOT_ADMIN_GROUPS"))...,
+		),
+		DevIdentityEmail:  os.Getenv("SPOT_DEV_IDENTITY_EMAIL"),
+		DevIdentityName:   envOr("SPOT_DEV_IDENTITY_NAME", "Spot Dev"),
+		DevIdentityGroups: splitList(os.Getenv("SPOT_DEV_IDENTITY_GROUPS")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -69,6 +83,17 @@ func envOr(key, fallback string) string {
 		return v
 	}
 	return fallback
+}
+
+func splitList(raw string) []string {
+	var out []string
+	for _, part := range strings.Split(raw, ",") {
+		part = strings.TrimSpace(part)
+		if part != "" {
+			out = append(out, part)
+		}
+	}
+	return out
 }
 
 func openDB(ctx context.Context, url string) (*sql.DB, error) {
@@ -108,10 +133,13 @@ func main() {
 	}
 	defer db.Close()
 
-	var resolver *NetbirdResolver
+	var resolver IdentityResolver
 	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
 		resolver = NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second)
 		log.Printf("identity: resolving via NetBird API at %s", cfg.NetbirdAPIURL)
+	} else if cfg.DevIdentityEmail != "" {
+		resolver = NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups)
+		log.Printf("identity: using explicit dev identity %s", cfg.DevIdentityEmail)
 	} else {
 		log.Printf("identity: NETBIRD_API_URL/NETBIRD_API_TOKEN not set, /api/me will return 503")
 	}
@@ -150,15 +178,26 @@ func main() {
 		log.Printf("ai: ANTHROPIC_API_KEY not set, /api/ai/chat will return 503")
 	}
 
+	trustedProxies, err := NewTrustedProxies(cfg.TrustedProxies)
+	if err != nil {
+		log.Fatalf("trusted proxies: %v", err)
+	}
+	var adminPolicy *AccessPolicy
+	if len(cfg.AdminAllow) > 0 {
+		adminPolicy = &AccessPolicy{Allow: cfg.AdminAllow}
+	}
+
 	srv := &Server{
-		store:      store,
-		resolver:   resolver,
-		policies:   NewPolicyStore(cfg.SitesDir, 5*time.Second),
-		hub:        hub,
-		files:      files,
-		sites:      sites,
-		ai:         ai,
-		spotDomain: cfg.SpotDomain,
+		store:          store,
+		resolver:       resolver,
+		policies:       NewPolicyStore(cfg.SitesDir, 5*time.Second),
+		hub:            hub,
+		files:          files,
+		sites:          sites,
+		deployAuth:     NewSiteRegistry(db, adminPolicy),
+		ai:             ai,
+		spotDomain:     cfg.SpotDomain,
+		trustedProxies: trustedProxies,
 	}
 
 	httpSrv := &http.Server{

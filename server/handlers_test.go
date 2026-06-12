@@ -12,7 +12,7 @@ import (
 )
 
 func TestSameOriginOnly(t *testing.T) {
-	srv := &Server{spotDomain: "spot.localhost"}
+	srv := &Server{spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t)}
 
 	call := func(origin string) int {
 		req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/me", nil)
@@ -36,6 +36,20 @@ func TestSameOriginOnly(t *testing.T) {
 	}
 	if got := call("not a url"); got != http.StatusForbidden {
 		t.Fatalf("bad Origin API request = %d, want 403", got)
+	}
+}
+
+func TestRejectsForwardedHeadersFromUntrustedRemote(t *testing.T) {
+	srv := &Server{spotDomain: "spot.localhost"}
+	req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/me", nil)
+	req.RemoteAddr = "198.51.100.9:12345"
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	req.Header.Set("X-Forwarded-Host", "demo.spot.localhost")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("untrusted forwarded headers = %d, want 400", rec.Code)
 	}
 }
 

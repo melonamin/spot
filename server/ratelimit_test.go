@@ -25,12 +25,14 @@ func TestRateLimiterBurstAndIsolation(t *testing.T) {
 
 func TestLimitedHandler(t *testing.T) {
 	limiter := NewRateLimiter(1, 1)
-	handler := limited(limiter, func(w http.ResponseWriter, _ *http.Request) {
+	srv := &Server{trustedProxies: testTrustedProxies(t)}
+	handler := srv.limited(limiter, func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	})
 
 	call := func() *httptest.ResponseRecorder {
 		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.1:12345"
 		req.Header.Set("X-Forwarded-For", "100.64.0.7")
 		rec := httptest.NewRecorder()
 		handler(rec, req)

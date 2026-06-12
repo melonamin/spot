@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -81,10 +82,18 @@ func (s *PolicyStore) For(site string) (*AccessPolicy, error) {
 }
 
 func (s *PolicyStore) load(site string) (*AccessPolicy, error) {
-	raw, err := os.ReadFile(filepath.Join(s.dir, site, accessFileName))
+	if !siteNameRe.MatchString(site) {
+		return nil, fmt.Errorf("invalid site name %q", site)
+	}
+	file, err := os.OpenInRoot(s.dir, filepath.Join(site, accessFileName))
 	if errors.Is(err, os.ErrNotExist) {
 		return nil, nil
 	}
+	if err != nil {
+		return nil, fmt.Errorf("read access policy for site %s: %w", site, err)
+	}
+	defer file.Close()
+	raw, err := io.ReadAll(file)
 	if err != nil {
 		return nil, fmt.Errorf("read access policy for site %s: %w", site, err)
 	}

@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"sort"
 	"strings"
@@ -21,6 +20,10 @@ type Identity struct {
 	PeerName string   `json:"peer_name"`
 	PeerIP   string   `json:"peer_ip"`
 	Groups   []string `json:"groups"`
+}
+
+type IdentityResolver interface {
+	Resolve(ctx context.Context, ip string) (Identity, bool, error)
 }
 
 // NetbirdResolver maps WireGuard peer IPs to users via the NetBird
@@ -152,19 +155,38 @@ func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
 	return nil
 }
 
+// StaticResolver is an explicit local-development identity provider. It
+// is only enabled when configured; production should use NetbirdResolver.
+type StaticResolver struct {
+	identity Identity
+}
+
+func NewStaticResolver(email, name string, groups []string) *StaticResolver {
+	return &StaticResolver{identity: Identity{
+		Email:    email,
+		Name:     name,
+		PeerName: "static-dev",
+		Groups:   groups,
+	}}
+}
+
+func (r *StaticResolver) Resolve(_ context.Context, ip string) (Identity, bool, error) {
+	id := r.identity
+	id.PeerIP = ip
+	return id, true, nil
+}
+
 // clientIP returns the address the request originated from. Identity
-// hangs off this value, so it must not be spoofable: Caddy overwrites
-// X-Forwarded-For with the connection's address, and as defense in depth
-// this reads the LAST entry — the one the proxy in front of us set —
-// never a client-supplied prefix. Falls back to the socket address.
-func clientIP(r *http.Request) string {
-	if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
-		entries := strings.Split(vals[len(vals)-1], ",")
-		return strings.TrimSpace(entries[len(entries)-1])
+// hangs off this value, so it must not be spoofable: forwarded headers
+// are only read when the socket peer is a trusted proxy. When present,
+// the LAST X-Forwarded-For entry wins because Caddy overwrites it with
+// the connection's address.
+func (s *Server) clientIP(r *http.Request) string {
+	if s.trustsRemote(r) {
+		if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
+			entries := strings.Split(vals[len(vals)-1], ",")
+			return strings.TrimSpace(entries[len(entries)-1])
+		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
-	}
-	return host
+	return remoteHost(r.RemoteAddr)
 }

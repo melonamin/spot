@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -10,6 +11,30 @@ import (
 	"strings"
 	"testing"
 )
+
+type recordingDeployAuth struct {
+	err    error
+	action string
+	auths  []string
+	events []DeployAuditEvent
+}
+
+func (a *recordingDeployAuth) AuthorizeDeploy(_ context.Context, site string, actor Identity) (DeployAuthorization, error) {
+	a.auths = append(a.auths, site+":"+actor.Email+":"+actor.PeerIP)
+	if a.err != nil {
+		return DeployAuthorization{}, a.err
+	}
+	action := a.action
+	if action == "" {
+		action = "update"
+	}
+	return DeployAuthorization{Action: action}, nil
+}
+
+func (a *recordingDeployAuth) RecordDeploy(_ context.Context, event DeployAuditEvent) error {
+	a.events = append(a.events, event)
+	return nil
+}
 
 func TestSiteNameRe(t *testing.T) {
 	tests := []struct {
@@ -237,8 +262,9 @@ func deployRequest(t *testing.T, host, site string, files map[string]string) *ht
 
 func TestDeployValidation(t *testing.T) {
 	srv := &Server{
-		sites:      newTestSiteStore(t),
-		spotDomain: "spot.localhost",
+		sites:          newTestSiteStore(t),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
 		// Every request here comes from the same test client IP; the
 		// production burst of 3 would throttle the later cases.
 		deployLimit: NewRateLimiter(1000, 1000),
@@ -286,12 +312,102 @@ func TestDeployValidation(t *testing.T) {
 }
 
 func TestDeployWithoutStore(t *testing.T) {
-	srv := &Server{spotDomain: "spot.localhost"}
+	srv := &Server{spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t)}
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo",
 		map[string]string{"index.html": "<h1>hi</h1>"}))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("deploy without store = %d, want 503", rec.Code)
+	}
+}
+
+func TestDeployRequiresIdentity(t *testing.T) {
+	auth := &recordingDeployAuth{}
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		deployAuth:     auth,
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+	req := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("deploy without identity resolver = %d, want 503", rec.Code)
+	}
+	if len(auth.auths) != 0 || len(auth.events) != 0 {
+		t.Fatalf("deploy auth touched without identity: auths=%v events=%v", auth.auths, auth.events)
+	}
+}
+
+func TestDeployForbiddenIsAuditedBeforeStorage(t *testing.T) {
+	auth := &recordingDeployAuth{err: ErrDeployForbidden}
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+	req := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("forbidden deploy = %d, want 403", rec.Code)
+	}
+	if len(auth.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(auth.events))
+	}
+	event := auth.events[0]
+	if event.Status != "denied" || event.Site != "demo" || event.Actor.Email != "alice@example.com" {
+		t.Fatalf("audit event = %+v", event)
+	}
+	if event.FileCount != 1 || event.TotalBytes == 0 {
+		t.Fatalf("audit deploy size = %+v", event)
+	}
+}
+
+func TestDeployStorageFailureIsAudited(t *testing.T) {
+	auth := &recordingDeployAuth{action: "update"}
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+	req := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("deploy with unreachable store = %d, want 500", rec.Code)
+	}
+	if len(auth.events) != 1 {
+		t.Fatalf("audit events = %d, want 1", len(auth.events))
+	}
+	if event := auth.events[0]; event.Status != "failed" || event.Action != "update" {
+		t.Fatalf("audit event = %+v", event)
+	}
+}
+
+func TestSiteRecordOwnershipPrefersEmail(t *testing.T) {
+	record := SiteRecord{OwnerEmail: "owner@example.com", OwnerPeerIP: "100.64.0.7"}
+	if record.OwnedBy(Identity{Email: "intruder@example.com", PeerIP: "100.64.0.7"}) {
+		t.Fatal("same peer IP must not satisfy ownership when the site has an owner email")
+	}
+	if !record.OwnedBy(Identity{Email: "Owner@Example.com", PeerIP: "100.64.0.99"}) {
+		t.Fatal("owner email should match case-insensitively")
+	}
+
+	peerOnly := SiteRecord{OwnerPeerIP: "100.64.0.7"}
+	if !peerOnly.OwnedBy(Identity{PeerIP: "100.64.0.7"}) {
+		t.Fatal("peer IP should own sites claimed without an email")
 	}
 }
 

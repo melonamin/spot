@@ -31,6 +31,10 @@ just up        # full stack on https://*.spot.localhost:8443
 just e2e       # end-to-end: deploy demo site, exercise serving + DB API
 ```
 
+Deploys require a resolved identity. In production that identity comes
+from NetBird; for local-only development without NetBird, set
+`SPOT_DEV_IDENTITY_EMAIL=you@localhost` before `just up`.
+
 Deploy any folder with an `index.html`:
 
 ```sh
@@ -95,7 +99,7 @@ const unsubscribe = posts.subscribe({
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/spot.js`.
 
-## Access control
+## Access Control
 
 Sites are **open to everyone on the mesh by default**. A site restricts
 itself by shipping an `_access.json` at its root:
@@ -107,17 +111,19 @@ itself by shipping an `_access.json` at its root:
 Entries containing `@` match the visitor's email; everything else
 matches a NetBird group name (device groups and the owner's
 auto-groups). Caddy consults `spot-api` (`forward_auth` → `/api/authz`)
-on every request, so the policy covers static files and the site's
-database API alike. Restricted sites **fail closed**: an unparseable
+on every request, and the backend applies the same check before serving
+site APIs or uploads. Restricted sites **fail closed**: an unparseable
 policy or an unreachable identity resolver denies access rather than
 allowing it.
 
-Two consequences to be aware of:
+Deploys have a separate integrity rule: the first deploy of a site
+claims it for that identity. Later deploys, including changes to
+`_access.json`, are allowed only for the site owner or platform admins
+configured with `SPOT_ADMIN_EMAILS` / `SPOT_ADMIN_GROUPS`. Every deploy
+attempt is recorded in `site_deploy_audit`.
 
-- The policy protects *visibility*, not *integrity*: Spot has no site
-  ownership, so anyone on the mesh can redeploy a site, including its
-  `_access.json`. If a site ever needs real ownership, that requires
-  per-site deploy credentials — deliberately not built.
+One consequence to be aware of:
+
 - `_access.json` is an allowlist, not a secret; permitted visitors can
   fetch it like any other file of the site.
 
@@ -139,18 +145,21 @@ Two consequences to be aware of:
   label count (see the comment in the Caddyfile).
 - **NetBird**: create an access policy `employees -> spot-vm:443`, and a
   service-account PAT for `NETBIRD_API_URL`/`NETBIRD_API_TOKEN` so the
-  API can resolve peer IPs to users.
+  API can resolve peer IPs to users. Do not set `SPOT_DEV_IDENTITY_EMAIL`
+  outside local development.
+- **Trusted proxies**: `spot-api` only trusts `X-Forwarded-*` headers
+  from `SPOT_TRUSTED_PROXIES`. The compose stack trusts loopback plus
+  private Docker bridge CIDRs; the NetBird overlay narrows this to loopback
+  because host-networked Caddy reaches the API on `127.0.0.1`.
 - **RustFS** is alpha (v1.0.0-alpha, single-node). Sites are regenerable,
   so the blast radius is low; Garage or SeaweedFS are drop-in S3
   alternatives if that bothers you.
-- Like the original, there are no site owners and no permissions: anyone
-  on the mesh can overwrite any site. That is the point.
-
 ## Files and AI
 
 Uploads go through the server (browsers never see storage credentials)
-into the `spot-uploads` bucket; download URLs are immutable and work
-from any site:
+into the `spot-uploads` bucket; download URLs are immutable and may be
+embedded from any site. If the upload belongs to a restricted site, the
+download is restricted by that site's `_access.json` too:
 
 ```js
 const stored = await spot.files.upload(file);  // { id, name, size, content_type, url }

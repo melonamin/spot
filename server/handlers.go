@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -19,15 +20,17 @@ import (
 var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
 
 type Server struct {
-	store      *DocStore
-	resolver   *NetbirdResolver
-	policies   *PolicyStore
-	hub        *Hub
-	files      *FileStore
-	sites      *SiteStore
-	ai         *AIProxy
-	maxUpload  int64
-	spotDomain string
+	store          *DocStore
+	resolver       IdentityResolver
+	policies       *PolicyStore
+	hub            *Hub
+	files          *FileStore
+	sites          *SiteStore
+	deployAuth     DeployAuthorizer
+	ai             *AIProxy
+	maxUpload      int64
+	spotDomain     string
+	trustedProxies *TrustedProxies
 
 	dbLimit     *RateLimiter
 	fileLimit   *RateLimiter
@@ -36,18 +39,45 @@ type Server struct {
 }
 
 // requestHost is the host the browser addressed. Caddy overwrites
-// X-Forwarded-Host on every proxied request (clients could otherwise
-// set it themselves), so when present it is trustworthy — and it is the
-// only host available on forward_auth subrequests, where r.Host is the
-// backend's own address.
-func requestHost(r *http.Request) string {
-	if host := r.Header.Get("X-Forwarded-Host"); host != "" {
-		return host
+// X-Forwarded-Host on every proxied request; it is only trustworthy when
+// the socket peer is one of the configured front proxies.
+func (s *Server) requestHost(r *http.Request) string {
+	if s.trustsRemote(r) {
+		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
+			return host
+		}
 	}
 	return r.Host
 }
 
-func (s *Server) routes() *http.ServeMux {
+func (s *Server) trustsRemote(r *http.Request) bool {
+	trusted := s.trustedProxies
+	if trusted == nil {
+		trusted = defaultTrustedProxies
+	}
+	return trusted.ContainsRemote(r.RemoteAddr)
+}
+
+func (s *Server) rejectUntrustedForwardedHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.trustsRemote(r) && hasForwardedHeaders(r) {
+			httpError(w, http.StatusBadRequest, "forwarded headers are only accepted from trusted proxies")
+			return
+		}
+		next.ServeHTTP(w, r)
+	})
+}
+
+func hasForwardedHeaders(r *http.Request) bool {
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host"} {
+		if r.Header.Get(header) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Server) routes() http.Handler {
 	// Lazy defaults keep tests terse; production wiring overrides these
 	// in main. /api/authz is deliberately unlimited — Caddy consults it
 	// for every static file request.
@@ -68,28 +98,28 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("GET /api/me", sameOriginOnly(s.handleMe))
+	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.handleWS)
-	mux.HandleFunc("GET /api/db/{collection}", sameOriginOnly(limited(s.dbLimit, s.handleList)))
-	mux.HandleFunc("POST /api/db/{collection}", sameOriginOnly(limited(s.dbLimit, s.handleCreate)))
-	mux.HandleFunc("GET /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleGet)))
-	mux.HandleFunc("PUT /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleUpdate)))
-	mux.HandleFunc("DELETE /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleDelete)))
-	mux.HandleFunc("POST /api/deploy", sameOriginOnly(limited(s.deployLimit, s.handleDeploy)))
-	mux.HandleFunc("POST /api/files", sameOriginOnly(limited(s.fileLimit, s.handleUpload)))
+	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
+	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
+	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
+	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
+	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
+	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
+	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
-	mux.HandleFunc("POST /api/ai/chat", sameOriginOnly(limited(s.aiLimit, s.handleAIChat)))
-	return mux
+	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
+	return s.rejectUntrustedForwardedHeaders(mux)
 }
 
 // sameOriginOnly rejects browser-originated cross-site API calls. Spot
 // identity is ambient mesh identity, not a per-site CSRF token, so a
 // site must not be able to spend a visitor's authorization on another
 // site by targeting that site's /api paths.
-func sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
+func (s *Server) sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !originMatchesHost(r) {
+		if !s.originMatchesHost(r) {
 			httpError(w, http.StatusForbidden, "cross-site API requests are not allowed")
 			return
 		}
@@ -97,7 +127,7 @@ func sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
 	}
 }
 
-func originMatchesHost(r *http.Request) bool {
+func (s *Server) originMatchesHost(r *http.Request) bool {
 	origin := r.Header.Get("Origin")
 	if origin == "" {
 		return true
@@ -106,7 +136,99 @@ func originMatchesHost(r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
-	return sameHost(u.Host, requestHost(r))
+	return sameHost(u.Host, s.requestHost(r))
+}
+
+func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !l.Allow(s.clientIP(r)) {
+			w.Header().Set("Retry-After", "1")
+			httpError(w, http.StatusTooManyRequests, "rate limit exceeded, slow down")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
+	if s.resolver == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN or explicit dev identity")
+		return Identity{}, false
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil {
+		log.Printf("%s: resolve %s: %v", purpose, ip, err)
+		httpError(w, http.StatusBadGateway, "could not reach the identity resolver")
+		return Identity{}, false
+	}
+	if !found {
+		httpError(w, http.StatusNotFound, "no identity matches "+ip)
+		return Identity{}, false
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	return id, true
+}
+
+func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
+	if site == "" || s.policies == nil {
+		return true
+	}
+	policy, err := s.policies.For(site)
+	if err != nil {
+		log.Printf("authz: %v", err)
+		httpError(w, http.StatusServiceUnavailable,
+			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
+		return false
+	}
+	if policy == nil {
+		return true
+	}
+	if s.resolver == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"site is restricted but the identity resolver is not configured")
+		return false
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil {
+		log.Printf("authz: resolve %s: %v", ip, err)
+		httpError(w, http.StatusServiceUnavailable, "could not verify identity with NetBird")
+		return false
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	if !found || !policy.Allows(id) {
+		httpError(w, http.StatusForbidden,
+			"this site is restricted by its "+accessFileName)
+		return false
+	}
+	return true
+}
+
+func (s *Server) requireDeployIdentity(w http.ResponseWriter, r *http.Request) (Identity, bool) {
+	id, ok := s.resolveIdentity(w, r, "deploy")
+	if !ok {
+		return Identity{}, false
+	}
+	if actorKey(id) == "" {
+		httpError(w, http.StatusForbidden, "deploy requires an identified NetBird user or peer")
+		return Identity{}, false
+	}
+	return id, true
+}
+
+func (s *Server) recordDeployAudit(r *http.Request, event DeployAuditEvent) {
+	if s.deployAuth == nil {
+		return
+	}
+	if err := s.deployAuth.RecordDeploy(r.Context(), event); err != nil {
+		log.Printf("deploy audit %s: %v", event.Site, err)
+	}
 }
 
 func sameHost(a, b string) bool {
@@ -125,9 +247,12 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
 		return
 	}
-	site := siteFromHost(requestHost(r), s.spotDomain)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
+		return
+	}
+	if !s.authorizeSiteAccess(w, r, site) {
 		return
 	}
 	maxUpload := s.maxUpload
@@ -177,6 +302,13 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	site, id, name := r.PathValue("site"), r.PathValue("id"), r.PathValue("name")
+	if !siteNameRe.MatchString(site) {
+		httpError(w, http.StatusBadRequest, "invalid file site")
+		return
+	}
+	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
 	obj, contentType, err := s.files.Get(r.Context(), site, id, name)
 	if errors.Is(err, ErrNotFound) {
 		httpError(w, http.StatusNotFound, "file not found")
@@ -200,7 +332,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	if inlineSafe(contentType) {
 		disposition = "inline"
 	}
-	w.Header().Set("Content-Disposition", disposition+`; filename="`+name+`"`)
+	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
 	// IDs are random per upload, so content at a URL never changes.
 	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
 	if _, err := io.Copy(w, obj); err != nil {
@@ -209,20 +341,8 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
-	if s.resolver == nil {
-		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set NETBIRD_API_URL and NETBIRD_API_TOKEN")
-		return
-	}
-	ip := clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
-	if err != nil {
-		log.Printf("identity: resolve %s: %v", ip, err)
-		httpError(w, http.StatusBadGateway, "could not reach the NetBird API")
-		return
-	}
-	if !found {
-		httpError(w, http.StatusNotFound, "no NetBird peer matches "+ip)
+	id, ok := s.resolveIdentity(w, r, "identity")
+	if !ok {
 		return
 	}
 	writeJSON(w, http.StatusOK, id)
@@ -233,40 +353,14 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // mesh; sites with one fail CLOSED whenever the policy or the visitor's
 // identity cannot be established.
 func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
-	site := siteFromHost(requestHost(r), s.spotDomain)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	policy, err := s.policies.For(site)
-	if err != nil {
-		log.Printf("authz: %v", err)
-		httpError(w, http.StatusServiceUnavailable,
-			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
-		return
-	}
-	if policy == nil {
+	if s.authorizeSiteAccess(w, r, site) {
 		w.WriteHeader(http.StatusOK)
-		return
 	}
-	if s.resolver == nil {
-		httpError(w, http.StatusServiceUnavailable,
-			"site is restricted but the identity resolver is not configured")
-		return
-	}
-	ip := clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
-	if err != nil {
-		log.Printf("authz: resolve %s: %v", ip, err)
-		httpError(w, http.StatusServiceUnavailable, "could not verify identity with NetBird")
-		return
-	}
-	if !found || !policy.Allows(id) {
-		httpError(w, http.StatusForbidden,
-			"this site is restricted by its "+accessFileName+"; redeploy with your email or group to get in")
-		return
-	}
-	w.WriteHeader(http.StatusOK)
 }
 
 type wsRequest struct {
@@ -279,13 +373,16 @@ type wsRequest struct {
 // receives Event messages; scoping follows the same rules as the
 // database API (site-private, shared-* global).
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	site := siteFromHost(requestHost(r), s.spotDomain)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "websocket API must be called from a site subdomain")
 		return
 	}
+	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
 	acceptReq := r.Clone(r.Context())
-	acceptReq.Host = requestHost(r)
+	acceptReq.Host = s.requestHost(r)
 	conn, err := websocket.Accept(w, acceptReq, nil)
 	if err != nil {
 		return // Accept has already written the error response
@@ -345,7 +442,10 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 // response itself when the request is not a valid site request.
 func (s *Server) scope(w http.ResponseWriter, r *http.Request) (string, string, bool) {
 	collection := r.PathValue("collection")
-	site := siteFromHost(requestHost(r), s.spotDomain)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if !s.authorizeSiteAccess(w, r, site) {
+		return "", "", false
+	}
 	scope, err := scopeFor(site, collection)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
