@@ -1,0 +1,35 @@
+# Mesh deployment overlay.
+#
+# Peer-IP identity needs the front proxy to see the caller's real NetBird
+# IP. Bridge port-publishing SNATs every inbound connection to the docker
+# gateway (192.168.x.1), so the resolver would only ever see the gateway,
+# never a peer. Running Caddy on the host network preserves the source IP
+# all the way to the X-Forwarded-For header.
+#
+# Usage (requires NETBIRD_API_URL + NETBIRD_API_TOKEN in .env):
+#
+#   docker compose -f docker-compose.yml -f docker-compose.netbird.yml up -d --build
+#
+# Caddy then serves on the host's :443 (not :8443). Compose prints a
+# harmless "published ports discarded in host mode" warning for the base
+# file's 8443:443 mapping.
+
+# QUICK_DOMAIN is set to a non-.localhost name here so the browser can
+# reach the site over the mesh IP. `.localhost` is hardwired to loopback
+# (RFC 6761) and can never carry a peer IP. `quick.test` is governed by
+# /etc/hosts — map it to the VM's NetBird IP. Keep it two labels (or bump
+# the {labels.N} index in the Caddyfile). Swap in your real domain when
+# you set up wildcard DNS.
+services:
+  quick-api:
+    # Expose to host loopback so the host-networked Caddy can reach it.
+    ports:
+      - "127.0.0.1:8080:8080"
+    environment:
+      QUICK_DOMAIN: "${QUICK_MESH_DOMAIN:-quick.test}"
+
+  caddy:
+    network_mode: host
+    environment:
+      QUICK_API_UPSTREAM: "127.0.0.1:8080"
+      QUICK_DOMAIN: "${QUICK_MESH_DOMAIN:-quick.test}"

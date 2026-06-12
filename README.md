@@ -108,8 +108,15 @@ Two consequences to be aware of:
 ## Production notes
 
 - **DNS**: publish `*.quick.<domain>` as an A record pointing at the VM's
-  NetBird IP (100.64.0.0/10). Off-mesh clients can resolve it but cannot
-  route to it.
+  NetBird IP. Off-mesh clients can resolve it but cannot route to it.
+- **Source IP must be the peer IP** — identity resolves the request's
+  source address against the NetBird peer list, so the front proxy has to
+  see the real mesh IP. Docker bridge port-publishing SNATs every inbound
+  connection to the docker gateway, which would make every visitor look
+  like one non-peer address and break identity. Run Caddy on the host
+  network: `docker compose -f docker-compose.yml -f docker-compose.netbird.yml up -d`
+  (see `docker-compose.netbird.yml`). Without this, `/api/me` returns
+  404 for everyone.
 - **TLS**: replace `tls internal` in `caddy/Caddyfile` with a DNS-01
   wildcard challenge (e.g. the caddy-dns/cloudflare module) for publicly
   trusted certs. Also bump the `{labels.N}` index to match your domain's
