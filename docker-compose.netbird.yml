@@ -27,7 +27,12 @@ services:
       - "127.0.0.1:8080:8080"
     environment:
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
-      SPOT_TRUSTED_PROXIES: "127.0.0.1/32,::1/128"
+      # Host-networked Caddy connects through the published loopback
+      # port, but Docker's userland proxy SNATs that to the compose
+      # network's gateway — spot-api never sees 127.0.0.1. Trust the
+      # docker bridge ranges (only platform containers live there);
+      # override with the exact gateway IP to narrow further.
+      SPOT_TRUSTED_PROXIES: "${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.16.0.0/12}"
 
   # On the mesh, everything is served through Caddy: keep the S3 and
   # Postgres ports off the network. Containers reach them over the
