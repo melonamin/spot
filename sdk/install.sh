@@ -23,8 +23,14 @@ config_dir="$config_home/spot"
 tmp=${TMPDIR:-/tmp}/spot-cli.$$
 curl_opts="-fsSL"
 
-case $spot_url in
-    https://localhost*|https://*.localhost*) curl_opts="$curl_opts -k" ;;
+# Dev serves on Caddy's internal CA; only a true localhost-suffixed
+# hostname (anchored match, like the CLI's) skips verification — a URL
+# prefix match would also hit e.g. https://localhost.evil.example.
+host=${spot_url#*://}
+host=${host%%/*}
+host=${host%%:*}
+case $host in
+    localhost|*.localhost) curl_opts="$curl_opts -k" ;;
 esac
 
 cleanup() {
