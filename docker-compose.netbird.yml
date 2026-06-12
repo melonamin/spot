@@ -28,8 +28,27 @@ services:
     environment:
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
 
+  # On the mesh, everything is served through Caddy: keep the S3 and
+  # Postgres ports off the network. Containers reach them over the
+  # compose network; on-VM tooling uses loopback.
+  rustfs:
+    ports: !override
+      - "127.0.0.1:9000:9000"
+      - "127.0.0.1:9001:9001"
+
+  postgres:
+    ports: !override
+      - "127.0.0.1:5433:5432"
+
   caddy:
+    # The stock image plus the Cloudflare DNS module, for
+    # SPOT_TLS_MODE=tls-cloudflare (see caddy/Caddyfile).
+    build: ./caddy
+    image: spot-caddy
     network_mode: host
     environment:
       SPOT_API_UPSTREAM: "127.0.0.1:8080"
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
+      SPOT_TLS_MODE: "${SPOT_TLS_MODE:-tls-internal}"
+      SPOT_SITE_LABEL: "${SPOT_SITE_LABEL:-2}"
+      CF_API_TOKEN: "${CF_API_TOKEN:-}"
