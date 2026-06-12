@@ -211,6 +211,23 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	return sites, nil
 }
 
+func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Identity) (bool, error) {
+	var record SiteRecord
+	err := r.db.QueryRowContext(ctx,
+		`SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+		 FROM sites
+		 WHERE name = $1`,
+		site,
+	).Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	if errors.Is(err, sql.ErrNoRows) {
+		return false, ErrSiteNotFound
+	}
+	if err != nil {
+		return false, fmt.Errorf("read site %s: %w", site, err)
+	}
+	return record.OwnedBy(actor) || allowsAdmin(r.admins, actor), nil
+}
+
 // DeleteSite removes a site's registry row after running purge while
 // holding the row lock. Holding the lock serializes deletion against
 // concurrent deploys of the same name: a deploy waits on

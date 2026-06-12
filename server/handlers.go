@@ -28,7 +28,9 @@ type Server struct {
 	sites          *SiteStore
 	deployAuth     DeployAuthorizer
 	siteAdmin      SiteAdmin
+	siteManager    SiteManager
 	ai             *AIProxy
+	aiAccess       string
 	maxUpload      int64
 	spotDomain     string
 	trustedProxies *TrustedProxies

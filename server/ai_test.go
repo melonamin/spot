@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/anthropics/anthropic-sdk-go/option"
 )
@@ -40,7 +43,8 @@ func newClaudeAPI(t *testing.T, lastBody *map[string]any) *httptest.Server {
 func aiTestServer(t *testing.T, upstream string) *Server {
 	t.Helper()
 	return &Server{
-		ai:         NewAIProxy("test-key", option.WithBaseURL(upstream)),
+		ai:         NewAIProxy("test-key", []string{"claude-haiku-4-5"}, option.WithBaseURL(upstream)),
+		aiAccess:   aiAccessVisitors,
 		spotDomain: "spot.localhost",
 	}
 }
@@ -130,7 +134,8 @@ func TestAIChatCustomUpstream(t *testing.T) {
 	// unset variable that way) must not override the configured value.
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	srv := &Server{
-		ai:         NewAIProxyWithUpstream("test-key", api.URL, ""),
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, "", nil),
+		aiAccess:   aiAccessVisitors,
 		spotDomain: "spot.localhost",
 	}
 
@@ -156,7 +161,8 @@ func TestAIChatDeploymentDefaultModel(t *testing.T) {
 	api := newClaudeAPI(t, &upstreamBody)
 	defer api.Close()
 	srv := &Server{
-		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6"),
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6", []string{"claude-haiku-4-5"}),
+		aiAccess:   aiAccessVisitors,
 		spotDomain: "spot.localhost",
 	}
 
@@ -176,6 +182,84 @@ func TestAIChatDeploymentDefaultModel(t *testing.T) {
 	}
 	if upstreamBody["model"] != "claude-haiku-4-5" {
 		t.Errorf("upstream model = %v, want claude-haiku-4-5", upstreamBody["model"])
+	}
+}
+
+func TestAIChatRejectsUnallowedModel(t *testing.T) {
+	api := newClaudeAPI(t, &map[string]any{})
+	defer api.Close()
+	srv := &Server{
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6", nil),
+		aiAccess:   aiAccessVisitors,
+		spotDomain: "spot.localhost",
+	}
+
+	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}], "model": "claude-haiku-4-5"}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("chat with unallowed model: status %d body %s, want 403", rec.Code, rec.Body)
+	}
+}
+
+type fakeSiteManager struct {
+	allowed bool
+	err     error
+}
+
+func (m fakeSiteManager) CanManageSite(_ context.Context, _ string, _ Identity) (bool, error) {
+	return m.allowed, m.err
+}
+
+func TestAIChatOwnersOnly(t *testing.T) {
+	api := newClaudeAPI(t, &map[string]any{})
+	defer api.Close()
+
+	srv := &Server{
+		ai:          NewAIProxyWithUpstream("test-key", api.URL, "", nil),
+		aiAccess:    aiAccessOwners,
+		siteManager: fakeSiteManager{allowed: true},
+		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
+		spotDomain:  "spot.localhost",
+	}
+	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("owner AI chat: status %d body %s, want 200", rec.Code, rec.Body)
+	}
+
+	srv.siteManager = fakeSiteManager{allowed: false}
+	rec = postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("non-owner AI chat: status %d body %s, want 403", rec.Code, rec.Body)
+	}
+
+	srv.siteManager = fakeSiteManager{err: ErrSiteNotFound}
+	rec = postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("missing site AI chat: status %d body %s, want 404", rec.Code, rec.Body)
+	}
+
+	srv.siteManager = fakeSiteManager{err: errors.New("db down")}
+	rec = postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("manager error AI chat: status %d body %s, want 500", rec.Code, rec.Body)
+	}
+}
+
+func TestAIChatPolicyCanOptVisitorsIn(t *testing.T) {
+	api := newClaudeAPI(t, &map[string]any{})
+	defer api.Close()
+	policies := NewPolicyStore(t.TempDir(), time.Hour)
+	policies.Set("demo", &AccessPolicy{Allow: []string{"visitor@example.com"}, AI: aiAccessVisitors}, nil)
+	srv := &Server{
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, "", nil),
+		aiAccess:   aiAccessOwners,
+		policies:   policies,
+		resolver:   NewStaticResolver("visitor@example.com", "Visitor", nil),
+		spotDomain: "spot.localhost",
+	}
+
+	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("visitor opt-in AI chat: status %d body %s, want 200", rec.Code, rec.Body)
 	}
 }
 

@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
 	_ "github.com/jackc/pgx/v5/stdlib"
 )
 
@@ -37,6 +38,8 @@ type config struct {
 	AnthropicAPIKey   string
 	AnthropicBaseURL  string
 	AIModel           string
+	AIAllowedModels   []string
+	AIAccess          string
 	TrustedProxies    string
 	AdminAllow        []string
 	DevIdentityEmail  string
@@ -60,6 +63,8 @@ func loadConfig() (config, error) {
 		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		AnthropicBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
 		AIModel:          os.Getenv("SPOT_AI_MODEL"),
+		AIAllowedModels:  splitList(os.Getenv("SPOT_AI_ALLOWED_MODELS")),
+		AIAccess:         envOr("SPOT_AI_ACCESS", aiAccessOwners),
 		TrustedProxies:   envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
 		AdminAllow: append(
 			splitList(os.Getenv("SPOT_ADMIN_EMAILS")),
@@ -75,7 +80,46 @@ func loadConfig() (config, error) {
 	if cfg.SpotDomain == "" {
 		return cfg, errors.New("SPOT_DOMAIN is required (e.g. spot.localhost)")
 	}
+	if cfg.AIAccess != aiAccessOwners && cfg.AIAccess != aiAccessVisitors {
+		return cfg, fmt.Errorf("SPOT_AI_ACCESS must be %q or %q", aiAccessOwners, aiAccessVisitors)
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		return cfg, err
+	}
 	return cfg, nil
+}
+
+func validateDeploymentSafety(cfg config) error {
+	shared := !localSpotDomain(cfg.SpotDomain) || cfg.NetbirdAPIURL != "" || cfg.NetbirdAPIToken != ""
+	if !shared {
+		return nil
+	}
+	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) {
+		return errors.New("SPOT_DEV_IDENTITY_EMAIL is only allowed for .localhost deployments")
+	}
+	if cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "" {
+		return errors.New("shared deployments require NETBIRD_API_URL and NETBIRD_API_TOKEN")
+	}
+	if cfg.S3Endpoint != "" && cfg.S3AccessKey == "rustfsadmin" && cfg.S3SecretKey == "rustfsadmin" {
+		return errors.New("shared deployments must replace the default RustFS credentials")
+	}
+	if databasePassword(cfg.DatabaseURL) == "spot" {
+		return errors.New("shared deployments must replace the default Postgres password")
+	}
+	return nil
+}
+
+func localSpotDomain(domain string) bool {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+	return domain == "localhost" || strings.HasSuffix(domain, ".localhost")
+}
+
+func databasePassword(databaseURL string) string {
+	cfg, err := pgconn.ParseConfig(databaseURL)
+	if err != nil {
+		return ""
+	}
+	return cfg.Password
 }
 
 func envOr(key, fallback string) string {
@@ -168,7 +212,7 @@ func main() {
 
 	var ai *AIProxy
 	if cfg.AnthropicAPIKey != "" {
-		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL, cfg.AIModel)
+		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL, cfg.AIModel, cfg.AIAllowedModels)
 		upstream := cfg.AnthropicBaseURL
 		if upstream == "" {
 			upstream = "the Claude API"
@@ -197,7 +241,9 @@ func main() {
 		sites:          sites,
 		deployAuth:     registry,
 		siteAdmin:      registry,
+		siteManager:    registry,
 		ai:             ai,
+		aiAccess:       cfg.AIAccess,
 		spotDomain:     cfg.SpotDomain,
 		trustedProxies: trustedProxies,
 	}

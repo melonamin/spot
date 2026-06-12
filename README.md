@@ -166,13 +166,17 @@ deployed site cannot enumerate or delete sites through a visitor:
   label count (see the comment in the Caddyfile).
 - **NetBird**: create an access policy `employees -> spot-vm:443`, and a
   service-account PAT for `NETBIRD_API_URL`/`NETBIRD_API_TOKEN` so the
-  API can resolve peer IPs to users. Do not set `SPOT_DEV_IDENTITY_EMAIL`
-  outside local development.
+  API can resolve peer IPs to users. `spot-api` refuses to start on a
+  non-`.localhost` domain without NetBird identity, and
+  `SPOT_DEV_IDENTITY_EMAIL` is only accepted for `.localhost` development.
 - **Trusted proxies**: `spot-api` only trusts `X-Forwarded-*` headers
-  from `SPOT_TRUSTED_PROXIES`. The compose stack trusts loopback plus
-  private Docker bridge CIDRs; the NetBird overlay narrows this to loopback
-  because host-networked Caddy reaches the API on `127.0.0.1`.
-- **RustFS** is alpha (v1.0.0-alpha, single-node). Sites are regenerable,
+  from `SPOT_TRUSTED_PROXIES`. The local compose stack pins its Docker
+  network and trusts only loopback plus that subnet; the NetBird overlay
+  narrows this to loopback plus the pinned Docker gateway `/32`.
+- **Credentials**: local `.localhost` development may use the example
+  RustFS/Postgres passwords. Shared or NetBird-backed deployments must
+  replace them or `spot-api` refuses to start.
+- **RustFS** is beta (v1.0.0-beta.8, single-node). Sites are regenerable,
   so the blast radius is low; Garage or SeaweedFS are drop-in S3
   alternatives if that bothers you.
 ## Files and AI
@@ -194,13 +198,22 @@ For stricter isolation in production, serve `/api/files` from a separate
 cookieless domain.
 
 The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
-in `.env`); sites call Claude with zero configuration. Set
-`ANTHROPIC_BASE_URL` to route the proxy through an Anthropic-compatible
-gateway instead of the Claude API. Defaults:
+in `.env`). By default only the site owner or platform admins may call
+it, so a public mesh site cannot spend the shared key for every visitor.
+Set `SPOT_AI_ACCESS=visitors` to allow all authorized visitors globally,
+or opt a restricted site in with:
+
+```json
+{ "allow": ["team-payments"], "ai": "visitors" }
+```
+
+Set `ANTHROPIC_BASE_URL` to route the proxy through an
+Anthropic-compatible gateway instead of the Claude API. Defaults:
 `claude-opus-4-8` (deployment-overridable with `SPOT_AI_MODEL`, e.g.
 when the gateway serves a different model list), adaptive thinking,
-16K max tokens — overridable per request with `model`, `system`,
-`max_tokens`:
+16K max tokens. Requests may set `system` and `max_tokens`; `model` is
+accepted only when named in `SPOT_AI_ALLOWED_MODELS` or when it matches
+the deployment default:
 
 ```js
 const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);

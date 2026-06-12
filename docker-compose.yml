@@ -2,7 +2,7 @@ name: spot
 
 services:
   rustfs:
-    image: rustfs/rustfs:latest
+    image: ${RUSTFS_IMAGE:-rustfs/rustfs:1.0.0-beta.8}
     environment:
       RUSTFS_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       RUSTFS_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
@@ -13,7 +13,7 @@ services:
       - rustfs-data:/data
 
   rclone-init:
-    image: rclone/rclone:latest
+    image: ${RCLONE_IMAGE:-rclone/rclone:1.70.3}
     environment: &rclone-env
       RCLONE_CONFIG_RUSTFS_TYPE: s3
       RCLONE_CONFIG_RUSTFS_PROVIDER: Minio
@@ -32,7 +32,7 @@ services:
     restart: "no"
 
   rclone-mount:
-    image: rclone/rclone:latest
+    image: ${RCLONE_IMAGE:-rclone/rclone:1.70.3}
     environment: *rclone-env
     # The bind target is itself a mount point, so rclone needs
     # --allow-non-empty to stack the FUSE mount on top of it (stacking on
@@ -51,10 +51,13 @@ services:
           --dir-cache-time=5s --attr-timeout=5s
     cap_add:
       - SYS_ADMIN
+    cap_drop:
+      - ALL
     devices:
       - /dev/fuse
     security_opt:
       - apparmor:unconfined
+      - no-new-privileges:true
     volumes:
       - type: bind
         source: ./data/sites
@@ -98,7 +101,9 @@ services:
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
       SPOT_AI_MODEL: ${SPOT_AI_MODEL:-}
-      SPOT_TRUSTED_PROXIES: ${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,10.0.0.0/8,172.16.0.0/12,192.168.0.0/16}
+      SPOT_AI_ALLOWED_MODELS: ${SPOT_AI_ALLOWED_MODELS:-}
+      SPOT_AI_ACCESS: ${SPOT_AI_ACCESS:-owners}
+      SPOT_TRUSTED_PROXIES: ${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.28.0.0/24}
       SPOT_ADMIN_EMAILS: ${SPOT_ADMIN_EMAILS:-}
       SPOT_ADMIN_GROUPS: ${SPOT_ADMIN_GROUPS:-}
       SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-}
@@ -139,3 +144,10 @@ volumes:
   rustfs-data:
   pg-data:
   caddy-data:
+
+networks:
+  default:
+    ipam:
+      config:
+        - subnet: 172.28.0.0/24
+          gateway: 172.28.0.1

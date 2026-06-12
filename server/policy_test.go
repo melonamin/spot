@@ -92,6 +92,39 @@ func TestPolicyStoreCaches(t *testing.T) {
 	}
 }
 
+func TestPolicyStoreSetAndInvalidate(t *testing.T) {
+	dir := t.TempDir()
+	store := NewPolicyStore(dir, time.Hour)
+
+	if policy, err := store.For("demo"); policy != nil || err != nil {
+		t.Fatalf("For(demo) before deploy = %v, %v", policy, err)
+	}
+
+	store.Set("demo", &AccessPolicy{Allow: []string{"sasha@example.com"}}, nil)
+	policy, err := store.For("demo")
+	if err != nil || policy == nil || !policy.Allows(Identity{Email: "sasha@example.com"}) {
+		t.Fatalf("For(demo) after Set = %v, %v; want allowing policy", policy, err)
+	}
+
+	store.Set("demo", nil, nil)
+	policy, err = store.For("demo")
+	if err != nil || policy != nil {
+		t.Fatalf("For(demo) after open Set = %v, %v; want open", policy, err)
+	}
+
+	store.Set("demo", nil, os.ErrPermission)
+	if _, err = store.For("demo"); err == nil {
+		t.Fatal("For(demo) after error Set: want fail-closed error")
+	}
+
+	writeSiteFile(t, dir, "demo", accessFileName, `{"allow":["fresh@example.com"]}`)
+	store.Invalidate("demo")
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.Allows(Identity{Email: "fresh@example.com"}) {
+		t.Fatalf("For(demo) after Invalidate = %v, %v; want fresh file policy", policy, err)
+	}
+}
+
 // authzServer builds a Server whose policies come from a temp dir and
 // whose identity comes from the stub NetBird API.
 func authzServer(t *testing.T, dir string) *Server {

@@ -17,6 +17,10 @@ type SiteAdmin interface {
 	DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) error
 }
 
+type SiteManager interface {
+	CanManageSite(ctx context.Context, site string, actor Identity) (bool, error)
+}
+
 type ownedSiteJSON struct {
 	Name       string    `json:"name"`
 	URL        string    `json:"url"`
@@ -185,6 +189,9 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		})
 		httpError(w, http.StatusInternalServerError, "could not delete the site")
 	default:
+		if s.policies != nil {
+			s.policies.Invalidate(site)
+		}
 		s.recordDeployAudit(r, DeployAuditEvent{
 			Site: site, Actor: actor, Action: "delete", Status: "success",
 			FileCount: removedFiles,

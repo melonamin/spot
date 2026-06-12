@@ -23,6 +23,7 @@ const accessFileName = "_access.json"
 // list denies everyone.
 type AccessPolicy struct {
 	Allow []string `json:"allow"`
+	AI    string   `json:"ai,omitempty"`
 }
 
 func (p *AccessPolicy) Allows(id Identity) bool {
@@ -44,6 +45,10 @@ func (p *AccessPolicy) Allows(id Identity) bool {
 		}
 	}
 	return false
+}
+
+func (p *AccessPolicy) AllowsAIVisitors() bool {
+	return p != nil && strings.EqualFold(strings.TrimSpace(p.AI), aiAccessVisitors)
 }
 
 // PolicyStore reads site access policies from the mounted sites
@@ -81,6 +86,21 @@ func (s *PolicyStore) For(site string) (*AccessPolicy, error) {
 	return policy, err
 }
 
+// Set records a known policy for a site. Deploys use it only for
+// fail-closed errors or policy changes that do not broaden access before
+// the mounted file view has caught up.
+func (s *PolicyStore) Set(site string, policy *AccessPolicy, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now()}
+}
+
+func (s *PolicyStore) Invalidate(site string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.cache, site)
+}
+
 func (s *PolicyStore) load(site string) (*AccessPolicy, error) {
 	if !siteNameRe.MatchString(site) {
 		return nil, fmt.Errorf("invalid site name %q", site)
@@ -97,6 +117,10 @@ func (s *PolicyStore) load(site string) (*AccessPolicy, error) {
 	if err != nil {
 		return nil, fmt.Errorf("read access policy for site %s: %w", site, err)
 	}
+	return parseAccessPolicy(site, raw)
+}
+
+func parseAccessPolicy(site string, raw []byte) (*AccessPolicy, error) {
 	var policy AccessPolicy
 	if err := json.Unmarshal(raw, &policy); err != nil {
 		return nil, fmt.Errorf("parse %s for site %s: %w", accessFileName, site, err)

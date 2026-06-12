@@ -944,6 +944,7 @@
       let picked = [];        // [{ path, file }], paths site-relative
       let identity = null;
       let selectedAccess = [];
+      let accessAIVisitors = false;
       let accessFileWarning = ''; // set when an uploaded _access.json can't be read
       let launching = false;
 
@@ -998,6 +999,7 @@
         }
         picked = list;
         selectedAccess = [];
+        accessAIVisitors = false;
         accessSearch.value = '';
         directoryOptions = [];
         accessFileWarning = '';
@@ -1008,6 +1010,7 @@
         if (accessFile) {
           const parsed = await readAccessPolicy(accessFile.file);
           selectedAccess = parsed.entries;
+          accessAIVisitors = parsed.aiVisitors;
           if (!parsed.ok) {
             accessFileWarning = "Could not read the folder's _access.json — set access here.";
           }
@@ -1033,6 +1036,7 @@
         try {
           const data = JSON.parse(await file.text());
           const allow = Array.isArray(data.allow) ? data.allow : [];
+          const aiVisitors = typeof data.ai === 'string' && data.ai.trim().toLowerCase() === 'visitors';
           const entries = [];
           for (const raw of allow) {
             if (typeof raw !== 'string' || !raw.trim()) continue;
@@ -1042,9 +1046,9 @@
               : { type: 'group', value, label: value, meta: 'Group' };
             if (!entries.some((e) => accessKey(e) === accessKey(entry))) entries.push(entry);
           }
-          return { entries, ok: true };
+          return { entries, aiVisitors, ok: true };
         } catch {
-          return { entries: [], ok: false };
+          return { entries: [], aiVisitors: false, ok: false };
         }
       };
 
@@ -1221,8 +1225,10 @@
       const accessPolicyFile = () => {
         if (!selectedAccess.length) return null;
         const allow = selectedAccess.map((entry) => entry.value);
+        const policy = { allow };
+        if (accessAIVisitors) policy.ai = 'visitors';
         return new File(
-          [JSON.stringify({ allow }, null, 2) + '\n'],
+          [JSON.stringify(policy, null, 2) + '\n'],
           '_access.json',
           { type: 'application/json' }
         );
@@ -1244,6 +1250,7 @@
       });
       accessClear.addEventListener('click', () => {
         selectedAccess = [];
+        accessAIVisitors = false;
         accessSearch.value = '';
         directoryOptions = [];
         renderAccess();
@@ -1294,6 +1301,7 @@
         picked = [];
         filePick.value = '';
         selectedAccess = [];
+        accessAIVisitors = false;
         accessSearch.value = '';
         clearError();
         show(idle);

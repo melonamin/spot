@@ -8,8 +8,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/textproto"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type recordingDeployAuth struct {
@@ -393,6 +396,65 @@ func TestDeployStorageFailureIsAudited(t *testing.T) {
 	}
 	if event := auth.events[0]; event.Status != "failed" || event.Action != "update" {
 		t.Fatalf("audit event = %+v", event)
+	}
+}
+
+func TestUpdatePolicyCacheFromDeploy(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "demo", accessFileName, `{"allow":["alice@example.com"],"ai":"visitors"}`)
+	store := NewPolicyStore(dir, time.Hour)
+	srv := &Server{policies: store}
+
+	store.Set("demo", nil, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: "index.html", data: []byte("<h1>hi</h1>")},
+		{path: accessFileName, data: []byte(`{"allow":["alice@example.com"],"ai":"visitors"}`)},
+	})
+	policy, err := store.For("demo")
+	if err != nil || policy == nil {
+		t.Fatalf("cached policy = %v, %v; want policy", policy, err)
+	}
+	if !policy.Allows(Identity{Email: "alice@example.com"}) || policy.AllowsAIVisitors() {
+		t.Fatalf("cached policy = %+v; want alice without early AI visitor opt-in", policy)
+	}
+
+	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com"}}, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: accessFileName, data: []byte(`{"allow":["alice@example.com","bob@example.com"]}`)},
+	})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.Allows(Identity{Email: "bob@example.com"}) {
+		t.Fatalf("broadened policy before mount catches up = %+v, %v; want old alice-only policy", policy, err)
+	}
+
+	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com", "bob@example.com"}, AI: aiAccessVisitors}, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: accessFileName, data: []byte(`{"allow":["alice@example.com"]}`)},
+	})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.Allows(Identity{Email: "bob@example.com"}) || policy.AllowsAIVisitors() {
+		t.Fatalf("narrowed policy = %+v, %v; want alice-only without AI visitors", policy, err)
+	}
+
+	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com"}}, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{{path: "index.html", data: []byte("open")}})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) {
+		t.Fatalf("open policy before mount catches up = %v, %v; want old mounted policy", policy, err)
+	}
+
+	if err := os.Remove(filepath.Join(dir, "demo", accessFileName)); err != nil {
+		t.Fatal(err)
+	}
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{{path: "index.html", data: []byte("open")}})
+	policy, err = store.For("demo")
+	if err != nil || policy != nil {
+		t.Fatalf("policy after mounted access file removal = %v, %v; want open", policy, err)
+	}
+
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{{path: accessFileName, data: []byte(`{not json`)}})
+	if _, err = store.For("demo"); err == nil {
+		t.Fatal("cached invalid policy: want fail-closed parse error")
 	}
 }
 

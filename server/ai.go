@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"strings"
 
 	"github.com/anthropics/anthropic-sdk-go"
 	"github.com/anthropics/anthropic-sdk-go/option"
@@ -14,9 +15,11 @@ import (
 const (
 	// Sites get Claude without managing keys; the default model is the
 	// current Opus tier per Anthropic guidance.
-	defaultAIModel  = "claude-opus-4-8"
-	defaultAITokens = 16000
-	maxAITokens     = 16000
+	defaultAIModel   = "claude-opus-4-8"
+	defaultAITokens  = 16000
+	maxAITokens      = 16000
+	aiAccessOwners   = "owners"
+	aiAccessVisitors = "visitors"
 )
 
 // AIProxy forwards chat requests to the Claude API with the server-side
@@ -26,12 +29,15 @@ type AIProxy struct {
 	// model is the default when a request names none. Deployments
 	// behind a gateway that doesn't serve the platform default
 	// override it via SPOT_AI_MODEL.
-	model string
+	model         string
+	allowedModels map[string]struct{}
 }
 
-func NewAIProxy(apiKey string, opts ...option.RequestOption) *AIProxy {
+func NewAIProxy(apiKey string, allowedModels []string, opts ...option.RequestOption) *AIProxy {
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return &AIProxy{client: anthropic.NewClient(opts...), model: defaultAIModel}
+	proxy := &AIProxy{client: anthropic.NewClient(opts...), model: defaultAIModel}
+	proxy.setAllowedModels(allowedModels)
+	return proxy
 }
 
 // NewAIProxyWithUpstream builds the proxy against a custom
@@ -41,15 +47,32 @@ func NewAIProxy(apiKey string, opts ...option.RequestOption) *AIProxy {
 // the SDK honors a set-but-empty ANTHROPIC_BASE_URL in the environment
 // (which is how compose renders an unset variable) and would otherwise
 // dial a URL of "".
-func NewAIProxyWithUpstream(apiKey, baseURL, model string) *AIProxy {
+func NewAIProxyWithUpstream(apiKey, baseURL, model string, allowedModels []string) *AIProxy {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com/"
 	}
-	proxy := NewAIProxy(apiKey, option.WithBaseURL(baseURL))
+	proxy := NewAIProxy(apiKey, allowedModels, option.WithBaseURL(baseURL))
 	if model != "" {
 		proxy.model = model
 	}
+	proxy.setAllowedModels(allowedModels)
 	return proxy
+}
+
+func (p *AIProxy) setAllowedModels(models []string) {
+	p.allowedModels = map[string]struct{}{}
+	p.allowedModels[p.model] = struct{}{}
+	for _, model := range models {
+		model = strings.TrimSpace(model)
+		if model != "" {
+			p.allowedModels[model] = struct{}{}
+		}
+	}
+}
+
+func (p *AIProxy) modelAllowed(model string) bool {
+	_, ok := p.allowedModels[model]
+	return ok
 }
 
 type aiChatMessage struct {
@@ -81,7 +104,14 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "AI API must be called from a site subdomain")
+		return
+	}
 	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
+	if !s.authorizeAIUse(w, r, site) {
 		return
 	}
 	var req aiChatRequest
@@ -105,6 +135,10 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		},
 	}
 	if req.Model != "" {
+		if !s.ai.modelAllowed(req.Model) {
+			httpError(w, http.StatusForbidden, "requested AI model is not allowed by this deployment")
+			return
+		}
 		params.Model = anthropic.Model(req.Model)
 	}
 	if req.MaxTokens > 0 {
@@ -152,4 +186,44 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, http.StatusOK, res)
+}
+
+func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site string) bool {
+	if s.aiAccess == aiAccessVisitors || s.siteAllowsVisitorAI(site) {
+		return true
+	}
+	if s.siteManager == nil {
+		httpError(w, http.StatusServiceUnavailable, "AI owner checks are not configured")
+		return false
+	}
+	actor, ok := s.requireDeployIdentity(w, r)
+	if !ok {
+		return false
+	}
+	allowed, err := s.siteManager.CanManageSite(r.Context(), site, actor)
+	if errors.Is(err, ErrSiteNotFound) {
+		httpError(w, http.StatusNotFound, "no site named "+site)
+		return false
+	}
+	if err != nil {
+		log.Printf("ai auth %s: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not authorize AI access")
+		return false
+	}
+	if !allowed {
+		httpError(w, http.StatusForbidden, "AI is restricted to the site owner or a platform admin")
+		return false
+	}
+	return true
+}
+
+func (s *Server) siteAllowsVisitorAI(site string) bool {
+	if s.policies == nil {
+		return false
+	}
+	policy, err := s.policies.For(site)
+	if err != nil {
+		return false
+	}
+	return policy.AllowsAIVisitors()
 }

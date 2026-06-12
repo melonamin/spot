@@ -226,11 +226,102 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		FileCount:  len(files),
 		TotalBytes: totalDeployBytes(files),
 	})
+	s.updatePolicyCacheFromDeploy(site, files)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,
 		"url":   "https://" + site + "." + s.spotDomain + "/",
 		"files": len(files),
 	})
+}
+
+func (s *Server) updatePolicyCacheFromDeploy(site string, files []deployFile) {
+	if s.policies == nil {
+		return
+	}
+	var next *AccessPolicy
+	hasAccessFile := false
+	for _, f := range files {
+		if f.path != accessFileName {
+			continue
+		}
+		hasAccessFile = true
+		policy, err := parseAccessPolicy(site, f.data)
+		if err != nil {
+			s.policies.Set(site, nil, err)
+			return
+		}
+		next = policy
+		break
+	}
+
+	current, currentErr := s.policies.For(site)
+	if currentErr != nil {
+		s.policies.Invalidate(site)
+		return
+	}
+	if !hasAccessFile {
+		if current == nil {
+			s.policies.Set(site, nil, nil)
+			return
+		}
+		s.policies.Invalidate(site)
+		return
+	}
+	if immediate, ok := immediatePolicyCache(current, next); ok {
+		s.policies.Set(site, immediate, nil)
+		return
+	}
+	s.policies.Invalidate(site)
+}
+
+func immediatePolicyCache(current, next *AccessPolicy) (*AccessPolicy, bool) {
+	if current == nil {
+		immediate := cloneAccessPolicy(next)
+		immediate.AI = ""
+		return immediate, true
+	}
+	if allowlistBroadens(current, next) {
+		return nil, false
+	}
+	immediate := cloneAccessPolicy(next)
+	if !current.AllowsAIVisitors() {
+		immediate.AI = ""
+	}
+	return immediate, true
+}
+
+func allowlistBroadens(current, next *AccessPolicy) bool {
+	currentAllow := normalizedAllowSet(current)
+	for _, entry := range next.Allow {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry == "" {
+			continue
+		}
+		if _, ok := currentAllow[entry]; !ok {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedAllowSet(policy *AccessPolicy) map[string]struct{} {
+	out := make(map[string]struct{}, len(policy.Allow))
+	for _, entry := range policy.Allow {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		if entry != "" {
+			out[entry] = struct{}{}
+		}
+	}
+	return out
+}
+
+func cloneAccessPolicy(policy *AccessPolicy) *AccessPolicy {
+	if policy == nil {
+		return nil
+	}
+	clone := *policy
+	clone.Allow = append([]string(nil), policy.Allow...)
+	return &clone
 }
 
 func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {

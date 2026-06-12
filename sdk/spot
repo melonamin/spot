@@ -337,12 +337,16 @@ after writes.
 
 ### AI
 
-Call Claude from the browser — keys live on the server:
+Call Claude from the browser — keys live on the server. By default this
+is limited to the site owner or platform admins; authorized visitors can
+use it only when the deployment sets SPOT_AI_ACCESS=visitors or the site
+opts in with \`"ai":"visitors"\` in \`_access.json\`.
 
 \`\`\`js
 const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
 // res = { text, model, stop_reason, usage }
-// Optional second-level fields in the request: model, system, max_tokens.
+// Optional second-level fields in the request: system, max_tokens.
+// model is accepted only when the deployment allowlists it.
 \`\`\`
 
 ### File uploads
@@ -373,6 +377,8 @@ Sites are open to everyone by default. To restrict a site, deploy an
 Entries with an @ match the visitor's email; all others match a NetBird
 group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
+Add \`"ai":"visitors"\` only when those permitted visitors should be
+allowed to spend the deployment's server-side AI key.
 
 The first deploy of a site claims it. Later deploys, including changes
 to \`_access.json\`, require the same owner identity or a platform admin.
