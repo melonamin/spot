@@ -24,7 +24,17 @@ export SPOT_DEV_IDENTITY_EMAIL=${SPOT_DEV_IDENTITY_EMAIL:-e2e@localhost}
 export SPOT_DEV_IDENTITY_NAME=${SPOT_DEV_IDENTITY_NAME:-Spot E2E}
 export NETBIRD_API_URL=
 export NETBIRD_API_TOKEN=
+# The CLI must target the local stack — a developer's ~/.config/spot/env
+# may pin SPOT_URL to a real deployment, and the sourced config file
+# overrides even an exported SPOT_URL.
+XDG_CONFIG_HOME="$(mktemp -d)"
+export XDG_CONFIG_HOME
 docker compose up -d --build
+# The Caddyfile is a single-file bind mount, which pins the file's
+# inode: a Caddyfile edited (replaced) on the host stays invisible to a
+# running container, even with `caddy reload`. Recreate the container
+# so it mounts the current file.
+docker compose up -d --force-recreate caddy
 
 echo "==> waiting for Caddy and the API"
 ready=""
@@ -171,6 +181,36 @@ code=$(curl -sk --resolve demo.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{
     -F 'site=demo' -F "files=@scripts/e2e.sh;filename=index.html" \
     https://demo.spot.localhost:8443/api/deploy)
 [ "$code" = "400" ] || fail "deploy from site subdomain returned $code, want 400"
+
+echo "==> platform pages: /spots and /gallery are served"
+$CURL https://spot.localhost:8443/spots | grep -q "My spots" \
+    || fail "/spots does not serve the my-spots page"
+$CURL https://spot.localhost:8443/gallery | grep -q "Gallery" \
+    || fail "/gallery does not serve the gallery page"
+
+echo "==> sites API: mine lists the deployer's sites"
+mine=$($CURL https://spot.localhost:8443/api/sites/mine)
+echo "$mine" | grep -q '"name":"webdeploy"' || fail "/api/sites/mine missing webdeploy: $mine"
+
+echo "==> sites API: gallery lists public sites, hides restricted ones"
+public=$($CURL https://spot.localhost:8443/api/sites/public)
+echo "$public" | grep -q '"name":"demo"' || fail "/api/sites/public missing demo: $public"
+echo "$public" | grep -q '"name":"secret"' && fail "restricted site leaked into the gallery"
+
+echo "==> sites API: refused from a site subdomain"
+code=$(curl -sk --resolve demo.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{http_code}' \
+    https://demo.spot.localhost:8443/api/sites/mine)
+[ "$code" = "400" ] || fail "sites API from a site subdomain returned $code, want 400"
+
+refill_deploy_budget
+echo "==> sites API: delete removes the site"
+code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE https://spot.localhost:8443/api/sites/webdeploy)
+[ "$code" = "200" ] || fail "delete webdeploy returned $code, want 200"
+mine=$($CURL https://spot.localhost:8443/api/sites/mine)
+echo "$mine" | grep -q '"name":"webdeploy"' && fail "webdeploy still listed after delete"
+code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE https://spot.localhost:8443/api/sites/webdeploy)
+[ "$code" = "404" ] || fail "deleting a missing site returned $code, want 404"
+echo "    webdeploy deleted"
 
 echo "==> AI proxy"
 ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'

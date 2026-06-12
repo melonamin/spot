@@ -169,6 +169,16 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	return nil
 }
 
+// PurgeScope deletes every document in a scope. Used when a site is
+// deleted; no realtime notifications are sent — the site's subscribers
+// are going away with it.
+func (s *DocStore) PurgeScope(ctx context.Context, scope string) error {
+	if _, err := s.db.ExecContext(ctx, `DELETE FROM documents WHERE scope = $1`, scope); err != nil {
+		return fmt.Errorf("purge scope %s: %w", scope, err)
+	}
+	return nil
+}
+
 func scanDocument(scan func(dest ...any) error) (Document, error) {
 	var doc Document
 	var raw []byte

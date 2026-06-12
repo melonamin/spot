@@ -88,6 +88,25 @@ func (f *FileStore) Get(ctx context.Context, site, id, name string) (io.ReadClos
 	return obj, stat.ContentType, nil
 }
 
+// RemoveSite deletes every upload stored for a site. Used when the site
+// is deleted, so a later claimant of the name cannot serve or inherit
+// the old owner's uploads.
+func (f *FileStore) RemoveSite(ctx context.Context, site string) error {
+	prefix := site + "/"
+	for obj := range f.client.ListObjects(ctx, f.bucket, minio.ListObjectsOptions{
+		Prefix:    prefix,
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return fmt.Errorf("list uploads for %s: %w", site, obj.Err)
+		}
+		if err := f.client.RemoveObject(ctx, f.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+			return fmt.Errorf("remove upload %s: %w", obj.Key, err)
+		}
+	}
+	return nil
+}
+
 func newFileID() (string, error) {
 	raw := make([]byte, 16)
 	if _, err := rand.Read(raw); err != nil {

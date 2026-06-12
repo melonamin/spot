@@ -10,7 +10,10 @@ import (
 	"time"
 )
 
-var ErrDeployForbidden = errors.New("deploy forbidden")
+var (
+	ErrDeployForbidden = errors.New("deploy forbidden")
+	ErrSiteNotFound    = errors.New("site not found")
+)
 
 type DeployAuthorizer interface {
 	AuthorizeDeploy(ctx context.Context, site string, actor Identity) (DeployAuthorization, error)
@@ -129,6 +132,118 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 	)
 	if err != nil {
 		return fmt.Errorf("record deploy audit for %s: %w", event.Site, err)
+	}
+	return nil
+}
+
+// OwnedSite is a site row joined with the size of its last successful
+// deploy, for the platform's "my spots" page.
+type OwnedSite struct {
+	SiteRecord
+	FileCount  int
+	TotalBytes int64
+}
+
+// SitesOwnedBy returns the sites the actor owns, most recently updated
+// first. Ownership mirrors SiteRecord.OwnedBy: the owner email when the
+// site has one, the claiming peer IP otherwise.
+func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]OwnedSite, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
+		        s.created_at, s.updated_at,
+		        COALESCE(a.file_count, 0), COALESCE(a.total_bytes, 0)
+		 FROM sites s
+		 LEFT JOIN LATERAL (
+		     SELECT file_count, total_bytes
+		     FROM site_deploy_audit
+		     WHERE site = s.name AND status = 'success'
+		     ORDER BY created_at DESC
+		     LIMIT 1
+		 ) a ON true
+		 WHERE (s.owner_email <> '' AND s.owner_email = $1)
+		    OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = $2)
+		 ORDER BY s.updated_at DESC`,
+		strings.ToLower(actor.Email), actor.PeerIP)
+	if err != nil {
+		return nil, fmt.Errorf("list owned sites: %w", err)
+	}
+	defer rows.Close()
+
+	var owned []OwnedSite
+	for rows.Next() {
+		var site OwnedSite
+		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
+			&site.CreatedAt, &site.UpdatedAt, &site.FileCount, &site.TotalBytes); err != nil {
+			return nil, fmt.Errorf("scan owned site: %w", err)
+		}
+		owned = append(owned, site)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list owned sites: %w", err)
+	}
+	return owned, nil
+}
+
+// AllSites returns every registered site, most recently updated first.
+// Callers filter out restricted sites before showing the list.
+func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+		 FROM sites
+		 ORDER BY updated_at DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list sites: %w", err)
+	}
+	defer rows.Close()
+
+	var sites []SiteRecord
+	for rows.Next() {
+		var site SiteRecord
+		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
+			&site.CreatedAt, &site.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan site: %w", err)
+		}
+		sites = append(sites, site)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("list sites: %w", err)
+	}
+	return sites, nil
+}
+
+// DeleteSite removes a site's registry row after running purge while
+// holding the row lock. Holding the lock serializes deletion against
+// concurrent deploys of the same name: a deploy waits on
+// AuthorizeDeploy's FOR UPDATE and then either sees the row gone (fresh
+// claim) or finishes before the purge starts. A failed purge rolls back,
+// leaving the site claimed so its owner can retry.
+func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) error {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin site delete: %w", err)
+	}
+	defer tx.Rollback()
+
+	record, err := readSiteForUpdate(ctx, tx, site)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ErrSiteNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if !record.OwnedBy(actor) && !allowsAdmin(r.admins, actor) {
+		return ErrDeployForbidden
+	}
+	if purge != nil {
+		if err := purge(ctx); err != nil {
+			return fmt.Errorf("purge site %s: %w", site, err)
+		}
+	}
+	if _, err := tx.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site); err != nil {
+		return fmt.Errorf("delete site %s: %w", site, err)
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit site delete: %w", err)
 	}
 	return nil
 }

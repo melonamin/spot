@@ -187,6 +187,7 @@ func main() {
 		adminPolicy = &AccessPolicy{Allow: cfg.AdminAllow}
 	}
 
+	registry := NewSiteRegistry(db, adminPolicy)
 	srv := &Server{
 		store:          store,
 		resolver:       resolver,
@@ -194,7 +195,8 @@ func main() {
 		hub:            hub,
 		files:          files,
 		sites:          sites,
-		deployAuth:     NewSiteRegistry(db, adminPolicy),
+		deployAuth:     registry,
+		siteAdmin:      registry,
 		ai:             ai,
 		spotDomain:     cfg.SpotDomain,
 		trustedProxies: trustedProxies,

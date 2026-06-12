@@ -128,6 +128,26 @@ One consequence to be aware of:
 - `_access.json` is an allowlist, not a secret; permitted visitors can
   fetch it like any other file of the site.
 
+## Site pages
+
+The apex serves two platform pages next to the deploy UI:
+
+- **`/spots`** — the deployer's own sites, with size, access status, and
+  a delete action.
+- **`/gallery`** — every public (unrestricted) site on the mesh.
+
+Both are backed by apex-only endpoints, gated like `/api/deploy` so a
+deployed site cannot enumerate or delete sites through a visitor:
+
+- `GET /api/sites/mine` — sites owned by the caller, with the last
+  successful deploy's file count and size.
+- `GET /api/sites/public` — unrestricted sites; restricted ones stay out
+  entirely.
+- `DELETE /api/sites/{name}` — owner or platform admin only. Removes the
+  served files, the site's uploads, its private collections, and the
+  registry claim (so the name is free again); the action is recorded in
+  `site_deploy_audit`. Shared `shared-*` collections are not touched.
+
 ## Production notes
 
 - **DNS**: publish `*.spot.<domain>` as an A record pointing at the VM's

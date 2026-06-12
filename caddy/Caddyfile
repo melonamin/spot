@@ -39,6 +39,15 @@
 		}
 	}
 
+	# Platform pages: one file serves both paths, the page picks its
+	# view from the URL.
+	@pages path /spots /spots/ /gallery /gallery/
+	handle @pages {
+		root * /srv/sdk
+		rewrite * /spots.html
+		file_server
+	}
+
 	handle {
 		root * /srv/sdk
 		file_server
