@@ -33,6 +33,10 @@ test-integration:
 e2e:
     ./scripts/e2e.sh
 
+# Deploy the committed tree to production.
+deploy *args:
+    ./scripts/deploy-prod.sh {{args}}
+
 # Deploy the demo guestbook to the local stack.
 deploy-demo:
     cd examples/demo && ../../cli/spot deploy demo
