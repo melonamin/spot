@@ -24,8 +24,23 @@
 	}
 }
 
+# Branded 404s, for the apex and for every site. Only file-server 404s
+# land here; responses passed through from spot-api (API errors,
+# forward_auth denials) are not errors and keep their JSON bodies.
+(error-pages) {
+	handle_errors {
+		@404 expression {err.status_code} == 404
+		handle @404 {
+			root * /srv/sdk
+			rewrite * /404.html
+			file_server
+		}
+	}
+}
+
 {$SPOT_DOMAIN:spot.localhost} {
 	import {$SPOT_TLS_MODE:tls-internal}
+	import error-pages
 
 	handle /api/* {
 		# Overwrite (not append) the X-Forwarded-* headers: identity and
@@ -56,6 +71,7 @@
 
 *.{$SPOT_DOMAIN:spot.localhost} {
 	import {$SPOT_TLS_MODE:tls-internal}
+	import error-pages
 
 	# Per-site allowlists: a site ships _access.json, spot-api enforces
 	# it. Runs before every handler so files and the DB API are gated

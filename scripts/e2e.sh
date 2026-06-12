@@ -188,6 +188,21 @@ $CURL https://spot.localhost:8443/spots | grep -q "My spots" \
 $CURL https://spot.localhost:8443/gallery | grep -q "Gallery" \
     || fail "/gallery does not serve the gallery page"
 
+echo "==> 404 pages: apex path, unknown site, missing file on a live site"
+code=$($CURL -o /dev/null -w '%{http_code}' https://spot.localhost:8443/no-such-page)
+[ "$code" = "404" ] || fail "apex unknown path returned $code, want 404"
+$CURL https://spot.localhost:8443/no-such-page | grep -q "wandered off" \
+    || fail "apex 404 is not the branded page"
+code=$(curl -sk --resolve nowhere.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{http_code}' \
+    https://nowhere.spot.localhost:8443/)
+[ "$code" = "404" ] || fail "unknown site returned $code, want 404"
+curl -sk --resolve nowhere.spot.localhost:8443:127.0.0.1 https://nowhere.spot.localhost:8443/ \
+    | grep -q "wandered off" || fail "unknown-site 404 is not the branded page"
+code=$($CURL -o /dev/null -w '%{http_code}' https://demo.spot.localhost:8443/no-such-file.css)
+[ "$code" = "404" ] || fail "missing site file returned $code, want 404"
+$CURL https://demo.spot.localhost:8443/no-such-file.css | grep -q "wandered off" \
+    || fail "missing-file 404 is not the branded page"
+
 echo "==> sites API: mine lists the deployer's sites"
 mine=$($CURL https://spot.localhost:8443/api/sites/mine)
 echo "$mine" | grep -q '"name":"webdeploy"' || fail "/api/sites/mine missing webdeploy: $mine"
