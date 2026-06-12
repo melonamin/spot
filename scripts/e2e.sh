@@ -75,15 +75,15 @@ ok=""
 for _ in $(seq 1 30); do
     code=$(curl -sk --resolve secret.spot.localhost:8443:127.0.0.1 -o /dev/null \
         -w '%{http_code}' https://secret.spot.localhost:8443/ 2>/dev/null || true)
-    # 503, not 403: the policy exists but no identity resolver is
-    # configured in e2e — restricted sites must fail closed.
-    if [ "$code" = "503" ]; then
+    # 503 means no usable identity resolver; 403 means a resolver is
+    # configured and the caller is not allowlisted. Both are fail-closed.
+    if [ "$code" = "503" ] || [ "$code" = "403" ]; then
         ok=1
         break
     fi
     sleep 1
 done
-[ -n "$ok" ] || fail "restricted site returned $code, want 503 (fail closed)"
+[ -n "$ok" ] || fail "restricted site returned $code, want 403 or 503 (fail closed)"
 code=$($CURL -o /dev/null -w '%{http_code}' https://demo.spot.localhost:8443/)
 [ "$code" = "200" ] || fail "open site returned $code after access-control deploy, want 200"
 
@@ -179,10 +179,15 @@ rm -f /tmp/spot-e2e-rl.txt
 [ "${limited:-0}" -ge 1 ] || fail "no 429 across 15 parallel uploads"
 echo "    $limited of 15 burst requests were throttled"
 
-echo "==> identity API without NetBird configured fails loudly"
-me=$($CURL https://demo.spot.localhost:8443/api/me)
-echo "$me" | grep -q "identity resolver not configured" \
-    || fail "/api/me did not report missing resolver config: $me"
+echo "==> identity API without a matching NetBird peer fails loudly"
+me_file=$(mktemp)
+code=$($CURL -o "$me_file" -w '%{http_code}' https://demo.spot.localhost:8443/api/me)
+me=$(cat "$me_file")
+rm -f "$me_file"
+case "$code:$me" in
+    503:*"identity resolver not configured"*|404:*"no NetBird peer matches"*) ;;
+    *) fail "/api/me returned $code $me, want 503 missing resolver or 404 unmatched peer" ;;
+esac
 
 echo ""
 echo "E2E PASS"
