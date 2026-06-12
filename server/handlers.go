@@ -7,8 +7,10 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -61,18 +63,52 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
-	mux.HandleFunc("GET /api/me", s.handleMe)
+	mux.HandleFunc("GET /api/me", sameOriginOnly(s.handleMe))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.handleWS)
-	mux.HandleFunc("GET /api/db/{collection}", limited(s.dbLimit, s.handleList))
-	mux.HandleFunc("POST /api/db/{collection}", limited(s.dbLimit, s.handleCreate))
-	mux.HandleFunc("GET /api/db/{collection}/{id}", limited(s.dbLimit, s.handleGet))
-	mux.HandleFunc("PUT /api/db/{collection}/{id}", limited(s.dbLimit, s.handleUpdate))
-	mux.HandleFunc("DELETE /api/db/{collection}/{id}", limited(s.dbLimit, s.handleDelete))
-	mux.HandleFunc("POST /api/files", limited(s.fileLimit, s.handleUpload))
+	mux.HandleFunc("GET /api/db/{collection}", sameOriginOnly(limited(s.dbLimit, s.handleList)))
+	mux.HandleFunc("POST /api/db/{collection}", sameOriginOnly(limited(s.dbLimit, s.handleCreate)))
+	mux.HandleFunc("GET /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleGet)))
+	mux.HandleFunc("PUT /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleUpdate)))
+	mux.HandleFunc("DELETE /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleDelete)))
+	mux.HandleFunc("POST /api/files", sameOriginOnly(limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
-	mux.HandleFunc("POST /api/ai/chat", limited(s.aiLimit, s.handleAIChat))
+	mux.HandleFunc("POST /api/ai/chat", sameOriginOnly(limited(s.aiLimit, s.handleAIChat)))
 	return mux
+}
+
+// sameOriginOnly rejects browser-originated cross-site API calls. Quick
+// identity is ambient mesh identity, not a per-site CSRF token, so a
+// site must not be able to spend a visitor's authorization on another
+// site by targeting that site's /api paths.
+func sameOriginOnly(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !originMatchesHost(r) {
+			httpError(w, http.StatusForbidden, "cross-site API requests are not allowed")
+			return
+		}
+		next(w, r)
+	}
+}
+
+func originMatchesHost(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Host == "" {
+		return false
+	}
+	return sameHost(u.Host, requestHost(r))
+}
+
+func sameHost(a, b string) bool {
+	return strings.EqualFold(normalizeHost(a), normalizeHost(b))
+}
+
+func normalizeHost(host string) string {
+	return strings.TrimSuffix(strings.ToLower(host), ".")
 }
 
 const defaultMaxUpload = 25 << 20
@@ -242,12 +278,9 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "websocket API must be called from a site subdomain")
 		return
 	}
-	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
-		// Proxied requests have Host quick-api:8080 while the browser's
-		// Origin is the site, so the default same-host check would
-		// reject everything. Any *.quickDomain origin is legitimate.
-		OriginPatterns: []string{"*." + s.quickDomain, "*." + s.quickDomain + ":*"},
-	})
+	acceptReq := r.Clone(r.Context())
+	acceptReq.Host = requestHost(r)
+	conn, err := websocket.Accept(w, acceptReq, nil)
 	if err != nil {
 		return // Accept has already written the error response
 	}
