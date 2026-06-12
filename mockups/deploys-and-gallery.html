@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#5a4bf0">
+  <title>Spot — my spots &amp; gallery (mockup)</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --field: #5a4bf0;
+      --grid: rgba(255, 255, 255, .09);
+      --ink: #15121e;
+      --card: #fffefb;
+      --mutedink: #8d879b;
+      --accent: #5a4bf0;
+      --go: #23b14d;
+      --bad: #d92d2d;
+      --paper: #fff7d6;
+      --font-logo: 'Pacifico', 'Brush Script MT', cursive;
+      --font-mono: 'Space Mono', ui-monospace, 'SF Mono', monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(var(--grid) 1.5px, transparent 1.5px),
+        linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px),
+        var(--field);
+      background-size: 44px 44px, 44px 44px, auto;
+    }
+
+    /* ─── top bar ─────────────────────────────────────────────── */
+    .topbar {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 16px 26px;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 26px 24px 8px;
+    }
+
+    /* Same stacked-text trick as the apex logo: an offset thick-stroke
+       copy, a thick-stroke copy in place, white text on top. */
+    .brand {
+      position: relative;
+      z-index: 0;
+      font: 400 32px/1.35 var(--font-logo);
+      color: #fff;
+      text-decoration: none;
+    }
+    .brand::before,
+    .brand::after {
+      content: attr(data-text);
+      position: absolute;
+      left: 0; top: 0;
+      width: 100%; height: 100%;
+      color: var(--ink);
+      -webkit-text-stroke: .14em var(--ink);
+    }
+    .brand::after { transform: translate(.05em, .07em); z-index: -2; }
+    .brand::before { z-index: -1; }
+
+    /* ─── footer (navigation + identity, kept quiet like the apex) ── */
+    footer {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+      font: 400 12px/2.2 var(--font-mono);
+      color: rgba(255, 255, 255, .82);
+      text-align: center;
+    }
+    footer a {
+      color: #fff;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    footer a[aria-current="page"] {
+      color: var(--paper);
+      font-weight: 700;
+      text-decoration: none;
+    }
+    footer code {
+      background: rgba(0, 0, 0, .28);
+      padding: 2px 7px;
+      border-radius: 6px;
+    }
+
+    /* ─── page scaffold ───────────────────────────────────────── */
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 26px 24px 90px;
+    }
+
+    .pagehead { margin: 18px 0 30px; }
+    .title {
+      position: relative;
+      z-index: 0;
+      margin: 0;
+      font: 400 clamp(42px, 7vw, 62px)/1.4 var(--font-logo);
+      color: #fff;
+      outline: none;
+    }
+    .title::before,
+    .title::after {
+      content: attr(data-text);
+      position: absolute;
+      left: 0; top: 0;
+      width: 100%; height: 100%;
+      color: var(--ink);
+      -webkit-text-stroke: .13em var(--ink);
+    }
+    .title::after { transform: translate(.045em, .06em); z-index: -2; }
+    .title::before { z-index: -1; }
+    .sub {
+      margin: 16px 0 0;
+      font: 700 12px/1.7 var(--font-mono);
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, .92);
+    }
+
+    button:focus-visible, a:focus-visible, input:focus-visible, select:focus-visible {
+      outline: 3px solid var(--paper);
+      outline-offset: 3px;
+    }
+
+    /* ─── my spots: site rows ─────────────────────────────────── */
+    .site {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px 26px;
+      align-items: center;
+      overflow: hidden;
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 20px;
+      box-shadow: 7px 8px 0 var(--ink);
+      padding: 24px 26px;
+      margin-bottom: 24px;
+      transition: transform .35s ease, opacity .35s ease, max-height .35s ease,
+                  padding .35s ease, margin .35s ease, border-width .35s ease;
+    }
+    .site.vanish {
+      opacity: 0;
+      transform: rotate(-2.5deg) translateY(18px) scale(.96);
+      max-height: 0 !important;
+      padding-top: 0;
+      padding-bottom: 0;
+      margin-bottom: 0;
+      border-width: 0;
+    }
+
+    .siterow {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      flex-wrap: wrap;
+    }
+    .sitename {
+      margin: 0;
+      font: 700 21px/1.2 var(--font-mono);
+      letter-spacing: .02em;
+      word-break: break-all;
+    }
+    .badge {
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      padding: 6px 11px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      white-space: nowrap;
+    }
+    .badge.public { background: #d9f4e1; }
+    .badge.locked { background: var(--accent); color: #fff; }
+
+    .siteurl {
+      display: inline-block;
+      margin: 9px 0 0;
+      font: 700 13px/1.5 var(--font-mono);
+      color: var(--accent);
+      text-decoration: underline;
+      text-underline-offset: 4px;
+      word-break: break-all;
+    }
+    .sitemeta {
+      margin: 11px 0 0;
+      font: 700 11px/1.8 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .sitemeta b { color: var(--ink); }
+
+    .actions {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .btn {
+      position: relative;
+      overflow: hidden;
+      border: 3px solid var(--ink);
+      border-radius: 13px;
+      background: #fff;
+      color: var(--ink);
+      box-shadow: 4px 5px 0 var(--ink);
+      padding: 13px 17px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease;
+    }
+    .btn:hover { transform: translate(-2px, -2px); box-shadow: 6px 7px 0 var(--ink); }
+    .btn:active { transform: translate(2px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+    .btn-open { background: var(--go); color: #fff; }
+    .btn-delete { color: var(--bad); }
+    .btn-delete:hover { background: var(--bad); color: #fff; }
+
+    /* Armed delete: the button turns into a burning fuse — confirm
+       with a second click before the bar runs out, or it disarms. */
+    .btn-delete.arming { background: var(--bad); color: #fff; }
+    .btn-delete.arming::after {
+      content: "";
+      position: absolute;
+      left: 0; bottom: 0;
+      height: 5px;
+      width: 100%;
+      background: var(--paper);
+      animation: fuse 4s linear forwards;
+    }
+    @keyframes fuse { to { width: 0; } }
+
+    .empty {
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 24px;
+      box-shadow: 10px 12px 0 var(--ink);
+      padding: 64px 32px;
+      text-align: center;
+    }
+    .empty h2 {
+      margin: 0;
+      font: 700 clamp(17px, 3.4vw, 23px)/1.5 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+    }
+    .empty p {
+      margin: 14px 0 0;
+      font: 700 13px/1.7 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .empty a { color: var(--accent); }
+
+    /* ─── gallery ─────────────────────────────────────────────── */
+    .toolbar {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 18px;
+      margin-bottom: 34px;
+    }
+    .searchbox {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      box-shadow: 6px 7px 0 var(--ink);
+      padding: 0 18px;
+      cursor: text;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .searchbox:focus-within { transform: translate(-2px, -2px); box-shadow: 8px 9px 0 var(--ink); }
+    .searchbox svg { width: 19px; height: 19px; color: var(--mutedink); flex: 0 0 auto; }
+    #search {
+      flex: 1;
+      min-width: 0;
+      border: 0;
+      background: none;
+      outline: 0;
+      padding: 17px 0;
+      font: 700 14px/1 var(--font-mono);
+      color: var(--ink);
+    }
+    #search::placeholder { color: var(--mutedink); opacity: .7; }
+
+    .sortbox { position: relative; }
+    #sort {
+      appearance: none;
+      -webkit-appearance: none;
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 6px 7px 0 var(--ink);
+      padding: 17px 46px 17px 18px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+    .sortbox::after {
+      content: "▾";
+      position: absolute;
+      right: 18px; top: 50%;
+      transform: translateY(-50%);
+      font: 700 14px/1 var(--font-mono);
+      pointer-events: none;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(235px, 1fr));
+      gap: 30px 26px;
+    }
+
+    .tile {
+      display: block;
+      background: var(--card);
+      border: 3px solid var(--ink);
+      border-radius: 18px;
+      box-shadow: 7px 8px 0 var(--ink);
+      text-decoration: none;
+      color: var(--ink);
+      transition: transform .15s ease, box-shadow .15s ease;
+    }
+    .tile:hover { transform: translate(-3px, -4px); box-shadow: 11px 13px 0 var(--ink); }
+    .tile:active { transform: translate(2px, 3px); box-shadow: 2px 2px 0 var(--ink); }
+
+    .preview {
+      position: relative;
+      overflow: hidden;
+      aspect-ratio: 16 / 10;
+      border-bottom: 3px solid var(--ink);
+      border-radius: 15px 15px 0 0;
+      display: grid;
+      place-items: center;
+    }
+    .glyph {
+      font: 400 64px/1 var(--font-logo);
+      color: #fff;
+      -webkit-text-stroke: 3px var(--ink);
+      transition: transform .2s ease;
+      user-select: none;
+    }
+    .tile:hover .glyph { transform: translateY(-5px) rotate(-4deg) scale(1.08); }
+
+    /* Production path: a real screenshot of the site, faked with a
+       scaled-down iframe of the live page. The generative art behind
+       it doubles as the loading state. */
+    .preview iframe {
+      position: absolute;
+      left: 0; top: 0;
+      width: 1280px;
+      height: 800px;
+      border: 0;
+      transform-origin: 0 0;
+      pointer-events: none;
+      background: #fff;
+    }
+
+    .visit {
+      position: absolute;
+      top: 11px; right: 11px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      padding: 7px 11px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      opacity: 0;
+      transform: translateY(-4px);
+      transition: opacity .15s ease, transform .15s ease;
+    }
+    .tile:hover .visit, .tile:focus-visible .visit { opacity: 1; transform: none; }
+
+    .tinfo { padding: 15px 17px 17px; }
+    .tname {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      margin: 0;
+      font: 700 15px/1.3 var(--font-mono);
+      word-break: break-all;
+    }
+    .yours {
+      flex: 0 0 auto;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      padding: 4px 8px;
+      font: 700 9px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .tmeta {
+      margin: 9px 0 0;
+      font: 700 10px/1.7 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+
+    .tally {
+      margin: 36px 0 0;
+      font: 700 12px/1.7 var(--font-mono);
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      text-align: center;
+      color: rgba(255, 255, 255, .85);
+    }
+
+    /* ─── toast + mockup sticker ──────────────────────────────── */
+    #toast {
+      position: fixed;
+      left: 50%;
+      bottom: 30px;
+      z-index: 50;
+      transform: translate(-50%, 90px);
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      background: var(--ink);
+      color: #fff;
+      box-shadow: 6px 7px 0 rgba(0, 0, 0, .35);
+      padding: 16px 22px;
+      font: 700 13px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      opacity: 0;
+      transition: transform .25s ease, opacity .25s ease;
+      pointer-events: none;
+    }
+    #toast.show { transform: translate(-50%, 0); opacity: 1; }
+
+    .sticker {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 40;
+      transform: rotate(-4deg);
+      border: 3px solid var(--ink);
+      border-radius: 12px;
+      background: var(--paper);
+      box-shadow: 5px 6px 0 var(--ink);
+      padding: 11px 15px;
+      font: 700 11px/1.4 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      pointer-events: none;
+    }
+
+    /* ─── responsive ──────────────────────────────────────────── */
+    @media (max-width: 720px) {
+      .topbar { padding-top: 22px; }
+      .site { grid-template-columns: 1fr; padding: 22px 20px; }
+      .toolbar { grid-template-columns: 1fr; }
+      #sort { width: 100%; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" data-text="Spot">Spot</a>
+  </header>
+
+  <main>
+    <section id="view-deploys" aria-labelledby="deploys-title">
+      <div class="pagehead">
+        <h1 class="title" id="deploys-title" data-text="My spots" tabindex="-1">My spots</h1>
+        <p class="sub" id="deploys-sub"></p>
+      </div>
+      <div id="sitelist"></div>
+      <div class="empty" id="empty" hidden>
+        <h2>No spots yet</h2>
+        <p><a href="/">Drop a folder on the home page</a> to claim your first one.</p>
+      </div>
+    </section>
+
+    <section id="view-gallery" aria-labelledby="gallery-title" hidden>
+      <div class="pagehead">
+        <h1 class="title" id="gallery-title" data-text="Gallery" tabindex="-1">Gallery</h1>
+        <p class="sub">Every public spot on the mesh</p>
+      </div>
+      <div class="toolbar">
+        <label class="searchbox" for="search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <path d="m20 20-3.5-3.5"/>
+          </svg>
+          <input id="search" type="search" autocomplete="off" spellcheck="false"
+                 placeholder="Search spots or people">
+        </label>
+        <div class="sortbox">
+          <select id="sort" aria-label="Sort gallery">
+            <option value="updated">Fresh first</option>
+            <option value="created">Newest first</option>
+            <option value="name">A to Z</option>
+          </select>
+        </div>
+      </div>
+      <div class="grid" id="grid"></div>
+      <p class="tally" id="tally"></p>
+    </section>
+  </main>
+
+  <footer>
+    <nav aria-label="Spot pages">
+      <a href="/">deploy</a> &nbsp;·&nbsp;
+      <a href="#deploys" data-view="deploys">my spots</a> &nbsp;·&nbsp;
+      <a href="#gallery" data-view="gallery">gallery</a>
+    </nav>
+    signed in as <code id="footer-id"></code>
+  </footer>
+
+  <div id="toast" role="status" aria-live="polite"></div>
+  <span class="sticker" aria-hidden="true">Mockup · sample data</span>
+
+  <script>
+    (() => {
+      'use strict';
+
+      // Mockup wiring notes — the real pages replace the sample data
+      // below with these (to-be-built) apex endpoints:
+      //   GET    /api/sites/mine      → sites owned by the caller, with
+      //                                 last-deploy file_count/total_bytes
+      //                                 from site_deploy_audit and a
+      //                                 restricted flag from _access.json
+      //   DELETE /api/sites/{name}    → owner or platform admin only
+      //   GET    /api/sites/public    → unrestricted sites for the gallery
+      // HOST below becomes location.host on the real apex page.
+      const HOST = 'spot.t1a.dev';
+      const ME = { email: 'alex@melonamin.com', name: 'Sasha' };
+      const NOW = Date.now();
+
+      const MY_SITES = [
+        { name: 'otter-cam',   files: 3,  bytes: 19306496, createdDays: 0, updatedMins: 35,      restricted: false },
+        { name: 'quick-lunch', files: 7,  bytes: 188416,   createdDays: 1, updatedMins: 130,     restricted: false },
+        { name: 'retro-board', files: 12, bytes: 93184,    createdDays: 1, updatedMins: 60 * 26, restricted: true, allowCount: 3 },
+        { name: 'demo',        files: 5,  bytes: 9216,     createdDays: 1, updatedMins: 60 * 30, restricted: false },
+      ];
+
+      const GALLERY = [
+        { name: 'standup-spinner', owner: 'Marta Vidal',  ownerEmail: 'marta@melonamin.com', createdDays: 4,  updatedMins: 12 },
+        { name: 'otter-cam',       owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 0,  updatedMins: 35 },
+        { name: 'pepper-status',   owner: 'Marta Vidal',  ownerEmail: 'marta@melonamin.com', createdDays: 9,  updatedMins: 45 },
+        { name: 'quick-lunch',     owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 1,  updatedMins: 130 },
+        { name: 't1a-links',       owner: 'Deniz Aksoy',  ownerEmail: 'deniz@melonamin.com', createdDays: 21, updatedMins: 60 * 4 },
+        { name: 'cosmic-comet',    owner: 'Priya Nair',   ownerEmail: 'priya@melonamin.com', createdDays: 2,  updatedMins: 60 * 26 },
+        { name: 'demo',            owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 1,  updatedMins: 60 * 30 },
+        { name: 'mesh-map',        owner: 'Deniz Aksoy',  ownerEmail: 'deniz@melonamin.com', createdDays: 14, updatedMins: 60 * 49 },
+        { name: 'golden-waffle',   owner: 'Jonas Brandt', ownerEmail: 'jonas@melonamin.com', createdDays: 6,  updatedMins: 60 * 24 * 3 },
+        { name: 'zesty-rocket',    owner: 'Tomás Rocha',  ownerEmail: 'tomas@melonamin.com', createdDays: 11, updatedMins: 60 * 24 * 5 },
+        { name: 'meadow-notes',    owner: 'Priya Nair',   ownerEmail: 'priya@melonamin.com', createdDays: 30, updatedMins: 60 * 24 * 8 },
+        { name: 'peppy-spark',     owner: 'Jonas Brandt', ownerEmail: 'jonas@melonamin.com', createdDays: 45, updatedMins: 60 * 24 * 30 },
+      ];
+
+      const $ = (id) => document.getElementById(id);
+      const siteUrl = (name) => 'https://' + name + '.' + HOST + '/';
+
+      const rel = (mins) => {
+        if (mins < 2) return 'just now';
+        if (mins < 60) return Math.round(mins) + 'm ago';
+        if (mins < 60 * 48) return Math.round(mins / 60) + 'h ago';
+        return Math.round(mins / 60 / 24) + 'd ago';
+      };
+      const dateLabel = (daysAgo) =>
+        new Date(NOW - daysAgo * 864e5).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      const fmtSize = (bytes) => {
+        if (bytes < 1024) return bytes + ' B';
+        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
+        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
+      };
+
+      const toastEl = $('toast');
+      let toastTimer = null;
+      const toast = (message) => {
+        toastEl.textContent = message;
+        toastEl.classList.add('show');
+        clearTimeout(toastTimer);
+        toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
+      };
+
+      const copyText = async (text) => {
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+          return;
+        }
+        const field = document.createElement('textarea');
+        field.value = text;
+        field.setAttribute('readonly', '');
+        field.style.position = 'fixed';
+        field.style.left = '-9999px';
+        document.body.appendChild(field);
+        field.select();
+        document.execCommand('copy');
+        field.remove();
+      };
+
+      // ─── generative previews ──────────────────────────────────
+      // Every site gets a deterministic pattern from its name, in the
+      // confetti palette. It is the gallery placeholder today and the
+      // loading/fallback state once previews are live iframes.
+      const hash = (text) => {
+        let h = 5381;
+        for (const ch of text) h = ((h << 5) + h + ch.codePointAt(0)) >>> 0;
+        return h;
+      };
+      const FIELDS = ['#5a4bf0', '#23b14d', '#ff9f1c', '#f7258b', '#4cc9f0', '#ff5d5d', '#7048e8'];
+      const PATTERNS = [
+        { image: 'linear-gradient(rgba(255,255,255,.22) 2px, transparent 2px),' +
+                 'linear-gradient(90deg, rgba(255,255,255,.22) 2px, transparent 2px)',
+          size: '22px 22px' },
+        { image: 'radial-gradient(rgba(255,255,255,.32) 3px, transparent 3.5px)',
+          size: '26px 26px' },
+        { image: 'repeating-linear-gradient(45deg, rgba(255,255,255,.17) 0 13px, transparent 13px 26px)',
+          size: 'auto' },
+        { image: 'repeating-radial-gradient(circle at 28% 42%, rgba(255,255,255,.15) 0 11px, transparent 11px 24px)',
+          size: 'auto' },
+      ];
+      const paintPreview = (el, name) => {
+        const h = hash(name);
+        const field = FIELDS[h % FIELDS.length];
+        const pattern = PATTERNS[(h >>> 4) % PATTERNS.length];
+        el.style.background = pattern.image + ', ' + field;
+        el.style.backgroundSize = pattern.size + ', auto';
+      };
+
+      // ─── my spots ─────────────────────────────────────────────
+      const siteList = $('sitelist');
+      let armed = null; // { button, timer } for the pending delete
+
+      const disarm = () => {
+        if (!armed) return;
+        armed.button.classList.remove('arming');
+        armed.button.textContent = 'Delete';
+        clearTimeout(armed.timer);
+        armed = null;
+      };
+
+      const removeSite = (name, row) => {
+        disarm();
+        row.style.maxHeight = row.offsetHeight + 'px';
+        requestAnimationFrame(() => row.classList.add('vanish'));
+        setTimeout(() => {
+          MY_SITES.splice(MY_SITES.findIndex((s) => s.name === name), 1);
+          const inGallery = GALLERY.findIndex((s) => s.name === name);
+          if (inGallery !== -1) GALLERY.splice(inGallery, 1);
+          renderDeploys();
+          renderGallery();
+          toast(name + ' is gone');
+        }, 380);
+        // Real page: DELETE /api/sites/{name}, then re-render from the
+        // response — only the server knows the delete actually landed.
+      };
+
+      const renderDeploys = () => {
+        $('deploys-sub').textContent =
+          MY_SITES.length + ' live · ' + ME.email;
+        $('empty').hidden = MY_SITES.length > 0;
+        siteList.replaceChildren();
+
+        for (const site of MY_SITES) {
+          const row = document.createElement('article');
+          row.className = 'site';
+
+          const info = document.createElement('div');
+          const head = document.createElement('div');
+          head.className = 'siterow';
+          const name = document.createElement('h2');
+          name.className = 'sitename';
+          name.textContent = site.name;
+          const badge = document.createElement('span');
+          badge.className = 'badge ' + (site.restricted ? 'locked' : 'public');
+          badge.textContent = site.restricted ? '🔒 locked · ' + site.allowCount : 'public';
+          head.append(name, badge);
+
+          const url = document.createElement('a');
+          url.className = 'siteurl';
+          url.href = siteUrl(site.name);
+          url.target = '_blank';
+          url.rel = 'noopener';
+          url.textContent = site.name + '.' + HOST;
+
+          const meta = document.createElement('p');
+          meta.className = 'sitemeta';
+          meta.innerHTML = '<b></b> files · <b></b> · claimed <b></b> · updated <b></b>';
+          const slots = meta.querySelectorAll('b');
+          slots[0].textContent = site.files;
+          slots[1].textContent = fmtSize(site.bytes);
+          slots[2].textContent = dateLabel(site.createdDays);
+          slots[3].textContent = rel(site.updatedMins);
+
+          info.append(head, url, meta);
+
+          const actions = document.createElement('div');
+          actions.className = 'actions';
+
+          const open = document.createElement('a');
+          open.className = 'btn btn-open';
+          open.href = siteUrl(site.name);
+          open.target = '_blank';
+          open.rel = 'noopener';
+          open.textContent = 'Open ↗';
+
+          const copy = document.createElement('button');
+          copy.type = 'button';
+          copy.className = 'btn';
+          copy.textContent = 'Copy URL';
+          copy.addEventListener('click', async () => {
+            await copyText(siteUrl(site.name));
+            toast('URL copied');
+          });
+
+          const del = document.createElement('button');
+          del.type = 'button';
+          del.className = 'btn btn-delete';
+          del.textContent = 'Delete';
+          del.setAttribute('aria-label', 'Delete ' + site.name);
+          del.addEventListener('click', (e) => {
+            e.stopPropagation();
+            if (armed && armed.button === del) {
+              removeSite(site.name, row);
+              return;
+            }
+            disarm();
+            del.classList.add('arming');
+            del.textContent = 'Sure? Click again';
+            armed = { button: del, timer: setTimeout(disarm, 4000) };
+          });
+
+          actions.append(open, copy, del);
+          row.append(info, actions);
+          siteList.appendChild(row);
+        }
+      };
+
+      // An armed delete disarms on Escape or a click anywhere else.
+      document.addEventListener('click', (e) => {
+        if (armed && !armed.button.contains(e.target)) disarm();
+      });
+      window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') disarm();
+      });
+
+      // ─── gallery ──────────────────────────────────────────────
+      const grid = $('grid');
+
+      // Ordering is the gallery's editorial voice: strict recency
+      // turns it into a changelog, where one busy person's redeploys
+      // crowd out everything else. A variety boost (e.g. cap
+      // consecutive tiles per owner) would keep the wall communal.
+      const rankGallery = (sites, mode) => {
+        const ranked = [...sites];
+        if (mode === 'name') ranked.sort((a, b) => a.name.localeCompare(b.name));
+        else if (mode === 'created') ranked.sort((a, b) => a.createdDays - b.createdDays);
+        else ranked.sort((a, b) => a.updatedMins - b.updatedMins);
+        return ranked;
+      };
+
+      const renderGallery = () => {
+        const query = $('search').value.trim().toLowerCase();
+        const mode = $('sort').value;
+        const shown = rankGallery(GALLERY, mode).filter((site) =>
+          !query || site.name.includes(query) || site.owner.toLowerCase().includes(query)
+        );
+
+        grid.replaceChildren();
+        for (const site of shown) {
+          const tile = document.createElement('a');
+          tile.className = 'tile';
+          tile.href = siteUrl(site.name);
+          tile.target = '_blank';
+          tile.rel = 'noopener';
+
+          const preview = document.createElement('div');
+          preview.className = 'preview';
+          paintPreview(preview, site.name);
+          if (site.previewUrl) {
+            // Live preview: the real site scaled down to thumbnail size.
+            const frame = document.createElement('iframe');
+            frame.src = site.previewUrl;
+            frame.loading = 'lazy';
+            frame.setAttribute('sandbox', '');
+            frame.setAttribute('scrolling', 'no');
+            frame.setAttribute('aria-hidden', 'true');
+            frame.tabIndex = -1;
+            preview.appendChild(frame);
+            fitFrame(preview, frame);
+          } else {
+            const glyph = document.createElement('span');
+            glyph.className = 'glyph';
+            glyph.textContent = site.name[0].toUpperCase();
+            preview.appendChild(glyph);
+          }
+          const visit = document.createElement('span');
+          visit.className = 'visit';
+          visit.textContent = 'Visit ↗';
+          preview.appendChild(visit);
+
+          const info = document.createElement('div');
+          info.className = 'tinfo';
+          const name = document.createElement('h2');
+          name.className = 'tname';
+          name.textContent = site.name;
+          if (site.ownerEmail === ME.email) {
+            const chip = document.createElement('span');
+            chip.className = 'yours';
+            chip.textContent = 'yours';
+            name.appendChild(chip);
+          }
+          const meta = document.createElement('p');
+          meta.className = 'tmeta';
+          meta.textContent = 'by ' + site.owner + ' · ' + rel(site.updatedMins);
+          info.append(name, meta);
+
+          tile.append(preview, info);
+          grid.appendChild(tile);
+        }
+
+        $('tally').textContent = shown.length === GALLERY.length
+          ? GALLERY.length + ' public spots on the mesh'
+          : shown.length + ' of ' + GALLERY.length + ' public spots';
+      };
+
+      const fitFrame = (container, frame) => {
+        const fit = () => { frame.style.transform = 'scale(' + container.clientWidth / 1280 + ')'; };
+        new ResizeObserver(fit).observe(container);
+        fit();
+      };
+
+      $('search').addEventListener('input', renderGallery);
+      $('sort').addEventListener('change', renderGallery);
+
+      // ─── view switching ───────────────────────────────────────
+      const VIEWS = { deploys: $('view-deploys'), gallery: $('view-gallery') };
+      const showView = (view) => {
+        for (const [key, section] of Object.entries(VIEWS)) section.hidden = key !== view;
+        for (const link of document.querySelectorAll('footer a[data-view]')) {
+          if (link.dataset.view === view) link.setAttribute('aria-current', 'page');
+          else link.removeAttribute('aria-current');
+        }
+      };
+      const fromHash = () => showView(location.hash === '#gallery' ? 'gallery' : 'deploys');
+      window.addEventListener('hashchange', fromHash);
+
+      $('footer-id').textContent = ME.email;
+
+      renderDeploys();
+      renderGallery();
+      fromHash();
+    })();
+  </script>
+</body>
+</html>
