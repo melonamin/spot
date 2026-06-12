@@ -97,6 +97,7 @@ services:
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
       ANTHROPIC_BASE_URL: ${ANTHROPIC_BASE_URL:-}
+      SPOT_AI_MODEL: ${SPOT_AI_MODEL:-}
     volumes:
       # Same FUSE-propagated view as Caddy; _access.json policies are
       # read from here.

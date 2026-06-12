@@ -167,8 +167,10 @@ The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
 in `.env`); sites call Claude with zero configuration. Set
 `ANTHROPIC_BASE_URL` to route the proxy through an Anthropic-compatible
 gateway instead of the Claude API. Defaults:
-`claude-opus-4-8`, adaptive thinking, 16K max tokens — overridable per
-request with `model`, `system`, `max_tokens`:
+`claude-opus-4-8` (deployment-overridable with `SPOT_AI_MODEL`, e.g.
+when the gateway serves a different model list), adaptive thinking,
+16K max tokens — overridable per request with `model`, `system`,
+`max_tokens`:
 
 ```js
 const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);

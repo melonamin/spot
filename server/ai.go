@@ -23,24 +23,33 @@ const (
 // key, so sites can call an LLM with zero configuration.
 type AIProxy struct {
 	client anthropic.Client
+	// model is the default when a request names none. Deployments
+	// behind a gateway that doesn't serve the platform default
+	// override it via SPOT_AI_MODEL.
+	model string
 }
 
 func NewAIProxy(apiKey string, opts ...option.RequestOption) *AIProxy {
 	opts = append([]option.RequestOption{option.WithAPIKey(apiKey)}, opts...)
-	return &AIProxy{client: anthropic.NewClient(opts...)}
+	return &AIProxy{client: anthropic.NewClient(opts...), model: defaultAIModel}
 }
 
 // NewAIProxyWithUpstream builds the proxy against a custom
-// Anthropic-compatible base URL (an LLM gateway or proxy). An empty
-// baseURL means the Claude API itself — pinned explicitly, because the
-// SDK honors a set-but-empty ANTHROPIC_BASE_URL in the environment
+// Anthropic-compatible base URL (an LLM gateway or proxy) and default
+// model; empty values mean the Claude API itself and the platform
+// default model. The base URL is pinned explicitly even then, because
+// the SDK honors a set-but-empty ANTHROPIC_BASE_URL in the environment
 // (which is how compose renders an unset variable) and would otherwise
 // dial a URL of "".
-func NewAIProxyWithUpstream(apiKey, baseURL string) *AIProxy {
+func NewAIProxyWithUpstream(apiKey, baseURL, model string) *AIProxy {
 	if baseURL == "" {
 		baseURL = "https://api.anthropic.com/"
 	}
-	return NewAIProxy(apiKey, option.WithBaseURL(baseURL))
+	proxy := NewAIProxy(apiKey, option.WithBaseURL(baseURL))
+	if model != "" {
+		proxy.model = model
+	}
+	return proxy
 }
 
 type aiChatMessage struct {
@@ -83,7 +92,7 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(defaultAIModel),
+		Model:     anthropic.Model(s.ai.model),
 		MaxTokens: defaultAITokens,
 		// Adaptive thinking lets the model decide how much to reason —
 		// the right default for a proxy that sees arbitrary tasks.

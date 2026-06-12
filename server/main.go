@@ -35,6 +35,7 @@ type config struct {
 	SitesBucket      string
 	AnthropicAPIKey  string
 	AnthropicBaseURL string
+	AIModel          string
 }
 
 func loadConfig() (config, error) {
@@ -52,6 +53,7 @@ func loadConfig() (config, error) {
 		SitesBucket:      envOr("SPOT_SITES_BUCKET", "spot-sites"),
 		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
 		AnthropicBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
+		AIModel:          os.Getenv("SPOT_AI_MODEL"),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -138,12 +140,12 @@ func main() {
 
 	var ai *AIProxy
 	if cfg.AnthropicAPIKey != "" {
-		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL)
-		if cfg.AnthropicBaseURL != "" {
-			log.Printf("ai: proxying to %s", cfg.AnthropicBaseURL)
-		} else {
-			log.Printf("ai: proxying to the Claude API")
+		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL, cfg.AIModel)
+		upstream := cfg.AnthropicBaseURL
+		if upstream == "" {
+			upstream = "the Claude API"
 		}
+		log.Printf("ai: proxying to %s (default model %s)", upstream, ai.model)
 	} else {
 		log.Printf("ai: ANTHROPIC_API_KEY not set, /api/ai/chat will return 503")
 	}

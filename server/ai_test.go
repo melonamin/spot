@@ -130,7 +130,7 @@ func TestAIChatCustomUpstream(t *testing.T) {
 	// unset variable that way) must not override the configured value.
 	t.Setenv("ANTHROPIC_BASE_URL", "")
 	srv := &Server{
-		ai:         NewAIProxyWithUpstream("test-key", api.URL),
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, ""),
 		spotDomain: "spot.localhost",
 	}
 
@@ -144,6 +144,38 @@ func TestAIChatCustomUpstream(t *testing.T) {
 	}
 	if res.Text != "Hello from Claude" {
 		t.Errorf("response = %+v", res)
+	}
+	// An empty model config keeps the platform default.
+	if upstreamBody["model"] != defaultAIModel {
+		t.Errorf("upstream model = %v, want %s", upstreamBody["model"], defaultAIModel)
+	}
+}
+
+func TestAIChatDeploymentDefaultModel(t *testing.T) {
+	var upstreamBody map[string]any
+	api := newClaudeAPI(t, &upstreamBody)
+	defer api.Close()
+	srv := &Server{
+		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6"),
+		spotDomain: "spot.localhost",
+	}
+
+	// A request that names no model gets the deployment default.
+	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat: status %d body %s", rec.Code, rec.Body)
+	}
+	if upstreamBody["model"] != "claude-sonnet-4-6" {
+		t.Errorf("upstream model = %v, want claude-sonnet-4-6", upstreamBody["model"])
+	}
+
+	// A per-request model still wins over the deployment default.
+	rec = postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}], "model": "claude-haiku-4-5"}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("chat with model: status %d body %s", rec.Code, rec.Body)
+	}
+	if upstreamBody["model"] != "claude-haiku-4-5" {
+		t.Errorf("upstream model = %v, want claude-haiku-4-5", upstreamBody["model"])
 	}
 }
 
