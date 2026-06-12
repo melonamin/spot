@@ -29,6 +29,10 @@ for _ in $(seq 1 60); do
 done
 [ -n "$ready" ] || fail "stack did not become ready within 60s"
 
+echo "==> apex page serves the deploy UI"
+$CURL https://spot.localhost:8443/ | grep -q "Drop your folder here" \
+    || fail "apex page does not contain the deploy drop zone"
+
 echo "==> deploying the demo site via the CLI"
 ( cd examples/demo && ../../cli/spot deploy demo )
 
@@ -98,6 +102,56 @@ url=$(echo "$uploaded" | sed -n 's/.*"url":"\([^"]*\)".*/\1/p')
 downloaded=$($CURL "https://demo.spot.localhost:8443$url")
 [ "$downloaded" = "$payload" ] || fail "downloaded content differs: $downloaded"
 rm -f /tmp/spot-e2e-upload.txt
+
+echo "==> web deploy: multipart deploy through the apex /api/deploy"
+webdir=$(mktemp -d)
+printf '<h1>spot web deploy</h1>' > "$webdir/index.html"
+printf 'p{color:red}' > "$webdir/app.css"
+# Filenames carry site-relative paths, wrapped in a folder like a
+# browser folder pick — the API must strip the wrapping.
+deployed=$($CURL -F 'site=webdeploy' \
+    -F "files=@$webdir/index.html;filename=site/index.html" \
+    -F "files=@$webdir/app.css;filename=site/css/app.css" \
+    https://spot.localhost:8443/api/deploy)
+echo "$deployed" | grep -q '"files":2' || fail "web deploy failed: $deployed"
+ok=""
+for _ in $(seq 1 30); do
+    if curl -sk --resolve webdeploy.spot.localhost:8443:127.0.0.1 \
+        https://webdeploy.spot.localhost:8443/ 2>/dev/null | grep -q "spot web deploy"; then
+        ok=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$ok" ] || fail "web-deployed site not served at webdeploy.spot.localhost"
+css=$(curl -sk --resolve webdeploy.spot.localhost:8443:127.0.0.1 \
+    https://webdeploy.spot.localhost:8443/css/app.css)
+[ "$css" = "p{color:red}" ] || fail "nested file not served: $css"
+echo "    web-deployed site is live"
+
+echo "==> web deploy: redeploy removes stale files"
+deployed=$($CURL -F 'site=webdeploy' \
+    -F "files=@$webdir/index.html;filename=index.html" \
+    https://spot.localhost:8443/api/deploy)
+echo "$deployed" | grep -q '"files":1' || fail "redeploy failed: $deployed"
+ok=""
+for _ in $(seq 1 30); do
+    code=$(curl -sk --resolve webdeploy.spot.localhost:8443:127.0.0.1 -o /dev/null \
+        -w '%{http_code}' https://webdeploy.spot.localhost:8443/css/app.css 2>/dev/null || true)
+    if [ "$code" = "404" ]; then
+        ok=1
+        break
+    fi
+    sleep 1
+done
+[ -n "$ok" ] || fail "stale file still served after redeploy (got $code)"
+rm -rf "$webdir"
+
+echo "==> web deploy: refused from a site subdomain"
+code=$(curl -sk --resolve demo.spot.localhost:8443:127.0.0.1 -o /dev/null -w '%{http_code}' \
+    -F 'site=demo' -F "files=@scripts/e2e.sh;filename=index.html" \
+    https://demo.spot.localhost:8443/api/deploy)
+[ "$code" = "400" ] || fail "deploy from site subdomain returned $code, want 400"
 
 echo "==> AI proxy"
 ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'

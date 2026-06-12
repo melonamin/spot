@@ -24,13 +24,15 @@ type Server struct {
 	policies   *PolicyStore
 	hub        *Hub
 	files      *FileStore
+	sites      *SiteStore
 	ai         *AIProxy
 	maxUpload  int64
 	spotDomain string
 
-	dbLimit   *RateLimiter
-	fileLimit *RateLimiter
-	aiLimit   *RateLimiter
+	dbLimit     *RateLimiter
+	fileLimit   *RateLimiter
+	aiLimit     *RateLimiter
+	deployLimit *RateLimiter
 }
 
 // requestHost is the host the browser addressed. Caddy overwrites
@@ -58,6 +60,9 @@ func (s *Server) routes() *http.ServeMux {
 	if s.aiLimit == nil {
 		s.aiLimit = NewRateLimiter(0.5, 10)
 	}
+	if s.deployLimit == nil {
+		s.deployLimit = NewRateLimiter(0.5, 3)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
@@ -71,6 +76,7 @@ func (s *Server) routes() *http.ServeMux {
 	mux.HandleFunc("GET /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleGet)))
 	mux.HandleFunc("PUT /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleUpdate)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", sameOriginOnly(limited(s.dbLimit, s.handleDelete)))
+	mux.HandleFunc("POST /api/deploy", sameOriginOnly(limited(s.deployLimit, s.handleDeploy)))
 	mux.HandleFunc("POST /api/files", sameOriginOnly(limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
 	mux.HandleFunc("POST /api/ai/chat", sameOriginOnly(limited(s.aiLimit, s.handleAIChat)))

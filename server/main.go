@@ -32,6 +32,7 @@ type config struct {
 	S3AccessKey     string
 	S3SecretKey     string
 	UploadsBucket   string
+	SitesBucket     string
 	AnthropicAPIKey string
 }
 
@@ -47,6 +48,7 @@ func loadConfig() (config, error) {
 		S3AccessKey:     os.Getenv("SPOT_S3_ACCESS_KEY"),
 		S3SecretKey:     os.Getenv("SPOT_S3_SECRET_KEY"),
 		UploadsBucket:   envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
+		SitesBucket:     envOr("SPOT_SITES_BUCKET", "spot-sites"),
 		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
 	}
 	if cfg.DatabaseURL == "" {
@@ -116,14 +118,20 @@ func main() {
 	go listener.Run(ctx)
 
 	var files *FileStore
+	var sites *SiteStore
 	if cfg.S3Endpoint != "" {
 		files, err = NewFileStore(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.UploadsBucket)
 		if err != nil {
 			log.Fatalf("file store: %v", err)
 		}
 		log.Printf("files: storing uploads in %s/%s", cfg.S3Endpoint, cfg.UploadsBucket)
+		sites, err = NewSiteStore(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.SitesBucket)
+		if err != nil {
+			log.Fatalf("site store: %v", err)
+		}
+		log.Printf("deploys: storing sites in %s/%s", cfg.S3Endpoint, cfg.SitesBucket)
 	} else {
-		log.Printf("files: SPOT_S3_ENDPOINT not set, /api/files will return 503")
+		log.Printf("files: SPOT_S3_ENDPOINT not set, /api/files and /api/deploy will return 503")
 	}
 
 	var ai *AIProxy
@@ -140,6 +148,7 @@ func main() {
 		policies:   NewPolicyStore(cfg.SitesDir, 5*time.Second),
 		hub:        hub,
 		files:      files,
+		sites:      sites,
 		ai:         ai,
 		spotDomain: cfg.SpotDomain,
 	}

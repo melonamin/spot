@@ -92,6 +92,7 @@ services:
       SPOT_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       SPOT_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
       SPOT_UPLOADS_BUCKET: spot-uploads
+      SPOT_SITES_BUCKET: spot-sites
       NETBIRD_API_URL: ${NETBIRD_API_URL:-}
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}

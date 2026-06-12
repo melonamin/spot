@@ -37,6 +37,14 @@ Deploy any folder with an `index.html`:
 cli/spot deploy mysite     # -> https://mysite.spot.localhost:8443/
 ```
 
+Or skip the terminal: the apex page (`https://spot.localhost:8443/`) is
+a deployer — drop a folder on it, pick a name, hit Launch. It posts the
+files to `POST /api/deploy` on the apex, which syncs them into the same
+`spot-sites` bucket the CLI uses (stale files are removed, like `rclone
+sync`). The endpoint only answers on the apex host, so a deployed
+site's JavaScript can never redeploy other sites with a visitor's
+browser.
+
 `cli/spot init` writes an agent skill into the current project so coding
 agents know the SDK without reading docs.
 
@@ -163,8 +171,8 @@ console.log(res.text);
 ## Rate limits
 
 Per peer IP: database 25 req/s (burst 50), uploads 2 req/s (burst 10),
-AI 1 request per 2s (burst 10). The authz endpoint Caddy consults for
-static files is deliberately unlimited.
+AI 1 request per 2s (burst 10), deploys 1 per 2s (burst 3). The authz
+endpoint Caddy consults for static files is deliberately unlimited.
 
 Compared to the blog's feature list, only the data warehouse
 (Shopify-specific BigQuery) is deliberately omitted — wire your own
