@@ -524,6 +524,9 @@
       text-decoration: underline;
       text-underline-offset: 3px;
     }
+    footer nav {
+      margin-top: 14px;
+    }
 
     .install-modal[hidden] { display: none; }
     .install-modal {
@@ -807,10 +810,11 @@
     </form>
 
     <footer>
-      <a href="/spots">my spots</a> &nbsp;·&nbsp; <a href="/gallery">gallery</a>
-      <br>
       prefer a terminal? <code>spot deploy &lt;name&gt;</code> ships the current folder
       &nbsp;·&nbsp; <code>spot init</code> teaches your coding agent the SDK
+      <nav aria-label="Spot pages">
+        <a href="/spots">my spots</a> &nbsp;·&nbsp; <a href="/gallery">gallery</a>
+      </nav>
     </footer>
   </div>
 
