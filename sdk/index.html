@@ -1074,7 +1074,7 @@
         return options;
       };
 
-      // The access directory (NetBird users + groups) is searched
+      // The access directory (mesh users + groups) is searched
       // server-side; debounce so typing doesn't fire a request per key.
       let suggestTimer = null;
       let suggestSeq = 0;
@@ -1091,7 +1091,7 @@
             directoryOptions = Array.isArray(body.suggestions) ? body.suggestions : [];
             renderAccessResults();
           } catch {
-            // directory unavailable (e.g. dev without NetBird) — the
+            // directory unavailable (e.g. dev without a mesh API) — the
             // custom-email entry still lets you restrict a site.
           }
         }, 180);

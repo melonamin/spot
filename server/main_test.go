@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -49,6 +50,83 @@ func TestValidateDeploymentSafetyRejectsSharedDefaults(t *testing.T) {
 	}
 }
 
+func TestValidateDeploymentSafetyAcceptsTailscaleSharedConfig(t *testing.T) {
+	cfg := config{
+		SpotDomain:        "spot.example.com",
+		DatabaseURL:       "postgres://spot:better@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:        "rustfs:9000",
+		S3AccessKey:       "real-access",
+		S3SecretKey:       "real-secret",
+		TailscaleAPIToken: "token",
+		TailscaleTailnet:  "-",
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("tailscale shared config rejected: %v", err)
+	}
+}
+
+func TestValidateDeploymentSafetyAcceptsTailscaleOAuthSharedConfig(t *testing.T) {
+	cfg := config{
+		SpotDomain:           "spot.example.com",
+		DatabaseURL:          "postgres://spot:better@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:           "rustfs:9000",
+		S3AccessKey:          "real-access",
+		S3SecretKey:          "real-secret",
+		TailscaleOAuthID:     "client-id",
+		TailscaleOAuthSecret: "client-secret",
+		TailscaleTailnet:     "-",
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("tailscale oauth shared config rejected: %v", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsBothProviders(t *testing.T) {
+	cfg := config{
+		SpotDomain:        "spot.example.com",
+		DatabaseURL:       "postgres://spot:better@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:        "rustfs:9000",
+		S3AccessKey:       "real-access",
+		S3SecretKey:       "real-secret",
+		NetbirdAPIURL:     "https://netbird.example.com",
+		NetbirdAPIToken:   "token",
+		TailscaleAPIToken: "token",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "exactly one mesh identity provider") {
+		t.Fatalf("both providers error = %v, want exactly-one rejection", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsTailscaleTokenAndOAuth(t *testing.T) {
+	cfg := config{
+		SpotDomain:           "spot.example.com",
+		DatabaseURL:          "postgres://spot:better@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:           "rustfs:9000",
+		S3AccessKey:          "real-access",
+		S3SecretKey:          "real-secret",
+		TailscaleAPIToken:    "token",
+		TailscaleOAuthID:     "client-id",
+		TailscaleOAuthSecret: "client-secret",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "either TAILSCALE_API_TOKEN") {
+		t.Fatalf("tailscale token+oauth error = %v, want rejection", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsPartialTailscaleOAuth(t *testing.T) {
+	cfg := config{
+		SpotDomain:       "spot.example.com",
+		DatabaseURL:      "postgres://spot:better@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:       "rustfs:9000",
+		S3AccessKey:      "real-access",
+		S3SecretKey:      "real-secret",
+		TailscaleOAuthID: "client-id",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET") {
+		t.Fatalf("partial tailscale oauth error = %v, want rejection", err)
+	}
+}
+
 func TestValidateDeploymentSafetyRejectsSharedDevIdentity(t *testing.T) {
 	cfg := config{
 		SpotDomain:       "spot.example.com",
@@ -65,7 +143,7 @@ func TestValidateDeploymentSafetyRejectsSharedDevIdentity(t *testing.T) {
 	}
 }
 
-func TestValidateDeploymentSafetyRequiresNetbirdForNonLocalDomain(t *testing.T) {
+func TestValidateDeploymentSafetyRequiresProviderForNonLocalDomain(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.example.com",
 		DatabaseURL: "postgres://spot:better@postgres:5432/spot?sslmode=disable",
@@ -73,7 +151,56 @@ func TestValidateDeploymentSafetyRequiresNetbirdForNonLocalDomain(t *testing.T) 
 		S3AccessKey: "real-access",
 		S3SecretKey: "real-secret",
 	}
-	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "NETBIRD") {
-		t.Fatalf("missing NetBird error = %v, want rejection", err)
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "TAILSCALE") {
+		t.Fatalf("missing provider error = %v, want rejection naming provider options", err)
 	}
+}
+
+func TestNewResolver(t *testing.T) {
+	tests := []struct {
+		name string
+		cfg  config
+		want string
+	}{
+		{
+			name: "netbird",
+			cfg:  config{NetbirdAPIURL: "https://netbird.example.com", NetbirdAPIToken: "token"},
+			want: "*main.NetbirdResolver",
+		},
+		{
+			name: "tailscale",
+			cfg:  config{TailscaleAPIToken: "token", TailscaleTailnet: "-"},
+			want: "*main.TailscaleResolver",
+		},
+		{
+			name: "tailscale oauth",
+			cfg:  config{TailscaleOAuthID: "client-id", TailscaleOAuthSecret: "client-secret", TailscaleTailnet: "-"},
+			want: "*main.TailscaleResolver",
+		},
+		{
+			name: "dev identity",
+			cfg:  config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
+			want: "*main.StaticResolver",
+		},
+		{
+			name: "none",
+			cfg:  config{},
+			want: "<nil>",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			resolver, _ := newResolver(tt.cfg)
+			if got := typeName(resolver); got != tt.want {
+				t.Fatalf("newResolver type = %s, want %s", got, tt.want)
+			}
+		})
+	}
+}
+
+func typeName(v any) string {
+	if v == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("%T", v)
 }

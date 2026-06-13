@@ -1,5 +1,5 @@
 // spot-api is the shared backend for all Spot sites. It provides the
-// document store, and resolves visitor identity from the NetBird mesh.
+// document store, and resolves visitor identity from the configured mesh.
 package main
 
 import (
@@ -24,48 +24,58 @@ import (
 var schemaSQL string
 
 type config struct {
-	Port              string
-	DatabaseURL       string
-	SpotDomain        string
-	SitesDir          string
-	NetbirdAPIURL     string
-	NetbirdAPIToken   string
-	S3Endpoint        string
-	S3AccessKey       string
-	S3SecretKey       string
-	UploadsBucket     string
-	SitesBucket       string
-	AnthropicAPIKey   string
-	AnthropicBaseURL  string
-	AIModel           string
-	AIAllowedModels   []string
-	AIAccess          string
-	TrustedProxies    string
-	AdminAllow        []string
-	DevIdentityEmail  string
-	DevIdentityName   string
-	DevIdentityGroups []string
+	Port                 string
+	DatabaseURL          string
+	SpotDomain           string
+	SitesDir             string
+	NetbirdAPIURL        string
+	NetbirdAPIToken      string
+	TailscaleAPIURL      string
+	TailscaleAPIToken    string
+	TailscaleOAuthID     string
+	TailscaleOAuthSecret string
+	TailscaleTailnet     string
+	S3Endpoint           string
+	S3AccessKey          string
+	S3SecretKey          string
+	UploadsBucket        string
+	SitesBucket          string
+	AnthropicAPIKey      string
+	AnthropicBaseURL     string
+	AIModel              string
+	AIAllowedModels      []string
+	AIAccess             string
+	TrustedProxies       string
+	AdminAllow           []string
+	DevIdentityEmail     string
+	DevIdentityName      string
+	DevIdentityGroups    []string
 }
 
 func loadConfig() (config, error) {
 	cfg := config{
-		Port:             envOr("PORT", "8080"),
-		DatabaseURL:      os.Getenv("DATABASE_URL"),
-		SpotDomain:       os.Getenv("SPOT_DOMAIN"),
-		SitesDir:         envOr("SPOT_SITES_DIR", "/srv/sites"),
-		NetbirdAPIURL:    os.Getenv("NETBIRD_API_URL"),
-		NetbirdAPIToken:  os.Getenv("NETBIRD_API_TOKEN"),
-		S3Endpoint:       os.Getenv("SPOT_S3_ENDPOINT"),
-		S3AccessKey:      os.Getenv("SPOT_S3_ACCESS_KEY"),
-		S3SecretKey:      os.Getenv("SPOT_S3_SECRET_KEY"),
-		UploadsBucket:    envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
-		SitesBucket:      envOr("SPOT_SITES_BUCKET", "spot-sites"),
-		AnthropicAPIKey:  os.Getenv("ANTHROPIC_API_KEY"),
-		AnthropicBaseURL: os.Getenv("ANTHROPIC_BASE_URL"),
-		AIModel:          os.Getenv("SPOT_AI_MODEL"),
-		AIAllowedModels:  splitList(os.Getenv("SPOT_AI_ALLOWED_MODELS")),
-		AIAccess:         envOr("SPOT_AI_ACCESS", aiAccessOwners),
-		TrustedProxies:   envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
+		Port:                 envOr("PORT", "8080"),
+		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		SpotDomain:           os.Getenv("SPOT_DOMAIN"),
+		SitesDir:             envOr("SPOT_SITES_DIR", "/srv/sites"),
+		NetbirdAPIURL:        os.Getenv("NETBIRD_API_URL"),
+		NetbirdAPIToken:      os.Getenv("NETBIRD_API_TOKEN"),
+		TailscaleAPIURL:      os.Getenv("TAILSCALE_API_URL"),
+		TailscaleAPIToken:    os.Getenv("TAILSCALE_API_TOKEN"),
+		TailscaleOAuthID:     os.Getenv("TAILSCALE_OAUTH_CLIENT_ID"),
+		TailscaleOAuthSecret: os.Getenv("TAILSCALE_OAUTH_CLIENT_SECRET"),
+		TailscaleTailnet:     envOr("TAILSCALE_TAILNET", "-"),
+		S3Endpoint:           os.Getenv("SPOT_S3_ENDPOINT"),
+		S3AccessKey:          os.Getenv("SPOT_S3_ACCESS_KEY"),
+		S3SecretKey:          os.Getenv("SPOT_S3_SECRET_KEY"),
+		UploadsBucket:        envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
+		SitesBucket:          envOr("SPOT_SITES_BUCKET", "spot-sites"),
+		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
+		AnthropicBaseURL:     os.Getenv("ANTHROPIC_BASE_URL"),
+		AIModel:              os.Getenv("SPOT_AI_MODEL"),
+		AIAllowedModels:      splitList(os.Getenv("SPOT_AI_ALLOWED_MODELS")),
+		AIAccess:             envOr("SPOT_AI_ACCESS", aiAccessOwners),
+		TrustedProxies:       envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
 		AdminAllow: append(
 			splitList(os.Getenv("SPOT_ADMIN_EMAILS")),
 			splitList(os.Getenv("SPOT_ADMIN_GROUPS"))...,
@@ -90,15 +100,29 @@ func loadConfig() (config, error) {
 }
 
 func validateDeploymentSafety(cfg config) error {
-	shared := !localSpotDomain(cfg.SpotDomain) || cfg.NetbirdAPIURL != "" || cfg.NetbirdAPIToken != ""
+	netbird := netbirdConfigured(cfg)
+	tailscale := tailscaleConfigured(cfg)
+	if netbird && tailscale {
+		return errors.New("configure exactly one mesh identity provider: NETBIRD_* or TAILSCALE_*")
+	}
+	if cfg.TailscaleAPIToken != "" && tailscaleOAuthConfigured(cfg) {
+		return errors.New("configure either TAILSCALE_API_TOKEN or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET")
+	}
+	if tailscaleOAuthConfigured(cfg) && (cfg.TailscaleOAuthID == "" || cfg.TailscaleOAuthSecret == "") {
+		return errors.New("Tailscale OAuth requires TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET")
+	}
+	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale
 	if !shared {
 		return nil
 	}
 	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) {
 		return errors.New("SPOT_DEV_IDENTITY_EMAIL is only allowed for .localhost deployments")
 	}
-	if cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "" {
-		return errors.New("shared deployments require NETBIRD_API_URL and NETBIRD_API_TOKEN")
+	if netbird && (cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "") {
+		return errors.New("NetBird deployments require NETBIRD_API_URL and NETBIRD_API_TOKEN")
+	}
+	if !netbird && !tailscale {
+		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET")
 	}
 	if cfg.S3Endpoint != "" && cfg.S3AccessKey == "rustfsadmin" && cfg.S3SecretKey == "rustfsadmin" {
 		return errors.New("shared deployments must replace the default RustFS credentials")
@@ -107,6 +131,18 @@ func validateDeploymentSafety(cfg config) error {
 		return errors.New("shared deployments must replace the default Postgres password")
 	}
 	return nil
+}
+
+func netbirdConfigured(cfg config) bool {
+	return cfg.NetbirdAPIURL != "" || cfg.NetbirdAPIToken != ""
+}
+
+func tailscaleConfigured(cfg config) bool {
+	return cfg.TailscaleAPIToken != "" || tailscaleOAuthConfigured(cfg)
+}
+
+func tailscaleOAuthConfigured(cfg config) bool {
+	return cfg.TailscaleOAuthID != "" || cfg.TailscaleOAuthSecret != ""
 }
 
 func localSpotDomain(domain string) bool {
@@ -162,6 +198,26 @@ func openDB(ctx context.Context, url string) (*sql.DB, error) {
 	return db, nil
 }
 
+func newResolver(cfg config) (IdentityResolver, string) {
+	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
+		return NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second),
+			fmt.Sprintf("resolving via NetBird API at %s", cfg.NetbirdAPIURL)
+	}
+	if cfg.TailscaleAPIToken != "" {
+		return NewTailscaleResolver(cfg.TailscaleAPIURL, cfg.TailscaleAPIToken, cfg.TailscaleTailnet, 30*time.Second),
+			"resolving via Tailscale API"
+	}
+	if cfg.TailscaleOAuthID != "" && cfg.TailscaleOAuthSecret != "" {
+		return NewTailscaleOAuthResolver(cfg.TailscaleAPIURL, cfg.TailscaleOAuthID, cfg.TailscaleOAuthSecret, cfg.TailscaleTailnet, 30*time.Second),
+			"resolving via Tailscale API with OAuth"
+	}
+	if cfg.DevIdentityEmail != "" {
+		return NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups),
+			fmt.Sprintf("using explicit dev identity %s", cfg.DevIdentityEmail)
+	}
+	return nil, "NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET not set, /api/me will return 503"
+}
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
@@ -177,16 +233,8 @@ func main() {
 	}
 	defer db.Close()
 
-	var resolver IdentityResolver
-	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
-		resolver = NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second)
-		log.Printf("identity: resolving via NetBird API at %s", cfg.NetbirdAPIURL)
-	} else if cfg.DevIdentityEmail != "" {
-		resolver = NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups)
-		log.Printf("identity: using explicit dev identity %s", cfg.DevIdentityEmail)
-	} else {
-		log.Printf("identity: NETBIRD_API_URL/NETBIRD_API_TOKEN not set, /api/me will return 503")
-	}
+	resolver, resolverLog := newResolver(cfg)
+	log.Printf("identity: %s", resolverLog)
 
 	store := &DocStore{db: db}
 	hub := NewHub()
