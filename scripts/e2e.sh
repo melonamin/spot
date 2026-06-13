@@ -24,6 +24,9 @@ export SPOT_DEV_IDENTITY_EMAIL=${SPOT_DEV_IDENTITY_EMAIL:-e2e@localhost}
 export SPOT_DEV_IDENTITY_NAME=${SPOT_DEV_IDENTITY_NAME:-Spot E2E}
 export NETBIRD_API_URL=
 export NETBIRD_API_TOKEN=
+export TAILSCALE_API_TOKEN=
+export TAILSCALE_OAUTH_CLIENT_ID=
+export TAILSCALE_OAUTH_CLIENT_SECRET=
 # The CLI must target the local stack — a developer's ~/.config/spot/env
 # may pin SPOT_URL to a real deployment, and the sourced config file
 # overrides even an exported SPOT_URL.
@@ -269,7 +272,7 @@ else
 fi
 
 echo "==> access directory: apex answers, site subdomain refused"
-# The dev static resolver has no NetBird directory, so the list is empty
+# The dev static resolver has no mesh directory, so the list is empty
 # — but the endpoint must still answer on the apex and refuse on sites,
 # matching /api/deploy's apex-only rule.
 sug=$($CURL "https://spot.localhost:8443/api/access/suggestions?q=any")

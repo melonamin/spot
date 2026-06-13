@@ -55,7 +55,7 @@
 
     spot.me()
       .then((me) => { document.getElementById('who').textContent = `Hi ${me.name} (${me.email})`; })
-      .catch(() => { document.getElementById('who').textContent = 'Identity unavailable (no NetBird resolver configured).'; });
+      .catch(() => { document.getElementById('who').textContent = 'Identity unavailable (no mesh resolver configured).'; });
 
     render();
   </script>

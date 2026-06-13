@@ -177,7 +177,7 @@
   };
 
   window.spot = {
-    // Who is visiting, according to the NetBird mesh.
+    // Who is visiting, according to the mesh.
     me: () => api('/api/me'),
     db: { collection },
     realtime: {

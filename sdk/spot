@@ -325,7 +325,7 @@ same-origin and zero-config — no API keys, no auth code.
 
 \`\`\`js
 const me = await spot.me();
-// { email, name, peer_name, peer_ip } — resolved from the NetBird mesh
+// { email, name, peer_name, peer_ip } — resolved from the mesh
 \`\`\`
 
 ### Database (schemaless document collections, private to this site)
@@ -421,7 +421,7 @@ Sites are open to everyone by default. To restrict a site, deploy an
 { "allow": ["alice@corp.com", "team-payments"] }
 \`\`\`
 
-Entries with an @ match the visitor's email; all others match a NetBird
+Entries with an @ match the visitor's email; all others match a mesh
 group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
 Add \`"ai":"visitors"\` only when those permitted visitors should be

@@ -12,8 +12,8 @@ import (
 )
 
 // Identity is what the mesh knows about a visitor: the owner of the
-// NetBird peer the request came from. Groups is the union of the peer's
-// groups and the owner's auto-groups, by name.
+// mesh peer the request came from. Groups is the union of provider group
+// names that apply to that visitor.
 type Identity struct {
 	Email    string   `json:"email"`
 	Name     string   `json:"name"`
@@ -27,7 +27,7 @@ type IdentityResolver interface {
 }
 
 // AccessSuggestion is one allowlist candidate for the deployer's access
-// picker: a NetBird user (matched by email) or group (matched by name).
+// picker: a mesh user (matched by email) or group (matched by name).
 // Value is the literal string written into _access.json.
 type AccessSuggestion struct {
 	Type  string `json:"type"` // "user" | "group"
@@ -198,13 +198,17 @@ func buildDirectory(users []netbirdUser, groups []netbirdGroupRef) []AccessSugge
 			Type: "group", Value: g.Name, Label: g.Name, Meta: "Group",
 		})
 	}
+	sortDirectory(directory)
+	return directory
+}
+
+func sortDirectory(directory []AccessSuggestion) {
 	sort.SliceStable(directory, func(i, j int) bool {
 		if directory[i].Type != directory[j].Type {
 			return directory[i].Type == "user" // users before groups
 		}
 		return strings.ToLower(directory[i].Label) < strings.ToLower(directory[j].Label)
 	})
-	return directory
 }
 
 func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
@@ -230,7 +234,7 @@ func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
 }
 
 // StaticResolver is an explicit local-development identity provider. It
-// is only enabled when configured; production should use NetbirdResolver.
+// is only enabled when configured; production should use a mesh resolver.
 type StaticResolver struct {
 	identity Identity
 }

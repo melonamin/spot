@@ -19,8 +19,8 @@ const accessFileName = "_access.json"
 
 // AccessPolicy restricts a site to the users and groups listed in
 // "allow". Entries containing "@" match the visitor's email, all other
-// entries match a NetBird group name; both case-insensitive. An empty
-// list denies everyone.
+// entries match a mesh group name; both case-insensitive. An empty list
+// denies everyone.
 type AccessPolicy struct {
 	Allow []string `json:"allow"`
 	AI    string   `json:"ai,omitempty"`

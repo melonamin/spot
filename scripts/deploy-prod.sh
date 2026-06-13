@@ -4,7 +4,7 @@ set -eu
 
 host=${SPOT_DEPLOY_HOST:-ubuntu@spot.t1a.dev}
 dir=${SPOT_DEPLOY_DIR:-/home/ubuntu/spot}
-compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.netbird.yml}
+compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.mesh.yml}
 dry_run=0
 
 usage() {

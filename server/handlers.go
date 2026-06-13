@@ -175,7 +175,7 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
 	if s.resolver == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN or explicit dev identity")
+			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)
@@ -218,7 +218,7 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	id, found, err := s.resolver.Resolve(r.Context(), ip)
 	if err != nil {
 		log.Printf("authz: resolve %s: %v", ip, err)
-		httpError(w, http.StatusServiceUnavailable, "could not verify identity with NetBird")
+		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
 		return false
 	}
 	if id.PeerIP == "" {
@@ -238,7 +238,7 @@ func (s *Server) requireDeployIdentity(w http.ResponseWriter, r *http.Request) (
 		return Identity{}, false
 	}
 	if actorKey(id) == "" {
-		httpError(w, http.StatusForbidden, "deploy requires an identified NetBird user or peer")
+		httpError(w, http.StatusForbidden, "deploy requires an identified mesh user or peer")
 		return Identity{}, false
 	}
 	return id, true
@@ -373,7 +373,7 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 const maxAccessSuggestions = 20
 
 // handleAccessSuggestions powers the deployer's access picker: it
-// searches the NetBird directory for users (by email) and groups (by
+// searches the mesh directory for users (by email) and groups (by
 // name) matching ?q. Like /api/deploy it only answers on the apex — the
 // picker lives on the platform page, and a deployed site must not be
 // able to harvest the org directory through a visitor's identity.
@@ -594,7 +594,7 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
 	if s.resolver == nil {
 		writeWSError(ctx, conn,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN or explicit dev identity")
+			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)

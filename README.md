@@ -8,21 +8,21 @@ HTML, get a site on the internal network. No frameworks, no pipelines,
 no per-site config.
 
 ```
-employee device (NetBird peer)
-        │  wireguard mesh — NetBird policy decides who reaches the VM
+employee device (mesh peer: NetBird or Tailscale)
+        │  WireGuard mesh — provider policy decides who reaches the VM
         ▼
-spot VM (NetBird peer)
+spot VM (mesh peer)
   ├─ Caddy        wildcard *.spot.<domain>: site files + /api + /spot.js
-  ├─ spot-api    Go: document DB, identity from NetBird peer IPs
+  ├─ spot-api    Go: document DB, identity from mesh peer IPs
   ├─ Postgres     JSONB document store
   ├─ RustFS       S3 buckets spot-sites / spot-uploads
   └─ rclone       FUSE-mounts spot-sites read-only for Caddy
 ```
 
-Authentication is the mesh itself: only NetBird peers can reach the VM,
+Authentication is the mesh itself: only mesh peers can reach the VM,
 and WireGuard source IPs are cryptographically bound to peers. Identity
 (`/api/me`) is resolved by mapping the request's peer IP to its owner via
-the NetBird management API — no cookies, no OIDC redirects.
+the configured provider's management API — no cookies, no OIDC redirects.
 
 ## Run it
 
@@ -32,7 +32,7 @@ just e2e       # end-to-end: deploy demo site, exercise serving + DB API
 ```
 
 Deploys require a resolved identity. In production that identity comes
-from NetBird; for local-only development without NetBird, set
+from NetBird or Tailscale; for local-only development without a mesh API, set
 `SPOT_DEV_IDENTITY_EMAIL=you@localhost` before `just up`.
 
 Deploy any folder with an `index.html`, or a single `index.html` file:
@@ -127,8 +127,8 @@ itself by shipping an `_access.json` at its root:
 ```
 
 Entries containing `@` match the visitor's email; everything else
-matches a NetBird group name (device groups and the owner's
-auto-groups). Caddy consults `spot-api` (`forward_auth` → `/api/authz`)
+matches a mesh group name (a NetBird group or Tailscale ACL group).
+Caddy consults `spot-api` (`forward_auth` → `/api/authz`)
 on every request, and the backend applies the same check before serving
 site APIs or uploads. Restricted sites **fail closed**: an unparseable
 policy or an unreachable identity resolver denies access rather than
@@ -168,14 +168,14 @@ deployed site cannot enumerate or delete sites through a visitor:
 ## Production notes
 
 - **DNS**: publish `*.spot.<domain>` as an A record pointing at the VM's
-  NetBird IP. Off-mesh clients can resolve it but cannot route to it.
+  mesh IP. Off-mesh clients can resolve it but cannot route to it.
 - **Source IP must be the peer IP** — identity resolves the request's
-  source address against the NetBird peer list, so the front proxy has to
+  source address against the mesh peer list, so the front proxy has to
   see the real mesh IP. Docker bridge port-publishing SNATs every inbound
   connection to the docker gateway, which would make every visitor look
   like one non-peer address and break identity. Run Caddy on the host
-  network: `docker compose -f docker-compose.yml -f docker-compose.netbird.yml up -d`
-  (see `docker-compose.netbird.yml`). Without this, `/api/me` returns
+  network: `docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d`
+  (see `docker-compose.mesh.yml`). Without this, `/api/me` returns
   404 for everyone.
 - **TLS**: replace `tls internal` in `caddy/Caddyfile` with a DNS-01
   wildcard challenge (e.g. the caddy-dns/cloudflare module) for publicly
@@ -183,19 +183,29 @@ deployed site cannot enumerate or delete sites through a visitor:
   label count (see the comment in the Caddyfile).
 - **NetBird**: create an access policy `employees -> spot-vm:443`, and a
   service-account PAT for `NETBIRD_API_URL`/`NETBIRD_API_TOKEN` so the
-  API can resolve peer IPs to users. `spot-api` refuses to start on a
-  non-`.localhost` domain without NetBird identity, and
+  API can resolve peer IPs to users.
+- **Tailscale**: create an ACL or grant that lets employees reach
+  `spot-vm:443`. Configure an OAuth client with
+  `devices:core:read`, `devices:posture_attributes:read`,
+  `users:read`, and `policy_file:read` scopes, then set
+  `TAILSCALE_OAUTH_CLIENT_ID`/`TAILSCALE_OAUTH_CLIENT_SECRET`
+  (preferred) or `TAILSCALE_API_TOKEN`. `TAILSCALE_TAILNET` may stay
+  empty to use `-`, the token's tailnet. `policy_file:read` is needed so
+  Spot can expose Tailscale ACL groups in `_access.json`.
+- `spot-api` refuses to start on a
+  non-`.localhost` domain without one mesh identity provider, and
   `SPOT_DEV_IDENTITY_EMAIL` is only accepted for `.localhost` development.
 - **Trusted proxies**: `spot-api` only trusts `X-Forwarded-*` headers
   from `SPOT_TRUSTED_PROXIES`. The local compose stack pins its Docker
-  network and trusts only loopback plus that subnet; the NetBird overlay
+  network and trusts only loopback plus that subnet; the mesh overlay
   narrows this to loopback plus the pinned Docker gateway `/32`.
 - **Credentials**: local `.localhost` development may use the example
-  RustFS/Postgres passwords. Shared or NetBird-backed deployments must
+  RustFS/Postgres passwords. Shared or mesh-backed deployments must
   replace them or `spot-api` refuses to start.
 - **RustFS** is beta (v1.0.0-beta.8, single-node). Sites are regenerable,
   so the blast radius is low; Garage or SeaweedFS are drop-in S3
   alternatives if that bothers you.
+
 ## Files and AI
 
 Uploads go through the server (browsers never see storage credentials)

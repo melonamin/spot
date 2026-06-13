@@ -140,6 +140,19 @@ func authzServer(t *testing.T, dir string) *Server {
 	}
 }
 
+func tailscaleAuthzServer(t *testing.T, dir string) *Server {
+	t.Helper()
+	requests := 0
+	api := newTailscaleAPI(t, &requests, tailscaleAPIFixture{})
+	t.Cleanup(api.Close)
+	return &Server{
+		policies:       NewPolicyStore(dir, 0),
+		resolver:       NewTailscaleResolver(api.URL, "test-token", "", time.Minute),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+}
+
 func TestHandleAuthz(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
@@ -176,6 +189,28 @@ func TestHandleAuthz(t *testing.T) {
 				t.Errorf("authz(%s from %s) = %d, want %d", tt.host, tt.ip, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestHandleAuthzTailscaleGroup(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "bygroup", accessFileName, `{"allow": ["team-payments"]}`)
+	srv := tailscaleAuthzServer(t, dir)
+
+	authz := func(peerIP string) int {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/authz", nil)
+		req.Header.Set("X-Forwarded-Host", "bygroup.spot.localhost")
+		req.Header.Set("X-Forwarded-For", peerIP)
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+
+	if got := authz("100.64.0.7"); got != http.StatusOK {
+		t.Fatalf("Tailscale group member authz = %d, want 200", got)
+	}
+	if got := authz("100.64.0.9"); got != http.StatusForbidden {
+		t.Fatalf("Tailscale non-member authz = %d, want 403", got)
 	}
 }
 
