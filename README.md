@@ -80,6 +80,60 @@ with a visitor's browser.
 either into the current project or the user's global agent skills
 directory, so coding agents know the SDK without reading docs.
 
+## Deploy with Docker Compose
+
+Spot is meant to run on a small VM that is already joined to your
+NetBird or Tailscale network. The mesh decides who can reach the VM;
+Spot uses the provider API to turn the visitor's mesh IP into an
+identity.
+
+On the VM:
+
+```sh
+git clone https://github.com/melonamin/spot.git
+cd spot
+cp .env.example .env
+```
+
+Edit `.env`:
+
+- Set `SPOT_MESH_DOMAIN` to the apex you want, for example
+  `spot.corp.example.com` or `spot.home.arpa`.
+- Set `SPOT_SITE_LABEL` to the number of labels in that domain:
+  `spot.test` is `2`, `spot.t1a.dev` is `3`,
+  `spot.corp.example.com` is `4`.
+- Replace `POSTGRES_PASSWORD`, `RUSTFS_ACCESS_KEY`, and
+  `RUSTFS_SECRET_KEY`; shared deployments refuse the local defaults.
+- Configure exactly one identity provider:
+  `NETBIRD_API_URL`/`NETBIRD_API_TOKEN`, or Tailscale OAuth
+  `TAILSCALE_OAUTH_CLIENT_ID`/`TAILSCALE_OAUTH_CLIENT_SECRET`.
+- Optional: set `SPOT_ADMIN_EMAILS` or `SPOT_ADMIN_GROUPS` for people
+  who can redeploy/delete any site.
+
+Point DNS at the VM's mesh IP:
+
+```text
+spot.example.com      A/AAAA  <vm mesh ip>
+*.spot.example.com    A/AAAA  <vm mesh ip>
+```
+
+Then start the mesh deployment:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
+docker compose -f docker-compose.yml -f docker-compose.mesh.yml ps
+```
+
+The mesh overlay runs Caddy on the host network so it can preserve the
+real peer source IP for identity. It serves HTTPS on `:443`; with the
+default `SPOT_TLS_MODE=tls-internal`, clients need to trust Caddy's local
+CA or accept the certificate warning. For public certificates, set
+`SPOT_TLS_MODE=tls-cloudflare` and `CF_API_TOKEN` for DNS-01 wildcard
+certificates.
+
+For redeploying this repository to a VM over SSH, `scripts/deploy-prod.sh`
+archives the committed tree and runs the same compose command remotely.
+
 ## Tests
 
 ```sh
