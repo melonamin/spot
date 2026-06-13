@@ -2,10 +2,31 @@
 
 Drop a folder, get a spot.
 
-Spot is a self-hosted internal hosting platform inspired by
-[Shopify's Quick](https://shopify.engineering/quick): drop a folder of
-HTML, get a site on the internal network. No frameworks, no pipelines,
-no per-site config.
+![Spot deploy UI](docs/assets/spot-home.png)
+
+Spot is a self-hosted internal hosting platform for small web things
+that should be easy to ship and private by default. Put it on a VM
+inside your WireGuard mesh, drop a folder of HTML from the browser or
+CLI, and get a private URL like `https://demo.spot.example.com`.
+
+It is inspired by [Shopify's Quick](https://shopify.engineering/quick):
+no frameworks, no pipelines, no per-site config. A site can be a single
+`index.html`, a folder of HTML/CSS/JS, or a small app that uses Spot's
+built-in document DB, realtime rooms, files, and AI proxy.
+
+## Use Cases
+
+- **Corporate internal apps**: ship dashboards, demos, status pages,
+  design prototypes, team tools, and one-off workflows without opening
+  them to the internet. Identity comes from NetBird or Tailscale, so the
+  same mesh that decides who can reach Spot also powers per-site access
+  rules.
+- **Homelabs and family networks**: host household tools, experiments,
+  notes, dashboards, and a low-friction playground where kids can publish
+  HTML/CSS/JS projects to the family Tailnet without learning deploy
+  keys, DNS, or cloud accounts first.
+
+## How It Works
 
 ```
 employee device (mesh peer: NetBird or Tailscale)
