@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#5a4bf0">
-  <title>Spot — drop a folder, get a spot</title>
+  <title>Spot — drop a folder or file, get a spot</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -736,7 +736,7 @@
 
   <div class="stage">
     <h1 class="logo" data-text="Spot">Spot</h1>
-    <p class="tagline">Drop a folder, get a spot.</p>
+    <p class="tagline">Drop a folder or index.html, get a spot.</p>
 
     <main class="card clickable" id="card" aria-live="polite">
       <section id="idle">
@@ -746,14 +746,19 @@
             <path d="M12 19V5M5 12l7-7 7 7"/>
           </svg>
         </button>
-        <h2 class="shout">Drop your folder here</h2>
+        <h2 class="shout">Drop your folder or index.html here</h2>
         <p class="hint">HTML&nbsp;•&nbsp;JS&nbsp;•&nbsp;CSS</p>
+        <p class="repick"><button type="button" class="linkish" id="pickfile">pick index.html instead</button></p>
       </section>
 
       <section id="ready" hidden>
         <h2 class="shout" id="summary"></h2>
         <p class="hint" id="detail"></p>
-        <p class="repick"><button type="button" class="linkish" id="repick">pick a different folder</button></p>
+        <p class="repick">
+          <button type="button" class="linkish" id="repick">pick a different folder</button>
+          &nbsp;·&nbsp;
+          <button type="button" class="linkish" id="repickfile">pick index.html</button>
+        </p>
       </section>
 
       <section id="live" hidden>
@@ -810,7 +815,7 @@
     </form>
 
     <footer>
-      prefer a terminal? <code>spot deploy &lt;name&gt;</code> ships the current folder
+      prefer a terminal? <code>spot deploy &lt;name&gt;</code> ships a folder or index.html
       &nbsp;·&nbsp; <code>spot init</code> teaches your coding agent the SDK
       <nav aria-label="Spot pages">
         <a href="/spots">my spots</a> &nbsp;·&nbsp; <a href="/gallery">gallery</a>
@@ -868,6 +873,7 @@
   </div>
 
   <input type="file" id="filepick" webkitdirectory hidden>
+  <input type="file" id="singlepick" accept=".html,text/html" hidden>
   <div id="confetti" aria-hidden="true"></div>
 
   <script>
@@ -876,7 +882,7 @@
       const $ = (id) => document.getElementById(id);
       const card = $('card'), idle = $('idle'), ready = $('ready'), live = $('live');
       const launchRow = $('launchrow'), nameInput = $('sitename'), launchBtn = $('launch');
-      const errorEl = $('error'), filePick = $('filepick');
+      const errorEl = $('error'), filePick = $('filepick'), singlePick = $('singlepick');
       const accessWrap = document.querySelector('.access-wrap'), accessOpen = $('access-open');
       const accessPopover = $('access-popover'), accessStatus = $('access-status');
       const accessSearch = $('access-search'), accessResults = $('access-results');
@@ -985,7 +991,7 @@
       const setFiles = async (files, suggestion) => {
         clearError();
         let list = files.filter((f) => !isJunk(f.path));
-        if (!list.length) return fail('That folder is empty');
+        if (!list.length) return fail('That folder or file is empty');
         let root = '';
         // Mirror of the server's normalization, for instant feedback:
         // strip folder wrapping until index.html sits at the root.
@@ -1012,7 +1018,7 @@
           selectedAccess = parsed.entries;
           accessAIVisitors = parsed.aiVisitors;
           if (!parsed.ok) {
-            accessFileWarning = "Could not read the folder's _access.json — set access here.";
+            accessFileWarning = "Could not read the deploy's _access.json — set access here.";
           }
         }
         const total = list.reduce((n, f) => n + f.file.size, 0);
@@ -1293,13 +1299,23 @@
       loadIdentity();
 
       // --- picking --------------------------------------------------------
-      const openPicker = () => filePick.click();
+      const openPicker = () => {
+        filePick.value = '';
+        filePick.click();
+      };
+      const openSinglePicker = () => {
+        singlePick.value = '';
+        singlePick.click();
+      };
       $('pick').addEventListener('click', (e) => { e.stopPropagation(); openPicker(); });
+      $('pickfile').addEventListener('click', (e) => { e.stopPropagation(); openSinglePicker(); });
       card.addEventListener('click', () => { if (!idle.hidden) openPicker(); });
       $('repick').addEventListener('click', openPicker);
+      $('repickfile').addEventListener('click', openSinglePicker);
       $('again').addEventListener('click', () => {
         picked = [];
         filePick.value = '';
+        singlePick.value = '';
         selectedAccess = [];
         accessAIVisitors = false;
         accessSearch.value = '';
@@ -1313,6 +1329,12 @@
           file,
         }));
         if (files.length) setFiles(files, '');
+      });
+      singlePick.addEventListener('change', () => {
+        const file = singlePick.files[0];
+        if (!file) return;
+        if (file.name !== 'index.html') return fail('Single-file deploys must be named index.html');
+        setFiles([{ path: file.name, file }], '');
       });
 
       // --- drag and drop ----------------------------------------------------
@@ -1338,7 +1360,7 @@
           const { files, suggestion } = await collectDrop(e.dataTransfer);
           if (files.length) setFiles(files, suggestion);
         } catch {
-          fail('Could not read the dropped folder');
+          fail('Could not read the dropped folder or file');
         }
       });
 

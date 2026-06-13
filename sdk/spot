@@ -29,8 +29,8 @@ usage() {
 usage: spot <command>
 
 commands:
-  deploy [name] [dir]   sync a directory (default .) to the site <name>
-                        (default: current directory name)
+  deploy [name] [path]  sync a directory or index.html (default .) to
+                        the site <name> (default: current directory name)
   init [options]        write the Spot agent skill for Claude, Codex, or Pi
 
 init options:
@@ -46,31 +46,49 @@ EOF
 
 deploy() {
     name=${1:-$(basename "$PWD")}
-    dir=${2:-.}
+    src=${2:-.}
+    if [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(basename "$1")" = "index.html" ]; then
+        name=$(basename "$PWD")
+        src=$1
+    fi
     case $name in
         *[!a-z0-9-]*|'')
             echo "error: site name '$name' must match [a-z0-9-]+" >&2
             exit 1
             ;;
     esac
-    if [ ! -e "$dir/index.html" ]; then
-        echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
-        exit 1
+    if [ -f "$src" ]; then
+        file=$(basename "$src")
+        dir=$(dirname "$src")
+        if [ "$file" != "index.html" ]; then
+            echo "error: single-file deploys must be named index.html" >&2
+            exit 1
+        fi
+    else
+        dir=$src
+        if [ ! -e "$dir/index.html" ]; then
+            echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
+            exit 1
+        fi
     fi
-    echo "deploying $dir -> $name.$SPOT_DOMAIN"
+    echo "deploying $src -> $name.$SPOT_DOMAIN"
 
     # One -F part per file, the filename carrying the site-relative path
     # — the shape /api/deploy expects. The server syncs: files absent
     # from the upload are removed from the live site. Dot directories
     # (.git and friends) stay home; the server drops them anyway.
     set -- -F "site=$name"
-    while IFS= read -r f; do
-        [ -n "$f" ] || continue
-        f=${f#./}
-        set -- "$@" -F "files=@$f;filename=$f"
-    done <<EOF
+    if [ -f "$src" ]; then
+        set -- "$@" -F "files=@$file;filename=index.html"
+    else
+        while IFS= read -r f; do
+            [ -n "$f" ] || continue
+            f=${f#./}
+            set -- "$@" -F "files=@$f;filename=$f"
+        done <<EOF
 $(cd "$dir" && find . -name '.?*' -prune -o -type f -print)
 EOF
+    fi
 
     out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
         "$@" "$SPOT_URL/api/deploy")
@@ -283,8 +301,10 @@ description: Build and deploy sites on Spot, the internal hosting platform. Use 
 # Spot
 
 Spot hosts static sites for everyone on the internal network. A site is a
-folder with an index.html. Deploy with \`spot deploy <name>\` from the site
-directory; it is then live at $SPOT_SCHEME://<name>.$SPOT_HOSTPORT/.
+folder with an index.html, or a single index.html file. Deploy with
+\`spot deploy <name>\` from the site directory or
+\`spot deploy <name> index.html\`; it is then live at
+$SPOT_SCHEME://<name>.$SPOT_HOSTPORT/.
 
 There is no build step and no framework. Plain HTML/CSS/JS works best.
 

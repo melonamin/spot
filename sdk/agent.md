@@ -17,8 +17,9 @@ spot init --yes
 spot deploy <site-name>
 ```
 
-Spot sites are folders with an `index.html`. Plain HTML, CSS, and JS work
-without a build step. Load the browser SDK with:
+Spot sites are folders with an `index.html`, or a single `index.html`
+file. Plain HTML, CSS, and JS work without a build step. Load the
+browser SDK with:
 
 ```html
 <script src="/spot.js"></script>

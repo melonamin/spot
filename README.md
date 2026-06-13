@@ -35,10 +35,11 @@ Deploys require a resolved identity. In production that identity comes
 from NetBird; for local-only development without NetBird, set
 `SPOT_DEV_IDENTITY_EMAIL=you@localhost` before `just up`.
 
-Deploy any folder with an `index.html`:
+Deploy any folder with an `index.html`, or a single `index.html` file:
 
 ```sh
 cli/spot deploy mysite     # -> https://mysite.spot.localhost:8443/
+cli/spot deploy mysite index.html
 ```
 
 The CLI targets `SPOT_URL` (default `https://spot.localhost:8443`); set
@@ -46,13 +47,13 @@ it to a deployment's apex — e.g. `https://spot.corp.example.com` — or
 persist it in `~/.config/spot/env`.
 
 Or skip the terminal: the apex page (`https://spot.localhost:8443/`) is
-a deployer — drop a folder on it, pick a name, hit Launch. CLI and page
-both post the files to `POST /api/deploy` on the apex, which syncs them
-into the `spot-sites` bucket (stale files are removed, like `rclone
-sync`). Going through the server means deployers never hold storage
-credentials, and the endpoint only answers on the apex host, so a
-deployed site's JavaScript can never redeploy other sites with a
-visitor's browser.
+a deployer — drop a folder or `index.html` on it, pick a name, hit
+Launch. CLI and page both post the files to `POST /api/deploy` on the
+apex, which syncs them into the `spot-sites` bucket (stale files are
+removed, like `rclone sync`). Going through the server means deployers
+never hold storage credentials, and the endpoint only answers on the
+apex host, so a deployed site's JavaScript can never redeploy other sites
+with a visitor's browser.
 
 `cli/spot init` writes an agent skill for Claude Code, Codex, or Pi,
 either into the current project or the user's global agent skills

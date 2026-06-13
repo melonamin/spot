@@ -50,7 +50,7 @@ done
 [ -n "$ready" ] || fail "stack did not become ready within 60s"
 
 echo "==> apex page serves the deploy UI"
-$CURL https://spot.localhost:8443/ | grep -q "Drop your folder here" \
+$CURL https://spot.localhost:8443/ | grep -q "Drop your folder or index.html here" \
     || fail "apex page does not contain the deploy drop zone"
 
 echo "==> deploying the demo site via the CLI"
