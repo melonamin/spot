@@ -97,6 +97,22 @@ const unsubscribe = posts.subscribe({
 });
 ```
 
+For transient multiplayer/control-panel traffic, use ephemeral realtime
+rooms. Room messages are not stored and are broadcast to the other
+subscribers in the room; presence snapshots update when visitors join,
+leave, or call `setPresence`:
+
+```js
+const room = spot.realtime.room('control');
+room.on('cursor', ({ from, data }) => drawCursor(from.email, data));
+room.onPresence((users) => renderOnline(users));
+room.setPresence({ role: 'operator' });
+room.send('cursor', { x: 12, y: 8 });
+```
+
+Rooms are private to their site, with the same exception as collections:
+`shared-*` rooms live in a single global namespace across Spot sites.
+
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/spot.js`.
 
@@ -222,9 +238,10 @@ console.log(res.text);
 
 ## Rate limits
 
-Per peer IP: database 25 req/s (burst 50), uploads 2 req/s (burst 10),
-AI 1 request per 2s (burst 10), deploys 1 per 2s (burst 3). The authz
-endpoint Caddy consults for static files is deliberately unlimited.
+Per peer IP: database 25 req/s (burst 50), realtime room sends 30 req/s
+(burst 60), uploads 2 req/s (burst 10), AI 1 request per 2s (burst 10),
+deploys 1 per 2s (burst 3). The authz endpoint Caddy consults for
+static files is deliberately unlimited.
 
 Compared to the blog's feature list, only the data warehouse
 (Shopify-specific BigQuery) is deliberately omitted — wire your own

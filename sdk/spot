@@ -335,6 +335,24 @@ const unsubscribe = posts.subscribe({
 Prefer rendering from subscription events over polling or re-fetching
 after writes.
 
+For transient multiplayer/control-panel traffic, use ephemeral realtime
+rooms. Room messages are not stored; they go to the other subscribers in
+the room. Presence updates when visitors join, leave, or call
+\`setPresence\`:
+
+\`\`\`js
+const room = spot.realtime.room('control');
+room.on('cursor', ({ from, data }) => renderCursor(from.email, data));
+room.onPresence((users) => renderOnline(users));
+room.setPresence({ role: 'operator' });
+room.send('cursor', { x: 12, y: 8 });
+\`\`\`
+
+Rooms are private to this site except \`shared-*\` rooms, which are
+global across Spot sites. Use rooms for cursors, player movement,
+operator presence, live controls, and other state that should not be
+persisted to the database.
+
 ### AI
 
 Call Claude from the browser — keys live on the server. By default this
@@ -359,8 +377,9 @@ const stored = await spot.files.upload(fileInput.files[0]);
 
 ### Rate limits
 
-Per-visitor: database 25 req/s, uploads 2 req/s, AI 1 request per 2s
-(burst 10). A 429 means slow down — do not hammer APIs in loops.
+Per-visitor: database 25 req/s, realtime room sends 30 req/s, uploads
+2 req/s, AI 1 request per 2s (burst 10). A 429 means slow down — do
+not hammer APIs in loops.
 
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.

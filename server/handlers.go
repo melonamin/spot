@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -18,12 +19,14 @@ import (
 )
 
 var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var roomEventRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 
 type Server struct {
 	store          *DocStore
 	resolver       IdentityResolver
 	policies       *PolicyStore
 	hub            *Hub
+	roomHub        *RoomHub
 	files          *FileStore
 	sites          *SiteStore
 	deployAuth     DeployAuthorizer
@@ -35,10 +38,11 @@ type Server struct {
 	spotDomain     string
 	trustedProxies *TrustedProxies
 
-	dbLimit     *RateLimiter
-	fileLimit   *RateLimiter
-	aiLimit     *RateLimiter
-	deployLimit *RateLimiter
+	dbLimit       *RateLimiter
+	fileLimit     *RateLimiter
+	aiLimit       *RateLimiter
+	deployLimit   *RateLimiter
+	realtimeLimit *RateLimiter
 }
 
 // requestHost is the host the browser addressed. Caddy overwrites
@@ -95,6 +99,15 @@ func (s *Server) routes() http.Handler {
 	}
 	if s.deployLimit == nil {
 		s.deployLimit = NewRateLimiter(0.5, 3)
+	}
+	if s.realtimeLimit == nil {
+		s.realtimeLimit = NewRateLimiter(30, 60)
+	}
+	if s.hub == nil {
+		s.hub = NewHub()
+	}
+	if s.roomHub == nil {
+		s.roomHub = NewRoomHub()
 	}
 
 	mux := http.NewServeMux()
@@ -410,14 +423,20 @@ func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
 }
 
 type wsRequest struct {
-	Type       string `json:"type"`
-	Collection string `json:"collection"`
+	Type       string          `json:"type"`
+	Collection string          `json:"collection"`
+	Room       string          `json:"room"`
+	Event      string          `json:"event"`
+	Data       json.RawMessage `json:"data"`
 }
 
+const maxRealtimeData = 16 << 10
+
 // handleWS serves realtime subscriptions. A session subscribes to
-// collections with {"type":"subscribe","collection":"posts"} and
-// receives Event messages; scoping follows the same rules as the
-// database API (site-private, shared-* global).
+// collections with {"type":"subscribe","collection":"posts"} and joins
+// ephemeral rooms with {"type":"room_join","room":"control"}. Scoping
+// follows the same rules as the database API: site-private by default,
+// shared-* global.
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
@@ -434,10 +453,21 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return // Accept has already written the error response
 	}
 	defer conn.CloseNow()
+	conn.SetReadLimit(maxRealtimeData + 2048)
 
 	ctx := r.Context()
-	out := make(chan Event, 64)
-	defer s.hub.UnsubscribeAll(out)
+	sessionID, err := newSessionID()
+	if err != nil {
+		log.Printf("websocket: %v", err)
+		_ = conn.Close(websocket.StatusInternalError, "could not start realtime session")
+		return
+	}
+	docOut := make(chan Event, 64)
+	roomOut := make(chan RoomEvent, 64)
+	defer s.hub.UnsubscribeAll(docOut)
+	defer s.roomHub.LeaveAll(sessionID)
+
+	var roomIdentity *Identity
 
 	reqs := make(chan wsRequest)
 	readDone := make(chan struct{})
@@ -463,25 +493,135 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		case <-readDone:
 			return
 		case req := <-reqs:
-			scope, err := scopeFor(site, req.Collection)
-			if err != nil {
-				_ = wsjson.Write(ctx, conn, map[string]string{"type": "error", "error": err.Error()})
-				continue
-			}
 			switch req.Type {
 			case "subscribe":
-				s.hub.Subscribe(scope, req.Collection, out)
+				scope, err := scopeFor(site, req.Collection)
+				if err != nil {
+					writeWSError(ctx, conn, err.Error())
+					continue
+				}
+				s.hub.Subscribe(scope, req.Collection, docOut)
 			case "unsubscribe":
-				s.hub.Unsubscribe(scope, req.Collection, out)
+				scope, err := scopeFor(site, req.Collection)
+				if err != nil {
+					writeWSError(ctx, conn, err.Error())
+					continue
+				}
+				s.hub.Unsubscribe(scope, req.Collection, docOut)
+			case "room_join":
+				scope, ok := s.roomRequestScope(ctx, conn, site, req.Room)
+				if !ok {
+					continue
+				}
+				if !s.realtimeLimit.Allow(s.clientIP(r)) {
+					writeWSError(ctx, conn, "rate limit exceeded, slow down")
+					continue
+				}
+				if roomIdentity == nil {
+					id, ok := s.websocketIdentity(ctx, conn, r)
+					if !ok {
+						continue
+					}
+					roomIdentity = &id
+				}
+				s.roomHub.Join(scope, req.Room, roomUserFromIdentity(sessionID, *roomIdentity), roomOut)
+			case "room_leave":
+				scope, ok := s.roomRequestScope(ctx, conn, site, req.Room)
+				if !ok {
+					continue
+				}
+				s.roomHub.Leave(scope, req.Room, sessionID)
+			case "room_presence":
+				scope, ok := s.roomRequestScope(ctx, conn, site, req.Room)
+				if !ok {
+					continue
+				}
+				if !validRealtimePayload(ctx, conn, req.Data) {
+					continue
+				}
+				if !s.realtimeLimit.Allow(s.clientIP(r)) {
+					writeWSError(ctx, conn, "rate limit exceeded, slow down")
+					continue
+				}
+				if !s.roomHub.SetPresence(scope, req.Room, sessionID, req.Data) {
+					writeWSError(ctx, conn, "join room before setting presence")
+				}
+			case "room_send":
+				scope, ok := s.roomRequestScope(ctx, conn, site, req.Room)
+				if !ok {
+					continue
+				}
+				if !roomEventRe.MatchString(req.Event) {
+					writeWSError(ctx, conn, "invalid room event name")
+					continue
+				}
+				if !validRealtimePayload(ctx, conn, req.Data) {
+					continue
+				}
+				if !s.realtimeLimit.Allow(s.clientIP(r)) {
+					writeWSError(ctx, conn, "rate limit exceeded, slow down")
+					continue
+				}
+				if !s.roomHub.Publish(scope, req.Room, sessionID, req.Event, req.Data) {
+					writeWSError(ctx, conn, "join room before sending messages")
+				}
 			default:
-				_ = wsjson.Write(ctx, conn, map[string]string{"type": "error", "error": "unknown request type " + req.Type})
+				writeWSError(ctx, conn, "unknown request type "+req.Type)
 			}
-		case ev := <-out:
+		case ev := <-docOut:
+			if err := wsjson.Write(ctx, conn, ev); err != nil {
+				return
+			}
+		case ev := <-roomOut:
 			if err := wsjson.Write(ctx, conn, ev); err != nil {
 				return
 			}
 		}
 	}
+}
+
+func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, site, room string) (string, bool) {
+	scope, err := roomScopeFor(site, room)
+	if err != nil {
+		writeWSError(ctx, conn, err.Error())
+		return "", false
+	}
+	return scope, true
+}
+
+func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
+	if s.resolver == nil {
+		writeWSError(ctx, conn,
+			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN or explicit dev identity")
+		return Identity{}, false
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(ctx, ip)
+	if err != nil {
+		log.Printf("realtime: resolve %s: %v", ip, err)
+		writeWSError(ctx, conn, "could not reach the identity resolver")
+		return Identity{}, false
+	}
+	if !found {
+		writeWSError(ctx, conn, "no identity matches "+ip)
+		return Identity{}, false
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	return id, true
+}
+
+func validRealtimePayload(ctx context.Context, conn *websocket.Conn, data json.RawMessage) bool {
+	if len(data) > maxRealtimeData {
+		writeWSError(ctx, conn, fmt.Sprintf("room data exceeds the %d KB limit", maxRealtimeData>>10))
+		return false
+	}
+	return true
+}
+
+func writeWSError(ctx context.Context, conn *websocket.Conn, msg string) {
+	_ = wsjson.Write(ctx, conn, map[string]string{"type": "error", "error": msg})
 }
 
 // scope resolves the request to a database namespace, writing the error

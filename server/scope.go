@@ -52,3 +52,18 @@ func scopeFor(site, collection string) (string, error) {
 	}
 	return site, nil
 }
+
+// roomScopeFor applies the same private-by-default, shared-* global
+// namespace rule to ephemeral realtime rooms.
+func roomScopeFor(site, room string) (string, error) {
+	if site == "" {
+		return "", fmt.Errorf("realtime rooms must be used from a site subdomain")
+	}
+	if !collectionRe.MatchString(room) {
+		return "", fmt.Errorf("invalid room name %q: must match %s", room, collectionRe)
+	}
+	if strings.HasPrefix(room, "shared-") {
+		return sharedScope, nil
+	}
+	return site, nil
+}

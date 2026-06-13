@@ -57,10 +57,134 @@
     },
   });
 
+  const realtimeRoom = (name) => {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const handlers = new Map();
+    const presenceHandlers = new Set();
+    const errorHandlers = new Set();
+    const queue = [];
+    const maxQueue = 100;
+    let ws;
+    let closed = false;
+    let presenceData;
+    let reconnectTimer;
+
+    const sendWire = (msg) => {
+      if (closed) return;
+      if (ws && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(msg));
+        return;
+      }
+      if (msg.type === 'room_presence') return;
+      if (queue.length >= maxQueue) queue.shift();
+      queue.push(msg);
+    };
+
+    const flush = () => {
+      while (queue.length && ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify(queue.shift()));
+      }
+    };
+
+    const emitError = (err) => {
+      if (errorHandlers.size === 0) {
+        console.warn('spot realtime:', err.message || err);
+        return;
+      }
+      for (const handler of errorHandlers) handler(err);
+    };
+
+    const connect = () => {
+      if (closed) return;
+      ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+      ws.addEventListener('open', () => {
+        ws.send(JSON.stringify({ type: 'room_join', room: name }));
+        if (presenceData !== undefined) {
+          ws.send(JSON.stringify({ type: 'room_presence', room: name, data: presenceData }));
+        }
+        flush();
+      });
+      ws.addEventListener('message', (e) => {
+        const msg = JSON.parse(e.data);
+        if (msg.type === 'error') {
+          emitError(new Error(msg.error || 'realtime error'));
+          return;
+        }
+        if (msg.room !== name) return;
+        if (msg.type === 'room_message') {
+          const set = handlers.get(msg.event);
+          if (!set) return;
+          for (const handler of set) {
+            handler({
+              event: msg.event,
+              room: msg.room,
+              from: msg.from,
+              data: msg.data,
+              sent_at: msg.sent_at,
+            });
+          }
+        }
+        if (msg.type === 'room_presence') {
+          for (const handler of presenceHandlers) handler(msg.users || []);
+        }
+      });
+      ws.addEventListener('close', () => {
+        if (closed) return;
+        reconnectTimer = setTimeout(() => {
+          reconnectTimer = undefined;
+          connect();
+        }, 1000);
+      });
+      ws.addEventListener('error', () => {
+        emitError(new Error('realtime connection error'));
+      });
+    };
+    connect();
+
+    return {
+      send: (event, data = null) => {
+        sendWire({ type: 'room_send', room: name, event, data });
+      },
+      setPresence: (data = null) => {
+        presenceData = data;
+        sendWire({ type: 'room_presence', room: name, data });
+      },
+      on: (event, handler) => {
+        if (!handlers.has(event)) handlers.set(event, new Set());
+        handlers.get(event).add(handler);
+        return () => handlers.get(event)?.delete(handler);
+      },
+      onPresence: (handler) => {
+        presenceHandlers.add(handler);
+        return () => presenceHandlers.delete(handler);
+      },
+      onError: (handler) => {
+        errorHandlers.add(handler);
+        return () => errorHandlers.delete(handler);
+      },
+      close: () => {
+        closed = true;
+        if (reconnectTimer) {
+          clearTimeout(reconnectTimer);
+          reconnectTimer = undefined;
+        }
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'room_leave', room: name }));
+        }
+        if (ws) ws.close();
+      },
+    };
+  };
+
   window.spot = {
     // Who is visiting, according to the NetBird mesh.
     me: () => api('/api/me'),
     db: { collection },
+    realtime: {
+      // Ephemeral room for multiplayer/control-panel traffic.
+      // room.send(type, data), room.on(type, handler), room.onPresence(handler)
+      room: realtimeRoom,
+    },
     ai: {
       // chat([{role, content}, ...], {model, system, max_tokens})
       // -> { text, model, stop_reason, usage }
