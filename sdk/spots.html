@@ -354,13 +354,31 @@
       font: 400 64px/1 var(--font-logo);
       color: #fff;
       -webkit-text-stroke: 3px var(--ink);
-      transition: transform .2s ease;
+      transition: transform .2s ease, opacity .35s ease;
       user-select: none;
     }
     .tile:hover .glyph { transform: translateY(-5px) rotate(-4deg) scale(1.08); }
 
+    /* Gallery thumbnail: the site's _screenshot, served same-origin from
+       the apex. It reveals over the generative pattern once it loads; the
+       pattern + glyph stay as the look for sites that ship no screenshot. */
+    .shot {
+      position: absolute;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top center;
+      opacity: 0;
+      transition: opacity .45s ease;
+    }
+    .preview.ready .shot { opacity: 1; }
+    .preview.ready .glyph { opacity: 0; }
+
     .visit {
       position: absolute;
+      z-index: 2;
       top: 11px; right: 11px;
       border: 2px solid var(--ink);
       border-radius: 999px;
@@ -812,6 +830,23 @@
           glyph.className = 'glyph';
           glyph.textContent = site.name[0].toUpperCase();
           preview.appendChild(glyph);
+
+          // A real screenshot the site shipped (_screenshot.*), served from
+          // the apex so it always loads. It reveals over the generative
+          // pattern once decoded; if it errors it removes itself and the
+          // pattern + glyph remain. Sites without one never get an <img>.
+          if (site.preview) {
+            const shot = document.createElement('img');
+            shot.className = 'shot';
+            shot.src = site.preview;
+            shot.loading = 'lazy';
+            shot.alt = '';
+            shot.setAttribute('aria-hidden', 'true');
+            shot.addEventListener('load', () => preview.classList.add('ready'));
+            shot.addEventListener('error', () => shot.remove());
+            preview.appendChild(shot);
+          }
+
           const visit = document.createElement('span');
           visit.className = 'visit';
           visit.textContent = 'Visit ↗';

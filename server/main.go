@@ -245,6 +245,7 @@ func main() {
 		ai:             ai,
 		aiAccess:       cfg.AIAccess,
 		spotDomain:     cfg.SpotDomain,
+		sitesDir:       cfg.SitesDir,
 		trustedProxies: trustedProxies,
 	}
 

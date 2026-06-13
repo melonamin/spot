@@ -37,6 +37,7 @@ type publicSiteJSON struct {
 	URL       string    `json:"url"`
 	Owner     string    `json:"owner"`
 	Yours     bool      `json:"yours"`
+	Preview   string    `json:"preview,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -111,11 +112,16 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 		if restricted, _ := s.sitePolicySummary(site.Name); restricted {
 			continue
 		}
+		preview := ""
+		if s.hasSitePreview(site.Name) {
+			preview = "/api/sites/" + site.Name + "/preview"
+		}
 		out = append(out, publicSiteJSON{
 			Name:      site.Name,
 			URL:       "https://" + site.Name + "." + s.spotDomain + "/",
 			Owner:     ownerDisplay(site),
 			Yours:     site.OwnedBy(viewer),
+			Preview:   preview,
 			CreatedAt: site.CreatedAt,
 			UpdatedAt: site.UpdatedAt,
 		})

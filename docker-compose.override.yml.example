@@ -1,0 +1,22 @@
+# Local development overrides. Copy to docker-compose.override.yml (which
+# is gitignored) and `docker compose up` / `just up` merge it on top of
+# docker-compose.yml automatically.
+#
+# This keeps the stack a self-contained *.localhost dev box: visitor
+# identity comes from a fixed dev user instead of NetBird, so the safety
+# gate that makes shared (NetBird-backed) deployments replace the default
+# RustFS/Postgres credentials does not apply. Your real .env — NetBird
+# token and all — is left untouched; these values win for the local stack
+# only.
+#
+# Production is unaffected: scripts/deploy-prod.sh brings the stack up with
+# explicit -f files, and Compose does not auto-load an override then.
+services:
+  spot-api:
+    environment:
+      # Empty NetBird => not a "shared" deployment => the dev identity is
+      # used and the default local credentials are accepted.
+      NETBIRD_API_URL: ""
+      NETBIRD_API_TOKEN: ""
+      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-dev@spot.localhost}
+      SPOT_DEV_IDENTITY_NAME: ${SPOT_DEV_IDENTITY_NAME:-Spot Dev}

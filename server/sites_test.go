@@ -351,3 +351,105 @@ func TestDeleteSitePurgeFailureLeavesSite(t *testing.T) {
 		t.Fatalf("audit events = %+v, want one failed", audit.events)
 	}
 }
+
+func TestSitePreviewServesScreenshotForOpenSitesOnly(t *testing.T) {
+	dir := t.TempDir()
+	png := "\x89PNG\r\n\x1a\nfake-png-body"
+	writeSiteFile(t, dir, "shot", "_screenshot.png", png)
+	writeSiteFile(t, dir, "locked", "_screenshot.png", png)
+	writePolicy(t, dir, "locked", `{"allow":["bob@example.com"]}`)
+	// An HTML file named like a screenshot would run script in the apex
+	// origin if served as anything renderable.
+	writeSiteFile(t, dir, "sneaky", "_screenshot.jpg", "<html><script>alert(1)</script></html>")
+
+	srv := &Server{
+		siteAdmin:      &fakeSiteAdmin{},
+		policies:       NewPolicyStore(dir, time.Minute),
+		spotDomain:     "spot.localhost",
+		sitesDir:       dir,
+		trustedProxies: testTrustedProxies(t),
+	}
+
+	t.Run("serves an open site's screenshot", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/shot/preview"))
+		if rec.Code != http.StatusOK {
+			t.Fatalf("preview = %d %s, want 200", rec.Code, rec.Body.String())
+		}
+		if ct := rec.Header().Get("Content-Type"); ct != "image/png" {
+			t.Errorf("content-type = %q, want image/png", ct)
+		}
+		if rec.Header().Get("X-Content-Type-Options") != "nosniff" {
+			t.Errorf("missing nosniff header")
+		}
+		if rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("cache-control = %q, want no-store", rec.Header().Get("Cache-Control"))
+		}
+		if rec.Body.String() != png {
+			t.Errorf("served body did not match the stored screenshot")
+		}
+	})
+
+	t.Run("404 when the site ships none", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/bare/preview"))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("missing preview = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("404 for restricted sites so previews never leak", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/locked/preview"))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("restricted preview = %d, want 404", rec.Code)
+		}
+	})
+
+	t.Run("refuses a non-image masquerading as a screenshot", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/sneaky/preview"))
+		if rec.Code != http.StatusNotFound {
+			t.Errorf("html screenshot = %d %s, want 404", rec.Code, rec.Body.String())
+		}
+	})
+}
+
+func TestPublicSitesIncludePreviewWhenScreenshotPresent(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "shot", "_screenshot.jpg", "\x89PNG\r\n\x1a\n...")
+	admin := &fakeSiteAdmin{all: []SiteRecord{
+		{Name: "shot", OwnerEmail: "a@example.com"},
+		{Name: "plain", OwnerEmail: "a@example.com"},
+	}}
+	srv := &Server{
+		siteAdmin:      admin,
+		policies:       NewPolicyStore(dir, time.Minute),
+		resolver:       NewStaticResolver("a@example.com", "A", nil),
+		spotDomain:     "spot.localhost",
+		sitesDir:       dir,
+		trustedProxies: testTrustedProxies(t),
+	}
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/public"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("public sites = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	var body struct {
+		Sites []publicSiteJSON `json:"sites"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	preview := map[string]string{}
+	for _, site := range body.Sites {
+		preview[site.Name] = site.Preview
+	}
+	if preview["shot"] != "/api/sites/shot/preview" {
+		t.Errorf("shot preview = %q, want /api/sites/shot/preview", preview["shot"])
+	}
+	if preview["plain"] != "" {
+		t.Errorf("plain preview = %q, want empty", preview["plain"])
+	}
+}

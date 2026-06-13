@@ -308,6 +308,14 @@ $SPOT_SCHEME://<name>.$SPOT_HOSTPORT/.
 
 There is no build step and no framework. Plain HTML/CSS/JS works best.
 
+## Gallery preview
+
+The public gallery shows a thumbnail for each site. Ship a screenshot of
+the finished page named \`_screenshot.jpg\` (\`.png\` or \`.webp\` also
+work) at the site root and the gallery uses it; without one the site
+falls back to a generated placeholder. After building a site, capture it
+at a desktop size (about 1280x800) and include the image in the deploy.
+
 ## Backend SDK
 
 Load the SDK with \`<script src="/spot.js"></script>\`. Everything is
