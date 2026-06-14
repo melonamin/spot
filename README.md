@@ -192,6 +192,25 @@ Rooms are private to their site, with the same exception as collections:
 A consequence of the same-origin routing: sites cannot serve their own
 files under `/api/` or at `/spot.js`.
 
+## Source Downloads
+
+Every site gets a source archive at `/api/download` on its own origin:
+
+```text
+https://demo.spot.example.com/api/download
+```
+
+The archive contains the deployed files as a ZIP. Download access follows
+the same rules as viewing the site: public sites are downloadable by
+anyone on the mesh, restricted sites are downloadable only by allowed
+visitors, and broken policies fail closed.
+
+Sites can opt out without becoming private:
+
+```json
+{ "download": false }
+```
+
 ## Access Control
 
 Sites are **open to everyone on the mesh by default**. A site restricts
@@ -219,13 +238,17 @@ One consequence to be aware of:
 
 - `_access.json` is an allowlist, not a secret; permitted visitors can
   fetch it like any other file of the site.
+- `_access.json` may also set `"download": false` to disable the site's
+  source ZIP while leaving normal page access unchanged. If `allow` is
+  omitted, the site remains public; if `allow` is present as an empty
+  list, the site denies everyone.
 
 ## Site pages
 
 The apex serves two platform pages next to the deploy UI:
 
 - **`/spots`** — the deployer's own sites, with size, access status, and
-  a delete action.
+  download and delete actions.
 - **`/gallery`** — every public (unrestricted) site on the mesh.
 
 Both are backed by apex-only endpoints, gated like `/api/deploy` so a
@@ -235,6 +258,8 @@ deployed site cannot enumerate or delete sites through a visitor:
   successful deploy's file count and size.
 - `GET /api/sites/public` — unrestricted sites; restricted ones stay out
   entirely.
+- `GET https://<site>.<domain>/api/download` — ZIP archive of that site's
+  deployed files, unless `_access.json` sets `"download": false`.
 - `DELETE /api/sites/{name}` — owner or platform admin only. Removes the
   served files, the site's uploads, its private collections, and the
   registry claim (so the name is free again); the action is recorded in

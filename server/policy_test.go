@@ -37,6 +37,78 @@ func TestAccessPolicyAllows(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyAccessAndDownloadDefaults(t *testing.T) {
+	if !(&AccessPolicy{Allow: []string{"team-payments"}}).RestrictsAccess() {
+		t.Fatal("programmatic policy with Allow entries should restrict access")
+	}
+
+	tests := []struct {
+		name             string
+		raw              string
+		wantRestricted   bool
+		wantAllowCount   int
+		wantDownloadable bool
+	}{
+		{
+			name:             "empty policy is public and downloadable",
+			raw:              `{}`,
+			wantDownloadable: true,
+		},
+		{
+			name:             "download opt-out alone keeps site public",
+			raw:              `{"download": false}`,
+			wantDownloadable: false,
+		},
+		{
+			name:             "empty allow still denies everyone",
+			raw:              `{"allow": []}`,
+			wantRestricted:   true,
+			wantDownloadable: true,
+		},
+		{
+			name:             "restricted site can also disable downloads",
+			raw:              `{"allow": ["team-payments"], "download": false}`,
+			wantRestricted:   true,
+			wantAllowCount:   1,
+			wantDownloadable: false,
+		},
+		{
+			name:             "capitalized allow remains restrictive",
+			raw:              `{"Allow": ["team-payments"]}`,
+			wantRestricted:   true,
+			wantAllowCount:   1,
+			wantDownloadable: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			policy, err := parseAccessPolicy("demo", []byte(tt.raw))
+			if err != nil {
+				t.Fatalf("parseAccessPolicy: %v", err)
+			}
+			if got := policy.RestrictsAccess(); got != tt.wantRestricted {
+				t.Fatalf("RestrictsAccess = %v, want %v", got, tt.wantRestricted)
+			}
+			if got := len(policy.Allow); got != tt.wantAllowCount {
+				t.Fatalf("len(Allow) = %d, want %d", got, tt.wantAllowCount)
+			}
+			if got := policy.AllowsDownload(); got != tt.wantDownloadable {
+				t.Fatalf("AllowsDownload = %v, want %v", got, tt.wantDownloadable)
+			}
+		})
+	}
+}
+
+func TestAccessPolicyRejectsNull(t *testing.T) {
+	for _, raw := range []string{`null`, `{"allow": null}`, `{"alow": ["team-payments"]}`} {
+		t.Run(raw, func(t *testing.T) {
+			if _, err := parseAccessPolicy("demo", []byte(raw)); err == nil {
+				t.Fatal("parseAccessPolicy succeeded, want fail-closed error")
+			}
+		})
+	}
+}
+
 func writeSiteFile(t *testing.T, dir, site, name, content string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, site), 0o755); err != nil {
@@ -157,6 +229,7 @@ func TestHandleAuthz(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
 	writeSiteFile(t, dir, "bygroup", accessFileName, `{"allow": ["engineering"]}`)
+	writeSiteFile(t, dir, "nodownload", accessFileName, `{"download": false}`)
 	writeSiteFile(t, dir, "broken", accessFileName, `{not json`)
 	srv := authzServer(t, dir)
 
@@ -177,6 +250,7 @@ func TestHandleAuthz(t *testing.T) {
 	}{
 		{"open site, unknown peer", "anything.spot.localhost", "10.0.0.1", 200},
 		{"apex always open", "spot.localhost", "10.0.0.1", 200},
+		{"download opt-out still public", "nodownload.spot.localhost", "10.0.0.1", 200},
 		{"allowed by email", "secret.spot.localhost", "100.64.0.7", 200},
 		{"denied", "secret.spot.localhost", "100.64.0.9", 403},
 		{"unknown peer denied", "secret.spot.localhost", "10.9.9.9", 403},

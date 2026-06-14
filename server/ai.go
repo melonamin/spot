@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -189,7 +190,16 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site string) bool {
-	if s.aiAccess == aiAccessVisitors || s.siteAllowsVisitorAI(site) {
+	if s.aiAccess == aiAccessVisitors {
+		return true
+	}
+	visitorAI, err := s.siteAllowsVisitorAI(r.Context(), site)
+	if err != nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"this site's "+accessFileName+" is unreadable; AI access denied until it is fixed")
+		return false
+	}
+	if visitorAI {
 		return true
 	}
 	if s.siteManager == nil {
@@ -217,13 +227,10 @@ func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site str
 	return true
 }
 
-func (s *Server) siteAllowsVisitorAI(site string) bool {
-	if s.policies == nil {
-		return false
-	}
-	policy, err := s.policies.For(site)
+func (s *Server) siteAllowsVisitorAI(ctx context.Context, site string) (bool, error) {
+	policy, err := s.policyForSite(ctx, site)
 	if err != nil {
-		return false
+		return false, err
 	}
-	return policy.AllowsAIVisitors()
+	return policy.AllowsAIVisitors(), nil
 }

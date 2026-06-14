@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,13 +18,77 @@ import (
 // default and the platform norm.
 const accessFileName = "_access.json"
 
-// AccessPolicy restricts a site to the users and groups listed in
-// "allow". Entries containing "@" match the visitor's email, all other
-// entries match a mesh group name; both case-insensitive. An empty list
-// denies everyone.
+// AccessPolicy restricts a site only when "allow" is present. Entries
+// containing "@" match the visitor's email, all other entries match a
+// mesh group name; both case-insensitive. An omitted allow keeps the
+// site public; an empty allow list denies everyone.
 type AccessPolicy struct {
-	Allow []string `json:"allow"`
-	AI    string   `json:"ai,omitempty"`
+	Allow    []string `json:"allow,omitempty"`
+	AI       string   `json:"ai,omitempty"`
+	Download *bool    `json:"download,omitempty"`
+
+	restrictAccess bool
+}
+
+func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("access policy must be a JSON object")
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return err
+	}
+
+	var allowRaw, aiRaw, downloadRaw *json.RawMessage
+	for key, value := range fields {
+		value := value
+		switch strings.ToLower(key) {
+		case "allow":
+			if allowRaw != nil {
+				return errors.New("duplicate allow field")
+			}
+			allowRaw = &value
+		case "ai":
+			if aiRaw != nil {
+				return errors.New("duplicate ai field")
+			}
+			aiRaw = &value
+		case "download":
+			if downloadRaw != nil {
+				return errors.New("duplicate download field")
+			}
+			downloadRaw = &value
+		default:
+			return fmt.Errorf("unknown access policy field %q", key)
+		}
+	}
+
+	if allowRaw != nil {
+		if bytes.Equal(bytes.TrimSpace(*allowRaw), []byte("null")) {
+			return errors.New("allow must be an array")
+		}
+		if err := json.Unmarshal(*allowRaw, &p.Allow); err != nil {
+			return fmt.Errorf("allow must be an array: %w", err)
+		}
+		p.restrictAccess = true
+	} else {
+		p.Allow = nil
+		p.restrictAccess = false
+	}
+	if aiRaw != nil {
+		if err := json.Unmarshal(*aiRaw, &p.AI); err != nil {
+			return fmt.Errorf("ai must be a string: %w", err)
+		}
+	}
+	if downloadRaw != nil {
+		if bytes.Equal(bytes.TrimSpace(*downloadRaw), []byte("null")) {
+			return errors.New("download must be a boolean")
+		}
+		if err := json.Unmarshal(*downloadRaw, &p.Download); err != nil {
+			return fmt.Errorf("download must be a boolean: %w", err)
+		}
+	}
+	return nil
 }
 
 func (p *AccessPolicy) Allows(id Identity) bool {
@@ -47,6 +112,14 @@ func (p *AccessPolicy) Allows(id Identity) bool {
 	return false
 }
 
+func (p *AccessPolicy) RestrictsAccess() bool {
+	return p != nil && (p.restrictAccess || p.Allow != nil)
+}
+
+func (p *AccessPolicy) AllowsDownload() bool {
+	return p == nil || p.Download == nil || *p.Download
+}
+
 func (p *AccessPolicy) AllowsAIVisitors() bool {
 	return p != nil && strings.EqualFold(strings.TrimSpace(p.AI), aiAccessVisitors)
 }
@@ -63,9 +136,10 @@ type PolicyStore struct {
 }
 
 type policyEntry struct {
-	policy    *AccessPolicy
-	err       error
-	fetchedAt time.Time
+	policy       *AccessPolicy
+	err          error
+	fetchedAt    time.Time
+	checkedStore bool
 }
 
 func NewPolicyStore(dir string, ttl time.Duration) *PolicyStore {
@@ -76,14 +150,19 @@ func NewPolicyStore(dir string, ttl time.Duration) *PolicyStore {
 // open. A policy file that exists but cannot be read or parsed is
 // returned as an error so callers fail closed.
 func (s *PolicyStore) For(site string) (*AccessPolicy, error) {
+	policy, err, _ := s.ForWithStoreStatus(site)
+	return policy, err
+}
+
+func (s *PolicyStore) ForWithStoreStatus(site string) (*AccessPolicy, error, bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if entry, ok := s.cache[site]; ok && time.Since(entry.fetchedAt) < s.ttl {
-		return entry.policy, entry.err
+		return entry.policy, entry.err, entry.checkedStore
 	}
 	policy, err := s.load(site)
 	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now()}
-	return policy, err
+	return policy, err, false
 }
 
 // Set records a known policy for a site. Deploys use it only for
@@ -92,7 +171,7 @@ func (s *PolicyStore) For(site string) (*AccessPolicy, error) {
 func (s *PolicyStore) Set(site string, policy *AccessPolicy, err error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now()}
+	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now(), checkedStore: true}
 }
 
 func (s *PolicyStore) Invalidate(site string) {

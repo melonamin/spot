@@ -73,6 +73,20 @@ func (s *SiteStore) List(ctx context.Context, site string) ([]string, error) {
 	return paths, nil
 }
 
+func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser, minio.ObjectInfo, error) {
+	key := site + "/" + path
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, minio.ObjectInfo{}, fmt.Errorf("open site file %s: %w", key, err)
+	}
+	info, err := obj.Stat()
+	if err != nil {
+		obj.Close()
+		return nil, minio.ObjectInfo{}, fmt.Errorf("stat site file %s: %w", key, err)
+	}
+	return obj, info, nil
+}
+
 func (s *SiteStore) Remove(ctx context.Context, site, path string) error {
 	key := site + "/" + path
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
@@ -280,7 +294,7 @@ func immediatePolicyCache(current, next *AccessPolicy) (*AccessPolicy, bool) {
 		immediate.AI = ""
 		return immediate, true
 	}
-	if allowlistBroadens(current, next) {
+	if accessBroadens(current, next) {
 		return nil, false
 	}
 	immediate := cloneAccessPolicy(next)
@@ -290,7 +304,22 @@ func immediatePolicyCache(current, next *AccessPolicy) (*AccessPolicy, bool) {
 	return immediate, true
 }
 
+func accessBroadens(current, next *AccessPolicy) bool {
+	currentRestricts := current != nil && current.RestrictsAccess()
+	nextRestricts := next != nil && next.RestrictsAccess()
+	if currentRestricts && !nextRestricts {
+		return true
+	}
+	if !currentRestricts || !nextRestricts {
+		return false
+	}
+	return allowlistBroadens(current, next)
+}
+
 func allowlistBroadens(current, next *AccessPolicy) bool {
+	if next == nil {
+		return false
+	}
 	currentAllow := normalizedAllowSet(current)
 	for _, entry := range next.Allow {
 		entry = strings.ToLower(strings.TrimSpace(entry))

@@ -316,6 +316,18 @@ work) at the site root and the gallery uses it; without one the site
 falls back to a generated placeholder. After building a site, capture it
 at a desktop size (about 1280x800) and include the image in the deploy.
 
+## Source downloads
+
+Every site exposes its deployed source as a ZIP at \`/api/download\` on
+the site origin, for example
+\`$SPOT_SCHEME://<name>.$SPOT_HOSTPORT/api/download\`. When you build a
+site, assume other authorized visitors can download the exact deployed
+HTML/CSS/JS and assets from there.
+
+If the site should be viewable but not downloadable, ship
+\`{ "download": false }\` in \`_access.json\`. This does not restrict
+normal page access unless an \`allow\` list is also present.
+
 ## Backend SDK
 
 Load the SDK with \`<script src="/spot.js"></script>\`. Everything is
@@ -426,6 +438,8 @@ group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
 Add \`"ai":"visitors"\` only when those permitted visitors should be
 allowed to spend the deployment's server-side AI key.
+Add \`"download":false\` to opt out of source ZIP downloads while keeping
+normal page access unchanged.
 
 The first deploy of a site claims it. Later deploys, including changes
 to \`_access.json\`, require the same owner identity or a platform admin.

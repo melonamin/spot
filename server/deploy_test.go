@@ -418,6 +418,24 @@ func TestUpdatePolicyCacheFromDeploy(t *testing.T) {
 		t.Fatalf("cached policy = %+v; want alice without early AI visitor opt-in", policy)
 	}
 
+	store.Set("demo", nil, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: accessFileName, data: []byte(`{"download":false}`)},
+	})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || policy.RestrictsAccess() || policy.AllowsDownload() {
+		t.Fatalf("download opt-out cache = %+v, %v; want public site with downloads disabled", policy, err)
+	}
+
+	store.Set("demo", policy, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: accessFileName, data: []byte(`{"allow":["alice@example.com"],"download":false}`)},
+	})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.RestrictsAccess() || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.AllowsDownload() {
+		t.Fatalf("public download opt-out to restricted cache = %+v, %v; want restricted alice with downloads disabled", policy, err)
+	}
+
 	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com"}}, nil)
 	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
 		{path: accessFileName, data: []byte(`{"allow":["alice@example.com","bob@example.com"]}`)},
@@ -425,6 +443,15 @@ func TestUpdatePolicyCacheFromDeploy(t *testing.T) {
 	policy, err = store.For("demo")
 	if err != nil || policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.Allows(Identity{Email: "bob@example.com"}) {
 		t.Fatalf("broadened policy before mount catches up = %+v, %v; want old alice-only policy", policy, err)
+	}
+
+	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com"}}, nil)
+	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
+		{path: accessFileName, data: []byte(`{"download":false}`)},
+	})
+	policy, err = store.For("demo")
+	if err != nil || policy == nil || !policy.RestrictsAccess() || !policy.Allows(Identity{Email: "alice@example.com"}) {
+		t.Fatalf("restricted-to-public before mount catches up = %+v, %v; want old restricted policy", policy, err)
 	}
 
 	store.Set("demo", &AccessPolicy{Allow: []string{"alice@example.com", "bob@example.com"}, AI: aiAccessVisitors}, nil)

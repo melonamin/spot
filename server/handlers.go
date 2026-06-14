@@ -125,6 +125,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
+	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
@@ -196,17 +197,17 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
-	if site == "" || s.policies == nil {
+	if site == "" {
 		return true
 	}
-	policy, err := s.policies.For(site)
+	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
 		log.Printf("authz: %v", err)
 		httpError(w, http.StatusServiceUnavailable,
 			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
 		return false
 	}
-	if policy == nil {
+	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
 	if s.resolver == nil {

@@ -22,24 +22,26 @@ type SiteManager interface {
 }
 
 type ownedSiteJSON struct {
-	Name       string    `json:"name"`
-	URL        string    `json:"url"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	FileCount  int       `json:"file_count"`
-	TotalBytes int64     `json:"total_bytes"`
-	Restricted bool      `json:"restricted"`
-	AllowCount int       `json:"allow_count"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	DownloadAllowed bool      `json:"download_allowed"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	FileCount       int       `json:"file_count"`
+	TotalBytes      int64     `json:"total_bytes"`
+	Restricted      bool      `json:"restricted"`
+	AllowCount      int       `json:"allow_count"`
 }
 
 type publicSiteJSON struct {
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	Owner     string    `json:"owner"`
-	Yours     bool      `json:"yours"`
-	Preview   string    `json:"preview,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	DownloadAllowed bool      `json:"download_allowed"`
+	Owner           string    `json:"owner"`
+	Yours           bool      `json:"yours"`
+	Preview         string    `json:"preview,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // requireSitesAPI gates the sites endpoints the same way as /api/deploy:
@@ -74,16 +76,17 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ownedSiteJSON, 0, len(owned))
 	for _, site := range owned {
-		restricted, allowCount := s.sitePolicySummary(site.Name)
+		restricted, allowCount, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
 		out = append(out, ownedSiteJSON{
-			Name:       site.Name,
-			URL:        "https://" + site.Name + "." + s.spotDomain + "/",
-			CreatedAt:  site.CreatedAt,
-			UpdatedAt:  site.UpdatedAt,
-			FileCount:  site.FileCount,
-			TotalBytes: site.TotalBytes,
-			Restricted: restricted,
-			AllowCount: allowCount,
+			Name:            site.Name,
+			URL:             "https://" + site.Name + "." + s.spotDomain + "/",
+			DownloadAllowed: downloadAllowed,
+			CreatedAt:       site.CreatedAt,
+			UpdatedAt:       site.UpdatedAt,
+			FileCount:       site.FileCount,
+			TotalBytes:      site.TotalBytes,
+			Restricted:      restricted,
+			AllowCount:      allowCount,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
@@ -109,7 +112,8 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]publicSiteJSON, 0, len(all))
 	for _, site := range all {
-		if restricted, _ := s.sitePolicySummary(site.Name); restricted {
+		restricted, _, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
+		if restricted {
 			continue
 		}
 		preview := ""
@@ -117,13 +121,14 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
 		out = append(out, publicSiteJSON{
-			Name:      site.Name,
-			URL:       "https://" + site.Name + "." + s.spotDomain + "/",
-			Owner:     ownerDisplay(site),
-			Yours:     site.OwnedBy(viewer),
-			Preview:   preview,
-			CreatedAt: site.CreatedAt,
-			UpdatedAt: site.UpdatedAt,
+			Name:            site.Name,
+			URL:             "https://" + site.Name + "." + s.spotDomain + "/",
+			DownloadAllowed: downloadAllowed,
+			Owner:           ownerDisplay(site),
+			Yours:           site.OwnedBy(viewer),
+			Preview:         preview,
+			CreatedAt:       site.CreatedAt,
+			UpdatedAt:       site.UpdatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
@@ -204,23 +209,6 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"site": site, "files": removedFiles})
 	}
-}
-
-// sitePolicySummary reports whether a site is restricted and by how many
-// allow entries. An unreadable policy counts as restricted with zero
-// entries — authz fails closed on those sites, so nobody can view them.
-func (s *Server) sitePolicySummary(site string) (bool, int) {
-	if s.policies == nil {
-		return false, 0
-	}
-	policy, err := s.policies.For(site)
-	if err != nil {
-		return true, 0
-	}
-	if policy == nil {
-		return false, 0
-	}
-	return true, len(policy.Allow)
 }
 
 // ownerDisplay is the name the gallery shows for a site's owner.
