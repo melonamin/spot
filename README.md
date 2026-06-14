@@ -234,41 +234,13 @@ Spot derives generated URLs from the request. Direct HTTP returns
 `http://`, direct TLS returns `https://`, and trusted proxies may send
 `X-Forwarded-Proto`. There is no configured public scheme.
 
-## One-Time Postgres Migration
+## Production Deploy
 
-Older Spot deployments used Postgres for metadata and Caddy/rclone for
-serving site files. The current runtime uses SQLite and serves everything
-from `spot-api`; S3/RustFS remains the blob store when
-`SPOT_STORAGE_MODE=s3`.
-
-Run the metadata migration before deploying the new compose stack. From
-your local checkout:
-
-```sh
-scripts/migrate-prod.sh
-```
-
-The script:
-
-- stops the old `spot-api` and Caddy services to prevent writes during
-  export
-- starts the old `postgres` service if needed
-- writes `postgres.dump` plus CSV exports under `data/migrations/...`
-- creates and validates `spot.db`
-- copies it to the new `spot_spot-data` Docker volume as `/data/spot.db`
-- leaves the old checkout in place; it streams the migration tool over
-  SSH so it can run before the new compose files replace the old ones
-
-Then deploy with the TLS overlay and orphan cleanup:
+Deploy the committed tree with the TLS overlay and orphan cleanup:
 
 ```sh
 scripts/deploy-prod.sh
 ```
-
-`scripts/deploy-prod.sh` refuses to replace an old Postgres deployment
-unless `spot_spot-data:/data/spot.db` exists, and it checks before
-replacing the remote checkout. Set `SPOT_DEPLOY_ALLOW_UNMIGRATED=1` only
-for a fresh install or an intentional reset.
 
 ## SDK
 
@@ -398,7 +370,6 @@ serving, DB APIs, uploads, site deletion, and platform pages.
 - Shared mesh deployments must replace default RustFS credentials.
 - RustFS is convenient for local and small deployments. Any
   S3-compatible store can replace it.
-- There is no Postgres dependency. SQLite is the metadata database.
 - Multi-process Spot against one SQLite file is intentionally not the
   target. If that becomes necessary, add a SQLite pub/sub layer and
   explicit leader/runtime coordination then.

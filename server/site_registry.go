@@ -68,7 +68,7 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 	record, err := r.readSiteForUpdate(ctx, tx, site)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.ExecContext(ctx,
-			r.insertSiteSQL(),
+			insertSiteSQL,
 			site, strings.ToLower(actor.Email), actor.PeerIP, actor.Name,
 		); err != nil {
 			return DeployAuthorization{}, fmt.Errorf("claim site %s: %w", site, err)
@@ -86,7 +86,7 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		return DeployAuthorization{}, ErrDeployForbidden
 	}
 	if _, err := tx.ExecContext(ctx,
-		r.touchSiteSQL(), site,
+		touchSiteSQL, site,
 	); err != nil {
 		return DeployAuthorization{}, fmt.Errorf("touch site %s: %w", site, err)
 	}
@@ -98,7 +98,7 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 
 func (r *SiteRegistry) readSiteForUpdate(ctx context.Context, tx *sql.Tx, site string) (SiteRecord, error) {
 	var record SiteRecord
-	err := tx.QueryRowContext(ctx, r.readSiteSQL(), site).
+	err := tx.QueryRowContext(ctx, readSiteSQL, site).
 		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	return record, err
 }
@@ -109,7 +109,7 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 		return fmt.Errorf("encode deploy audit groups: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx,
-		r.insertDeployAuditSQL(),
+		insertDeployAuditSQL,
 		event.Site,
 		strings.ToLower(event.Actor.Email),
 		event.Actor.PeerIP,
@@ -140,7 +140,7 @@ type OwnedSite struct {
 // site has one, the claiming peer IP otherwise.
 func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]OwnedSite, error) {
 	rows, err := r.db.QueryContext(ctx,
-		r.sitesOwnedBySQL(),
+		sitesOwnedBySQL,
 		strings.ToLower(actor.Email), actor.PeerIP)
 	if err != nil {
 		return nil, fmt.Errorf("list owned sites: %w", err)
@@ -191,7 +191,7 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 
 func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Identity) (bool, error) {
 	var record SiteRecord
-	err := r.db.QueryRowContext(ctx, r.readSitePlainSQL(), site).
+	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
 		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrSiteNotFound
@@ -206,7 +206,7 @@ func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Ide
 // failed purge leaves the site claimed so its owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) error {
 	var record SiteRecord
-	err := r.db.QueryRowContext(ctx, r.readSitePlainSQL(), site).
+	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
 		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrSiteNotFound
@@ -222,40 +222,28 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 			return fmt.Errorf("purge site %s: %w", site, err)
 		}
 	}
-	if _, err := r.db.ExecContext(ctx, r.deleteSiteSQL(), site); err != nil {
+	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
 		return fmt.Errorf("delete site %s: %w", site, err)
 	}
 	return nil
 }
 
-func (r *SiteRegistry) insertSiteSQL() string {
-	return `INSERT INTO sites (name, owner_email, owner_peer_ip, owner_name)
+const (
+	insertSiteSQL = `INSERT INTO sites (name, owner_email, owner_peer_ip, owner_name)
 		VALUES (?, ?, ?, ?)`
-}
 
-func (r *SiteRegistry) touchSiteSQL() string {
-	return `UPDATE sites SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE name = ?`
-}
+	touchSiteSQL = `UPDATE sites SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE name = ?`
 
-func (r *SiteRegistry) readSiteSQL() string {
-	return r.readSitePlainSQL()
-}
-
-func (r *SiteRegistry) readSitePlainSQL() string {
-	return `SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
 		FROM sites
 		WHERE name = ?`
-}
 
-func (r *SiteRegistry) insertDeployAuditSQL() string {
-	return `INSERT INTO site_deploy_audit
+	insertDeployAuditSQL = `INSERT INTO site_deploy_audit
 		(site, actor_email, actor_peer_ip, actor_name, actor_groups,
 		 action, status, file_count, total_bytes, message)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-}
 
-func (r *SiteRegistry) sitesOwnedBySQL() string {
-	return `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
+	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.created_at, s.updated_at,
 			COALESCE((SELECT file_count FROM site_deploy_audit
 				WHERE site = s.name AND status = 'success'
@@ -267,11 +255,9 @@ func (r *SiteRegistry) sitesOwnedBySQL() string {
 		WHERE (s.owner_email <> '' AND s.owner_email = ?)
 		   OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = ?)
 		ORDER BY s.updated_at DESC`
-}
 
-func (r *SiteRegistry) deleteSiteSQL() string {
-	return `DELETE FROM sites WHERE name = ?`
-}
+	deleteSiteSQL = `DELETE FROM sites WHERE name = ?`
+)
 
 func (r SiteRecord) OwnedBy(actor Identity) bool {
 	if r.OwnerEmail != "" {

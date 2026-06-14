@@ -38,7 +38,7 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 
 	var doc Document
 	doc.Data = data
-	err = tx.QueryRowContext(ctx, s.insertDocumentSQL(), scope, collection, raw).
+	err = tx.QueryRowContext(ctx, insertDocumentSQL, scope, collection, raw).
 		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
 	if err != nil {
 		return Document{}, fmt.Errorf("insert document: %w", err)
@@ -52,7 +52,7 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 
 func (s *DocStore) List(ctx context.Context, scope, collection string, limit int) ([]Document, error) {
 	rows, err := s.db.QueryContext(ctx,
-		s.listDocumentsSQL(),
+		listDocumentsSQL,
 		scope, collection, limit,
 	)
 	if err != nil {
@@ -73,7 +73,7 @@ func (s *DocStore) List(ctx context.Context, scope, collection string, limit int
 
 func (s *DocStore) Get(ctx context.Context, scope, collection, id string) (Document, error) {
 	row := s.db.QueryRowContext(ctx,
-		s.getDocumentSQL(),
+		getDocumentSQL,
 		scope, collection, id,
 	)
 	doc, err := scanDocument(row.Scan)
@@ -96,7 +96,7 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 
 	var doc Document
 	doc.Data = data
-	err = tx.QueryRowContext(ctx, s.updateDocumentSQL(), scope, collection, id, raw).
+	err = tx.QueryRowContext(ctx, updateDocumentSQL, scope, collection, id, raw).
 		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrNotFound
@@ -119,7 +119,7 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx,
-		s.deleteDocumentSQL(),
+		deleteDocumentSQL,
 		scope, collection, id,
 	)
 	if err != nil {
@@ -143,7 +143,7 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 // deleted; no realtime notifications are sent — the site's subscribers
 // are going away with it.
 func (s *DocStore) PurgeScope(ctx context.Context, scope string) error {
-	if _, err := s.db.ExecContext(ctx, s.purgeScopeSQL(), scope); err != nil {
+	if _, err := s.db.ExecContext(ctx, purgeScopeSQL, scope); err != nil {
 		return fmt.Errorf("purge scope %s: %w", scope, err)
 	}
 	return nil
@@ -161,37 +161,27 @@ func (s *DocStore) publishChange(_ context.Context, action, scope, collection, i
 	})
 }
 
-func (s *DocStore) insertDocumentSQL() string {
-	return `INSERT INTO documents (scope, collection, data)
+const (
+	insertDocumentSQL = `INSERT INTO documents (scope, collection, data)
 		VALUES (?, ?, ?)
 		RETURNING id, created_at, updated_at`
-}
 
-func (s *DocStore) listDocumentsSQL() string {
-	return `SELECT id, data, created_at, updated_at FROM documents
+	listDocumentsSQL = `SELECT id, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ?
 		ORDER BY created_at DESC
 		LIMIT ?`
-}
 
-func (s *DocStore) getDocumentSQL() string {
-	return `SELECT id, data, created_at, updated_at FROM documents
+	getDocumentSQL = `SELECT id, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`
-}
 
-func (s *DocStore) updateDocumentSQL() string {
-	return `UPDATE documents SET data = ?4, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+	updateDocumentSQL = `UPDATE documents SET data = ?4, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
 		WHERE scope = ?1 AND collection = ?2 AND id = ?3
 		RETURNING id, created_at, updated_at`
-}
 
-func (s *DocStore) deleteDocumentSQL() string {
-	return `DELETE FROM documents WHERE scope = ? AND collection = ? AND id = ?`
-}
+	deleteDocumentSQL = `DELETE FROM documents WHERE scope = ? AND collection = ? AND id = ?`
 
-func (s *DocStore) purgeScopeSQL() string {
-	return `DELETE FROM documents WHERE scope = ?`
-}
+	purgeScopeSQL = `DELETE FROM documents WHERE scope = ?`
+)
 
 func scanDocument(scan func(dest ...any) error) (Document, error) {
 	var doc Document
