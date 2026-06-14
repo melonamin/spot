@@ -89,6 +89,7 @@ tar -tf "$tmp" | sed '\''s#/.*##'\'' | sort -u | while IFS= read -r entry; do
 done
 tar -xpf "$tmp"
 
+eval "$SPOT_DEPLOY_COMPOSE down --remove-orphans"
 eval "$SPOT_DEPLOY_COMPOSE up -d --build --remove-orphans"
 eval "$SPOT_DEPLOY_COMPOSE ps"
 '
