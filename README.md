@@ -8,6 +8,9 @@ Spot is a self-hosted internal hosting platform for small web things
 that should be easy to ship and private by default. Put it on a VM
 inside your WireGuard mesh, drop a folder of HTML from the browser or
 CLI, and get a private URL like `https://demo.spot.example.com`.
+For simpler homelabs, Spot can also run in single-user mode: no provider
+API, no per-person identity, just one fixed owner for everyone who can
+reach the box.
 
 It is inspired by [Shopify's Quick](https://shopify.engineering/quick):
 no frameworks, no pipelines, no per-site config. A site can be a single
@@ -44,6 +47,9 @@ Authentication is the mesh itself: only mesh peers can reach the VM,
 and WireGuard source IPs are cryptographically bound to peers. Identity
 (`/api/me`) is resolved by mapping the request's peer IP to its owner via
 the configured provider's management API — no cookies, no OIDC redirects.
+In single-user mode, Spot skips provider lookup and maps every request
+to one configured owner identity; protect it with your LAN, firewall, or
+VPN.
 
 ## Run it
 
@@ -52,8 +58,9 @@ just up        # full stack on https://*.spot.localhost:8443
 just e2e       # end-to-end: deploy demo site, exercise serving + DB API
 ```
 
-Deploys require a resolved identity. In production that identity comes
-from NetBird or Tailscale; for local-only development without a mesh API, set
+Deploys require a resolved identity. In production that identity can come
+from NetBird/Tailscale, or from `SPOT_AUTH_MODE=single-user` for trusted
+homelabs. For local-only development without a mesh API, set
 `SPOT_DEV_IDENTITY_EMAIL=you@localhost` before `just up`.
 
 Deploy any folder with an `index.html`, or a single `index.html` file:
@@ -82,10 +89,16 @@ directory, so coding agents know the SDK without reading docs.
 
 ## Deploy with Docker Compose
 
-Spot is meant to run on a small VM that is already joined to your
-NetBird or Tailscale network. The mesh decides who can reach the VM;
-Spot uses the provider API to turn the visitor's mesh IP into an
-identity.
+Spot is meant to run on a small VM behind a network boundary you already
+trust: a LAN, VPN, NetBird network, or Tailscale tailnet. There are two
+deployment models:
+
+- **Single-user homelab**: everyone who can reach Spot is treated as the
+  same owner. Use this for simple LAN/VPN installs where router, firewall,
+  or VPN access is the authorization boundary.
+- **Mesh identity**: NetBird or Tailscale decides who can reach the VM,
+  and Spot uses the provider API to turn the visitor's mesh IP into an
+  identity for ownership and `_access.json` allowlists.
 
 On the VM:
 
@@ -95,7 +108,21 @@ cd spot
 cp .env.example .env
 ```
 
-Edit `.env`:
+For a single-user homelab, point DNS at the VM's LAN/VPN IP, set
+`SPOT_HOMELAB_DOMAIN` if you do not want the default `spot.home.arpa`,
+then start:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.homelab.yml up -d --build
+```
+
+This serves HTTPS on `:443` with Caddy's internal CA by default. Every
+request resolves to `SPOT_SINGLE_USER_EMAIL` (default:
+`owner@spot.local`), so anyone who can load the site can deploy, delete,
+and use owner-only APIs. Keep that email stable; changing it changes the
+owner key used for future deploy authorization.
+
+For mesh identity, edit `.env`:
 
 - Set `SPOT_MESH_DOMAIN` to the apex you want, for example
   `spot.corp.example.com` or `spot.home.arpa`.
@@ -117,7 +144,7 @@ spot.example.com      A/AAAA  <vm mesh ip>
 *.spot.example.com    A/AAAA  <vm mesh ip>
 ```
 
-Then start the mesh deployment:
+For a mesh-identity deployment, start:
 
 ```sh
 docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
@@ -234,6 +261,10 @@ claims it for that identity. Later deploys, including changes to
 configured with `SPOT_ADMIN_EMAILS` / `SPOT_ADMIN_GROUPS`. Every deploy
 attempt is recorded in `site_deploy_audit`.
 
+In `SPOT_AUTH_MODE=single-user`, every visitor has the same configured
+identity. That keeps ownership checks working, but `_access.json` cannot
+provide per-person authorization; use network access as the boundary.
+
 One consequence to be aware of:
 
 - `_access.json` is an allowlist, not a secret; permitted visitors can
@@ -292,16 +323,18 @@ deployed site cannot enumerate or delete sites through a visitor:
   (preferred) or `TAILSCALE_API_TOKEN`. `TAILSCALE_TAILNET` may stay
   empty to use `-`, the token's tailnet. `policy_file:read` is needed so
   Spot can expose Tailscale ACL groups in `_access.json`.
-- `spot-api` refuses to start on a
-  non-`.localhost` domain without one mesh identity provider, and
-  `SPOT_DEV_IDENTITY_EMAIL` is only accepted for `.localhost` development.
+- `spot-api` refuses to start on a non-`.localhost` domain unless you
+  configure either one mesh identity provider or
+  `SPOT_AUTH_MODE=single-user`. `SPOT_DEV_IDENTITY_EMAIL` is only
+  accepted for `.localhost` development.
 - **Trusted proxies**: `spot-api` only trusts `X-Forwarded-*` headers
   from `SPOT_TRUSTED_PROXIES`. The local compose stack pins its Docker
   network and trusts only loopback plus that subnet; the mesh overlay
   narrows this to loopback plus the pinned Docker gateway `/32`.
-- **Credentials**: local `.localhost` development may use the example
-  RustFS/Postgres passwords. Shared or mesh-backed deployments must
-  replace them or `spot-api` refuses to start.
+- **Credentials**: local `.localhost` development and explicit
+  single-user homelab deployments may use the example RustFS/Postgres
+  passwords. Shared or mesh-backed deployments must replace them or
+  `spot-api` refuses to start.
 - **RustFS** is beta (v1.0.0-beta.8, single-node). Sites are regenerable,
   so the blast radius is low; Garage or SeaweedFS are drop-in S3
   alternatives if that bothers you.

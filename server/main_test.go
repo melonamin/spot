@@ -81,6 +81,59 @@ func TestValidateDeploymentSafetyAcceptsTailscaleOAuthSharedConfig(t *testing.T)
 	}
 }
 
+func TestValidateDeploymentSafetyAcceptsSingleUserNonLocalDefaults(t *testing.T) {
+	cfg := config{
+		SpotDomain:       "spot.home.arpa",
+		DatabaseURL:      "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		S3Endpoint:       "rustfs:9000",
+		S3AccessKey:      "rustfsadmin",
+		S3SecretKey:      "rustfsadmin",
+		AuthMode:         authModeSingleUser,
+		SingleUserEmail:  "owner@spot.local",
+		SingleUserName:   "Spot Owner",
+		SingleUserGroups: []string{"family"},
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("single-user homelab config rejected: %v", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsUnknownAuthMode(t *testing.T) {
+	cfg := config{
+		SpotDomain:  "spot.localhost",
+		DatabaseURL: "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		AuthMode:    "none",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_AUTH_MODE") {
+		t.Fatalf("unknown auth mode error = %v, want SPOT_AUTH_MODE rejection", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsSingleUserWithMeshProvider(t *testing.T) {
+	cfg := config{
+		SpotDomain:      "spot.home.arpa",
+		DatabaseURL:     "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		AuthMode:        authModeSingleUser,
+		SingleUserEmail: "owner@spot.local",
+		NetbirdAPIURL:   "https://netbird.example.com",
+		NetbirdAPIToken: "token",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "single-user") {
+		t.Fatalf("single-user mesh provider error = %v, want rejection", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsSingleUserWithoutEmail(t *testing.T) {
+	cfg := config{
+		SpotDomain:  "spot.home.arpa",
+		DatabaseURL: "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		AuthMode:    authModeSingleUser,
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_SINGLE_USER_EMAIL") {
+		t.Fatalf("single-user missing email error = %v, want rejection", err)
+	}
+}
+
 func TestValidateDeploymentSafetyRejectsBothProviders(t *testing.T) {
 	cfg := config{
 		SpotDomain:        "spot.example.com",
@@ -180,6 +233,11 @@ func TestNewResolver(t *testing.T) {
 		{
 			name: "dev identity",
 			cfg:  config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
+			want: "*main.StaticResolver",
+		},
+		{
+			name: "single user",
+			cfg:  config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
 			want: "*main.StaticResolver",
 		},
 		{

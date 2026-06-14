@@ -28,6 +28,7 @@ type config struct {
 	DatabaseURL          string
 	SpotDomain           string
 	SitesDir             string
+	AuthMode             string
 	NetbirdAPIURL        string
 	NetbirdAPIToken      string
 	TailscaleAPIURL      string
@@ -50,7 +51,15 @@ type config struct {
 	DevIdentityEmail     string
 	DevIdentityName      string
 	DevIdentityGroups    []string
+	SingleUserEmail      string
+	SingleUserName       string
+	SingleUserGroups     []string
 }
+
+const (
+	authModeAuto       = "auto"
+	authModeSingleUser = "single-user"
+)
 
 func loadConfig() (config, error) {
 	cfg := config{
@@ -58,6 +67,7 @@ func loadConfig() (config, error) {
 		DatabaseURL:          os.Getenv("DATABASE_URL"),
 		SpotDomain:           os.Getenv("SPOT_DOMAIN"),
 		SitesDir:             envOr("SPOT_SITES_DIR", "/srv/sites"),
+		AuthMode:             normalizeAuthMode(os.Getenv("SPOT_AUTH_MODE")),
 		NetbirdAPIURL:        os.Getenv("NETBIRD_API_URL"),
 		NetbirdAPIToken:      os.Getenv("NETBIRD_API_TOKEN"),
 		TailscaleAPIURL:      os.Getenv("TAILSCALE_API_URL"),
@@ -83,6 +93,9 @@ func loadConfig() (config, error) {
 		DevIdentityEmail:  os.Getenv("SPOT_DEV_IDENTITY_EMAIL"),
 		DevIdentityName:   envOr("SPOT_DEV_IDENTITY_NAME", "Spot Dev"),
 		DevIdentityGroups: splitList(os.Getenv("SPOT_DEV_IDENTITY_GROUPS")),
+		SingleUserEmail:   envOr("SPOT_SINGLE_USER_EMAIL", "owner@spot.local"),
+		SingleUserName:    envOr("SPOT_SINGLE_USER_NAME", "Spot Owner"),
+		SingleUserGroups:  splitList(os.Getenv("SPOT_SINGLE_USER_GROUPS")),
 	}
 	if cfg.DatabaseURL == "" {
 		return cfg, errors.New("DATABASE_URL is required")
@@ -100,6 +113,10 @@ func loadConfig() (config, error) {
 }
 
 func validateDeploymentSafety(cfg config) error {
+	mode := normalizeAuthMode(cfg.AuthMode)
+	if mode != authModeAuto && mode != authModeSingleUser {
+		return fmt.Errorf("SPOT_AUTH_MODE must be %q or %q", authModeAuto, authModeSingleUser)
+	}
 	netbird := netbirdConfigured(cfg)
 	tailscale := tailscaleConfigured(cfg)
 	if netbird && tailscale {
@@ -110,6 +127,15 @@ func validateDeploymentSafety(cfg config) error {
 	}
 	if tailscaleOAuthConfigured(cfg) && (cfg.TailscaleOAuthID == "" || cfg.TailscaleOAuthSecret == "") {
 		return errors.New("Tailscale OAuth requires TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET")
+	}
+	if mode == authModeSingleUser {
+		if netbird || tailscale {
+			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_* or TAILSCALE_*")
+		}
+		if strings.TrimSpace(cfg.SingleUserEmail) == "" {
+			return errors.New("SPOT_SINGLE_USER_EMAIL is required when SPOT_AUTH_MODE=single-user")
+		}
+		return nil
 	}
 	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale
 	if !shared {
@@ -131,6 +157,14 @@ func validateDeploymentSafety(cfg config) error {
 		return errors.New("shared deployments must replace the default Postgres password")
 	}
 	return nil
+}
+
+func normalizeAuthMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return authModeAuto
+	}
+	return mode
 }
 
 func netbirdConfigured(cfg config) bool {
@@ -199,6 +233,10 @@ func openDB(ctx context.Context, url string) (*sql.DB, error) {
 }
 
 func newResolver(cfg config) (IdentityResolver, string) {
+	if normalizeAuthMode(cfg.AuthMode) == authModeSingleUser {
+		return NewStaticResolver(cfg.SingleUserEmail, cfg.SingleUserName, cfg.SingleUserGroups),
+			fmt.Sprintf("using single-user identity %s", cfg.SingleUserEmail)
+	}
 	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
 		return NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second),
 			fmt.Sprintf("resolving via NetBird API at %s", cfg.NetbirdAPIURL)

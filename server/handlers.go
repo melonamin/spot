@@ -176,7 +176,7 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
 	if s.resolver == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)
@@ -595,7 +595,7 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
 	if s.resolver == nil {
 		writeWSError(ctx, conn,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)

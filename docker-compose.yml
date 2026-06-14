@@ -91,6 +91,7 @@ services:
       DATABASE_URL: postgres://spot:${POSTGRES_PASSWORD:-spot}@postgres:5432/spot?sslmode=disable
       SPOT_DOMAIN: ${SPOT_DOMAIN:-spot.localhost}
       SPOT_SITES_DIR: /srv/sites
+      SPOT_AUTH_MODE: ${SPOT_AUTH_MODE:-}
       SPOT_S3_ENDPOINT: rustfs:9000
       SPOT_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       SPOT_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
@@ -114,6 +115,9 @@ services:
       SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-}
       SPOT_DEV_IDENTITY_NAME: ${SPOT_DEV_IDENTITY_NAME:-Spot Dev}
       SPOT_DEV_IDENTITY_GROUPS: ${SPOT_DEV_IDENTITY_GROUPS:-}
+      SPOT_SINGLE_USER_EMAIL: ${SPOT_SINGLE_USER_EMAIL:-owner@spot.local}
+      SPOT_SINGLE_USER_NAME: ${SPOT_SINGLE_USER_NAME:-Spot Owner}
+      SPOT_SINGLE_USER_GROUPS: ${SPOT_SINGLE_USER_GROUPS:-}
     volumes:
       # Same FUSE-propagated view as Caddy; _access.json policies are
       # read from here.

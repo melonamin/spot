@@ -1,0 +1,35 @@
+# Single-user homelab overlay.
+#
+# Usage:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.homelab.yml up -d --build
+#
+# Publish SPOT_HOMELAB_DOMAIN and *.SPOT_HOMELAB_DOMAIN to this VM's LAN
+# or VPN IP. Everyone who can reach Caddy is treated as the same Spot owner.
+services:
+  spot-api:
+    environment:
+      SPOT_DOMAIN: "${SPOT_HOMELAB_DOMAIN:-spot.home.arpa}"
+      SPOT_AUTH_MODE: single-user
+      SPOT_SINGLE_USER_EMAIL: "${SPOT_SINGLE_USER_EMAIL:-owner@spot.local}"
+      SPOT_SINGLE_USER_NAME: "${SPOT_SINGLE_USER_NAME:-Spot Owner}"
+      SPOT_SINGLE_USER_GROUPS: "${SPOT_SINGLE_USER_GROUPS:-}"
+      NETBIRD_API_URL: ""
+      NETBIRD_API_TOKEN: ""
+      TAILSCALE_API_URL: ""
+      TAILSCALE_API_TOKEN: ""
+      TAILSCALE_TAILNET: ""
+      TAILSCALE_OAUTH_CLIENT_ID: ""
+      TAILSCALE_OAUTH_CLIENT_SECRET: ""
+
+  caddy:
+    # Same image as the mesh overlay, so SPOT_TLS_MODE=tls-cloudflare
+    # works if you later want public DNS-01 wildcard certificates.
+    build: ./caddy
+    image: spot-caddy
+    ports: !override
+      - "443:443"
+    environment:
+      SPOT_DOMAIN: "${SPOT_HOMELAB_DOMAIN:-spot.home.arpa}"
+      SPOT_TLS_MODE: "${SPOT_TLS_MODE:-tls-internal}"
+      SPOT_SITE_LABEL: "${SPOT_SITE_LABEL:-2}"
