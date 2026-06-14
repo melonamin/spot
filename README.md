@@ -118,8 +118,22 @@ Use this for the normal shared deployment model.
    docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
    ```
 
-If you put a TLS proxy in front, preserve the real source IP and add only
-that proxy to `SPOT_TRUSTED_PROXIES` so Spot can trust
+To let Spot serve HTTPS directly, add the TLS overlay:
+
+```sh
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mesh.yml \
+  -f docker-compose.tls.yml \
+  up -d --build
+```
+
+`SPOT_TLS_MODE=tls-internal` uses Caddy's internal CA.
+`SPOT_TLS_MODE=tls-cloudflare` uses DNS-01 wildcard certificates and
+requires `CF_API_TOKEN` with Zone:Zone:Read and Zone:DNS:Edit.
+
+If you put another TLS proxy in front, preserve the real source IP and
+add only that proxy to `SPOT_TRUSTED_PROXIES` so Spot can trust
 `X-Forwarded-Proto` and `X-Forwarded-For`.
 
 ### Single-User Homelab
@@ -219,6 +233,42 @@ settings:
 Spot derives generated URLs from the request. Direct HTTP returns
 `http://`, direct TLS returns `https://`, and trusted proxies may send
 `X-Forwarded-Proto`. There is no configured public scheme.
+
+## One-Time Postgres Migration
+
+Older Spot deployments used Postgres for metadata and Caddy/rclone for
+serving site files. The current runtime uses SQLite and serves everything
+from `spot-api`; S3/RustFS remains the blob store when
+`SPOT_STORAGE_MODE=s3`.
+
+Run the metadata migration before deploying the new compose stack. From
+your local checkout:
+
+```sh
+scripts/migrate-prod.sh
+```
+
+The script:
+
+- stops the old `spot-api` and Caddy services to prevent writes during
+  export
+- starts the old `postgres` service if needed
+- writes `postgres.dump` plus CSV exports under `data/migrations/...`
+- creates and validates `spot.db`
+- copies it to the new `spot_spot-data` Docker volume as `/data/spot.db`
+- leaves the old checkout in place; it streams the migration tool over
+  SSH so it can run before the new compose files replace the old ones
+
+Then deploy with the TLS overlay and orphan cleanup:
+
+```sh
+scripts/deploy-prod.sh
+```
+
+`scripts/deploy-prod.sh` refuses to replace an old Postgres deployment
+unless `spot_spot-data:/data/spot.db` exists, and it checks before
+replacing the remote checkout. Set `SPOT_DEPLOY_ALLOW_UNMIGRATED=1` only
+for a fresh install or an intentional reset.
 
 ## SDK
 

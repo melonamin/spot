@@ -4,7 +4,7 @@ set -eu
 
 host=${SPOT_DEPLOY_HOST:-ubuntu@spot.t1a.dev}
 dir=${SPOT_DEPLOY_DIR:-/home/ubuntu/spot}
-compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.mesh.yml}
+compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.mesh.yml -f docker-compose.tls.yml}
 dry_run=0
 
 usage() {
@@ -16,6 +16,7 @@ Environment:
   SPOT_DEPLOY_DIR       remote app dir (default: /home/ubuntu/spot)
   SPOT_DEPLOY_COMPOSE   remote compose command
   SPOT_DEPLOY_ALLOW_DIRTY=1  allow deploying when tracked files are dirty
+  SPOT_DEPLOY_ALLOW_UNMIGRATED=1  bypass old Postgres -> SQLite guard
 EOF
 }
 
@@ -71,14 +72,26 @@ cat > "$tmp"
 mkdir -p "$SPOT_DEPLOY_DIR"
 cd "$SPOT_DEPLOY_DIR"
 tar -tf "$tmp" >/dev/null
+
+if docker volume inspect spot_pg-data >/dev/null 2>&1 && [ "${SPOT_DEPLOY_ALLOW_UNMIGRATED:-}" != 1 ]; then
+    if ! docker volume inspect spot_spot-data >/dev/null 2>&1 ||
+       ! docker run --rm -v spot_spot-data:/data:ro alpine:3.22 sh -c '\''test -s /data/spot.db'\''; then
+        echo "error: old Postgres volume exists but spot_spot-data:/data/spot.db is missing" >&2
+        echo "       run scripts/migrate-prod.sh from your local checkout first" >&2
+        echo "       or set SPOT_DEPLOY_ALLOW_UNMIGRATED=1 for a fresh/intentional reset" >&2
+        exit 1
+    fi
+fi
+
 tar -tf "$tmp" | sed '\''s#/.*##'\'' | sort -u | while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     rm -rf -- "$entry"
 done
 tar -xpf "$tmp"
-eval "$SPOT_DEPLOY_COMPOSE up -d --build"
+
+eval "$SPOT_DEPLOY_COMPOSE up -d --build --remove-orphans"
 eval "$SPOT_DEPLOY_COMPOSE ps"
 '
 
 git archive --format=tar HEAD | ssh "$host" \
-    "SPOT_DEPLOY_DIR=$(quote "$dir") SPOT_DEPLOY_COMPOSE=$(quote "$compose") sh -c $(quote "$remote_script")"
+    "SPOT_DEPLOY_DIR=$(quote "$dir") SPOT_DEPLOY_COMPOSE=$(quote "$compose") SPOT_DEPLOY_ALLOW_UNMIGRATED=$(quote "${SPOT_DEPLOY_ALLOW_UNMIGRATED:-}") sh -c $(quote "$remote_script")"

@@ -1,0 +1,28 @@
+# Optional TLS reverse-proxy overlay.
+#
+# Use with the mesh overlay when Spot should serve HTTPS directly:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.mesh.yml -f docker-compose.tls.yml up -d --build
+#
+# The proxy runs on the host network so it sees the real mesh client IP
+# and forwards it to spot-api on loopback.
+
+services:
+  caddy:
+    build: ./caddy
+    image: spot-caddy
+    network_mode: host
+    environment:
+      SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
+      SPOT_TLS_MODE: "${SPOT_TLS_MODE:-tls-internal}"
+      SPOT_API_UPSTREAM: "${SPOT_API_UPSTREAM:-127.0.0.1:8080}"
+      CF_API_TOKEN: "${CF_API_TOKEN:-}"
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+    depends_on:
+      - spot-api
+    restart: unless-stopped
+
+volumes:
+  caddy-data:
