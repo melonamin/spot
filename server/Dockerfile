@@ -7,5 +7,6 @@ RUN CGO_ENABLED=0 go build -o /spot-api .
 
 FROM alpine:3.22
 COPY --from=build /spot-api /usr/local/bin/spot-api
+RUN mkdir -p /data && chown nobody:nobody /data
 USER nobody
 ENTRYPOINT ["spot-api"]

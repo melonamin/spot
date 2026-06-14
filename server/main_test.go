@@ -9,7 +9,6 @@ import (
 func TestValidateDeploymentSafetyAllowsLocalDefaults(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.localhost",
-		DatabaseURL: "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:  "rustfs:9000",
 		S3AccessKey: "rustfsadmin",
 		S3SecretKey: "rustfsadmin",
@@ -22,7 +21,6 @@ func TestValidateDeploymentSafetyAllowsLocalDefaults(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsSharedDefaults(t *testing.T) {
 	cfg := config{
 		SpotDomain:      "spot.example.com",
-		DatabaseURL:     "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:      "rustfs:9000",
 		S3AccessKey:     "rustfsadmin",
 		S3SecretKey:     "rustfsadmin",
@@ -35,16 +33,6 @@ func TestValidateDeploymentSafetyRejectsSharedDefaults(t *testing.T) {
 
 	cfg.S3AccessKey = "real-access"
 	cfg.S3SecretKey = "real-secret"
-	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "Postgres") {
-		t.Fatalf("shared default Postgres password error = %v, want Postgres rejection", err)
-	}
-
-	cfg.DatabaseURL = "host=postgres user=spot password=spot dbname=spot sslmode=disable"
-	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "Postgres") {
-		t.Fatalf("shared keyword/value Postgres password error = %v, want Postgres rejection", err)
-	}
-
-	cfg.DatabaseURL = "postgres://spot:better@postgres:5432/spot?sslmode=disable"
 	if err := validateDeploymentSafety(cfg); err != nil {
 		t.Fatalf("shared hardened config rejected: %v", err)
 	}
@@ -53,7 +41,6 @@ func TestValidateDeploymentSafetyRejectsSharedDefaults(t *testing.T) {
 func TestValidateDeploymentSafetyAcceptsTailscaleSharedConfig(t *testing.T) {
 	cfg := config{
 		SpotDomain:        "spot.example.com",
-		DatabaseURL:       "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:        "rustfs:9000",
 		S3AccessKey:       "real-access",
 		S3SecretKey:       "real-secret",
@@ -68,7 +55,6 @@ func TestValidateDeploymentSafetyAcceptsTailscaleSharedConfig(t *testing.T) {
 func TestValidateDeploymentSafetyAcceptsTailscaleOAuthSharedConfig(t *testing.T) {
 	cfg := config{
 		SpotDomain:           "spot.example.com",
-		DatabaseURL:          "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:           "rustfs:9000",
 		S3AccessKey:          "real-access",
 		S3SecretKey:          "real-secret",
@@ -84,7 +70,6 @@ func TestValidateDeploymentSafetyAcceptsTailscaleOAuthSharedConfig(t *testing.T)
 func TestValidateDeploymentSafetyAcceptsSingleUserNonLocalDefaults(t *testing.T) {
 	cfg := config{
 		SpotDomain:       "spot.home.arpa",
-		DatabaseURL:      "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:       "rustfs:9000",
 		S3AccessKey:      "rustfsadmin",
 		S3SecretKey:      "rustfsadmin",
@@ -98,11 +83,91 @@ func TestValidateDeploymentSafetyAcceptsSingleUserNonLocalDefaults(t *testing.T)
 	}
 }
 
+func TestValidateDeploymentSafetyAcceptsLocalStorageWithoutS3(t *testing.T) {
+	cfg := config{
+		SpotDomain:      "spot.home.arpa",
+		StorageMode:     storageModeLocal,
+		AuthMode:        authModeSingleUser,
+		SingleUserEmail: "owner@spot.local",
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("local storage config rejected: %v", err)
+	}
+}
+
+func TestValidateDeploymentSafetyIgnoresDefaultS3CredsInLocalStorage(t *testing.T) {
+	cfg := config{
+		SpotDomain:      "spot.example.com",
+		StorageMode:     storageModeLocal,
+		S3Endpoint:      "rustfs:9000",
+		S3AccessKey:     "rustfsadmin",
+		S3SecretKey:     "rustfsadmin",
+		NetbirdAPIURL:   "https://netbird.example.com",
+		NetbirdAPIToken: "token",
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("local storage with inert S3 defaults rejected: %v", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRequiresS3EndpointInS3Mode(t *testing.T) {
+	cfg := config{
+		SpotDomain: "spot.localhost",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_S3_ENDPOINT") {
+		t.Fatalf("missing S3 endpoint error = %v, want SPOT_S3_ENDPOINT rejection", err)
+	}
+}
+
+func TestLoadConfigFromCLIFlags(t *testing.T) {
+	t.Setenv("NETBIRD_API_URL", "")
+	t.Setenv("NETBIRD_API_TOKEN", "")
+	t.Setenv("TAILSCALE_API_URL", "")
+	t.Setenv("TAILSCALE_API_TOKEN", "")
+	t.Setenv("TAILSCALE_OAUTH_CLIENT_ID", "")
+	t.Setenv("TAILSCALE_OAUTH_CLIENT_SECRET", "")
+	cfg, err := loadConfigFrom([]string{
+		"serve",
+		"--storage", "local",
+		"--auth", "single-user",
+		"--domain", "spot.home.arpa",
+		"--data-dir", "/var/lib/spot",
+		"--listen", ":9090",
+	})
+	if err != nil {
+		t.Fatalf("load config from flags: %v", err)
+	}
+	if cfg.StorageMode != storageModeLocal || cfg.AuthMode != authModeSingleUser {
+		t.Fatalf("mode/auth = %q/%q, want local/single-user", cfg.StorageMode, cfg.AuthMode)
+	}
+	if cfg.SpotDomain != "spot.home.arpa" || cfg.DataDir != "/var/lib/spot" || cfg.SQLitePath != "/var/lib/spot/spot.db" || cfg.Port != ":9090" {
+		t.Fatalf("config = %+v", cfg)
+	}
+}
+
+func TestLoadConfigFromCLIFlagsRejectsUnexpectedArgs(t *testing.T) {
+	t.Setenv("SPOT_DOMAIN", "spot.localhost")
+	t.Setenv("SPOT_STORAGE_MODE", "local")
+	if _, err := loadConfigFrom([]string{"extra"}); err == nil || !strings.Contains(err.Error(), "unexpected arguments") {
+		t.Fatalf("unexpected arg error = %v, want rejection", err)
+	}
+}
+
+func TestValidateDeploymentSafetyRejectsUnknownStorageMode(t *testing.T) {
+	cfg := config{
+		SpotDomain:  "spot.localhost",
+		StorageMode: "tiny",
+	}
+	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_STORAGE_MODE") {
+		t.Fatalf("unknown storage mode error = %v, want SPOT_STORAGE_MODE rejection", err)
+	}
+}
+
 func TestValidateDeploymentSafetyRejectsUnknownAuthMode(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.localhost",
-		DatabaseURL: "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
 		AuthMode:    "none",
+		StorageMode: storageModeLocal,
 	}
 	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_AUTH_MODE") {
 		t.Fatalf("unknown auth mode error = %v, want SPOT_AUTH_MODE rejection", err)
@@ -112,7 +177,7 @@ func TestValidateDeploymentSafetyRejectsUnknownAuthMode(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsSingleUserWithMeshProvider(t *testing.T) {
 	cfg := config{
 		SpotDomain:      "spot.home.arpa",
-		DatabaseURL:     "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		StorageMode:     storageModeLocal,
 		AuthMode:        authModeSingleUser,
 		SingleUserEmail: "owner@spot.local",
 		NetbirdAPIURL:   "https://netbird.example.com",
@@ -126,7 +191,7 @@ func TestValidateDeploymentSafetyRejectsSingleUserWithMeshProvider(t *testing.T)
 func TestValidateDeploymentSafetyRejectsSingleUserWithoutEmail(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.home.arpa",
-		DatabaseURL: "postgres://spot:spot@postgres:5432/spot?sslmode=disable",
+		StorageMode: storageModeLocal,
 		AuthMode:    authModeSingleUser,
 	}
 	if err := validateDeploymentSafety(cfg); err == nil || !strings.Contains(err.Error(), "SPOT_SINGLE_USER_EMAIL") {
@@ -137,7 +202,6 @@ func TestValidateDeploymentSafetyRejectsSingleUserWithoutEmail(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsBothProviders(t *testing.T) {
 	cfg := config{
 		SpotDomain:        "spot.example.com",
-		DatabaseURL:       "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:        "rustfs:9000",
 		S3AccessKey:       "real-access",
 		S3SecretKey:       "real-secret",
@@ -153,7 +217,6 @@ func TestValidateDeploymentSafetyRejectsBothProviders(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsTailscaleTokenAndOAuth(t *testing.T) {
 	cfg := config{
 		SpotDomain:           "spot.example.com",
-		DatabaseURL:          "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:           "rustfs:9000",
 		S3AccessKey:          "real-access",
 		S3SecretKey:          "real-secret",
@@ -169,7 +232,6 @@ func TestValidateDeploymentSafetyRejectsTailscaleTokenAndOAuth(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsPartialTailscaleOAuth(t *testing.T) {
 	cfg := config{
 		SpotDomain:       "spot.example.com",
-		DatabaseURL:      "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:       "rustfs:9000",
 		S3AccessKey:      "real-access",
 		S3SecretKey:      "real-secret",
@@ -183,7 +245,6 @@ func TestValidateDeploymentSafetyRejectsPartialTailscaleOAuth(t *testing.T) {
 func TestValidateDeploymentSafetyRejectsSharedDevIdentity(t *testing.T) {
 	cfg := config{
 		SpotDomain:       "spot.example.com",
-		DatabaseURL:      "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:       "rustfs:9000",
 		S3AccessKey:      "real-access",
 		S3SecretKey:      "real-secret",
@@ -199,7 +260,6 @@ func TestValidateDeploymentSafetyRejectsSharedDevIdentity(t *testing.T) {
 func TestValidateDeploymentSafetyRequiresProviderForNonLocalDomain(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.example.com",
-		DatabaseURL: "postgres://spot:better@postgres:5432/spot?sslmode=disable",
 		S3Endpoint:  "rustfs:9000",
 		S3AccessKey: "real-access",
 		S3SecretKey: "real-secret",

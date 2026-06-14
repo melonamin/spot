@@ -21,7 +21,8 @@ type Document struct {
 // DocStore is a schemaless document store: JSON blobs grouped into named
 // collections, namespaced by scope (see scopeFor).
 type DocStore struct {
-	db *sql.DB
+	db  *sql.DB
+	hub *Hub
 }
 
 func (s *DocStore) Create(ctx context.Context, scope, collection string, data map[string]any) (Document, error) {
@@ -37,43 +38,21 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 
 	var doc Document
 	doc.Data = data
-	err = tx.QueryRowContext(ctx,
-		`INSERT INTO documents (scope, collection, data)
-		 VALUES ($1, $2, $3)
-		 RETURNING id, created_at, updated_at`,
-		scope, collection, raw,
-	).Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
+	err = tx.QueryRowContext(ctx, s.insertDocumentSQL(), scope, collection, raw).
+		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
 	if err != nil {
 		return Document{}, fmt.Errorf("insert document: %w", err)
-	}
-	if err := notifyChange(ctx, tx, "create", scope, collection, doc.ID); err != nil {
-		return Document{}, err
 	}
 	if err := tx.Commit(); err != nil {
 		return Document{}, fmt.Errorf("commit insert: %w", err)
 	}
+	s.publishChange(ctx, "create", scope, collection, doc.ID, &doc)
 	return doc, nil
-}
-
-// notifyChange fires the realtime notification inside the write's
-// transaction, so listeners never hear about rolled-back changes.
-func notifyChange(ctx context.Context, tx *sql.Tx, action, scope, collection, id string) error {
-	payload, err := json.Marshal(docChange{Action: action, Scope: scope, Collection: collection, ID: id})
-	if err != nil {
-		return fmt.Errorf("encode notify payload: %w", err)
-	}
-	if _, err := tx.ExecContext(ctx, `SELECT pg_notify($1, $2)`, notifyChannel, string(payload)); err != nil {
-		return fmt.Errorf("notify %s: %w", action, err)
-	}
-	return nil
 }
 
 func (s *DocStore) List(ctx context.Context, scope, collection string, limit int) ([]Document, error) {
 	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, data, created_at, updated_at FROM documents
-		 WHERE scope = $1 AND collection = $2
-		 ORDER BY created_at DESC
-		 LIMIT $3`,
+		s.listDocumentsSQL(),
 		scope, collection, limit,
 	)
 	if err != nil {
@@ -94,8 +73,7 @@ func (s *DocStore) List(ctx context.Context, scope, collection string, limit int
 
 func (s *DocStore) Get(ctx context.Context, scope, collection, id string) (Document, error) {
 	row := s.db.QueryRowContext(ctx,
-		`SELECT id, data, created_at, updated_at FROM documents
-		 WHERE scope = $1 AND collection = $2 AND id = $3`,
+		s.getDocumentSQL(),
 		scope, collection, id,
 	)
 	doc, err := scanDocument(row.Scan)
@@ -118,24 +96,18 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 
 	var doc Document
 	doc.Data = data
-	err = tx.QueryRowContext(ctx,
-		`UPDATE documents SET data = $4, updated_at = now()
-		 WHERE scope = $1 AND collection = $2 AND id = $3
-		 RETURNING id, created_at, updated_at`,
-		scope, collection, id, raw,
-	).Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
+	err = tx.QueryRowContext(ctx, s.updateDocumentSQL(), scope, collection, id, raw).
+		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrNotFound
 	}
 	if err != nil {
 		return Document{}, fmt.Errorf("update document: %w", err)
 	}
-	if err := notifyChange(ctx, tx, "update", scope, collection, id); err != nil {
-		return Document{}, err
-	}
 	if err := tx.Commit(); err != nil {
 		return Document{}, fmt.Errorf("commit update: %w", err)
 	}
+	s.publishChange(ctx, "update", scope, collection, id, &doc)
 	return doc, nil
 }
 
@@ -147,7 +119,7 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	defer tx.Rollback()
 
 	res, err := tx.ExecContext(ctx,
-		`DELETE FROM documents WHERE scope = $1 AND collection = $2 AND id = $3`,
+		s.deleteDocumentSQL(),
 		scope, collection, id,
 	)
 	if err != nil {
@@ -160,12 +132,10 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	if n == 0 {
 		return ErrNotFound
 	}
-	if err := notifyChange(ctx, tx, "delete", scope, collection, id); err != nil {
-		return err
-	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete: %w", err)
 	}
+	s.publishChange(ctx, "delete", scope, collection, id, nil)
 	return nil
 }
 
@@ -173,10 +143,54 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 // deleted; no realtime notifications are sent — the site's subscribers
 // are going away with it.
 func (s *DocStore) PurgeScope(ctx context.Context, scope string) error {
-	if _, err := s.db.ExecContext(ctx, `DELETE FROM documents WHERE scope = $1`, scope); err != nil {
+	if _, err := s.db.ExecContext(ctx, s.purgeScopeSQL(), scope); err != nil {
 		return fmt.Errorf("purge scope %s: %w", scope, err)
 	}
 	return nil
+}
+
+func (s *DocStore) publishChange(_ context.Context, action, scope, collection, id string, doc *Document) {
+	if s.hub == nil {
+		return
+	}
+	s.hub.Publish(scope, collection, Event{
+		Type:       action,
+		Collection: collection,
+		ID:         id,
+		Doc:        doc,
+	})
+}
+
+func (s *DocStore) insertDocumentSQL() string {
+	return `INSERT INTO documents (scope, collection, data)
+		VALUES (?, ?, ?)
+		RETURNING id, created_at, updated_at`
+}
+
+func (s *DocStore) listDocumentsSQL() string {
+	return `SELECT id, data, created_at, updated_at FROM documents
+		WHERE scope = ? AND collection = ?
+		ORDER BY created_at DESC
+		LIMIT ?`
+}
+
+func (s *DocStore) getDocumentSQL() string {
+	return `SELECT id, data, created_at, updated_at FROM documents
+		WHERE scope = ? AND collection = ? AND id = ?`
+}
+
+func (s *DocStore) updateDocumentSQL() string {
+	return `UPDATE documents SET data = ?4, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+		WHERE scope = ?1 AND collection = ?2 AND id = ?3
+		RETURNING id, created_at, updated_at`
+}
+
+func (s *DocStore) deleteDocumentSQL() string {
+	return `DELETE FROM documents WHERE scope = ? AND collection = ? AND id = ?`
+}
+
+func (s *DocStore) purgeScopeSQL() string {
+	return `DELETE FROM documents WHERE scope = ?`
 }
 
 func scanDocument(scan func(dest ...any) error) (Document, error) {

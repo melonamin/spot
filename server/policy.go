@@ -124,9 +124,9 @@ func (p *AccessPolicy) AllowsAIVisitors() bool {
 	return p != nil && strings.EqualFold(strings.TrimSpace(p.AI), aiAccessVisitors)
 }
 
-// PolicyStore reads site access policies from the mounted sites
-// directory, caching results briefly to keep authz subrequests off the
-// FUSE mount's hot path.
+// PolicyStore reads site access policies from local site storage and
+// caches results briefly. S3-backed deployments read policies through
+// SiteStorage in policy_resolve.go.
 type PolicyStore struct {
 	dir string
 	ttl time.Duration

@@ -26,6 +26,28 @@ func TestSiteFromHost(t *testing.T) {
 	}
 }
 
+func TestValidSpotHost(t *testing.T) {
+	const domain = "spot.localhost"
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"spot.localhost", true},
+		{"spot.localhost:8080", true},
+		{"demo.spot.localhost", true},
+		{"demo.spot.localhost.", true},
+		{"a.b.spot.localhost", false},
+		{"bad_site.spot.localhost", false},
+		{"evil.example.com", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := validSpotHost(tt.host, domain); got != tt.want {
+			t.Errorf("validSpotHost(%q, %q) = %v, want %v", tt.host, domain, got, tt.want)
+		}
+	}
+}
+
 func TestScopeFor(t *testing.T) {
 	scope, err := scopeFor("mysite", "posts")
 	if err != nil {

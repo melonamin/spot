@@ -45,6 +45,9 @@ func (s *Server) policyForSite(ctx context.Context, site string) (*AccessPolicy,
 }
 
 func siteObjectNotFound(err error) bool {
+	if errors.Is(err, ErrNotFound) {
+		return true
+	}
 	var res minio.ErrorResponse
 	return errors.As(err, &res) && (res.StatusCode == 404 || res.Code == "NoSuchKey" || res.Code == "NoSuchBucket")
 }

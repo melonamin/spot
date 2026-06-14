@@ -11,8 +11,10 @@ import (
 	"os"
 	"sort"
 	"testing"
+	"time"
 
 	"github.com/minio/minio-go/v7"
+	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 // TestDeploySyncRoundtrip exercises the deploy handler against the real
@@ -23,13 +25,14 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	if endpoint == "" {
 		endpoint = "localhost:9000"
 	}
+	requireTestS3Endpoint(t, endpoint)
 	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
 	if err != nil {
 		t.Fatalf("site store: %v", err)
 	}
-	db, err := openDB(context.Background(), testDSN())
+	db, err := openSQLiteDB(context.Background(), testSQLitePath(t))
 	if err != nil {
-		t.Fatalf("connect deploy registry database (is `just up` running?): %v", err)
+		t.Fatalf("open deploy registry database: %v", err)
 	}
 	defer db.Close()
 	srv := &Server{
@@ -44,8 +47,8 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	const site = "it-deploy"
 	ctx := context.Background()
 	cleanup := func() {
-		db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = $1`, site)
-		db.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site)
+		db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = ?`, site)
+		db.ExecContext(ctx, `DELETE FROM sites WHERE name = ?`, site)
 		paths, err := sites.List(ctx, site)
 		if err != nil {
 			t.Logf("cleanup list: %v", err)
@@ -152,6 +155,21 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	sort.Strings(paths)
 	if len(paths) != 2 || paths[0] != "css/app.css" || paths[1] != "index.html" {
 		t.Errorf("paths after redeploy = %v, want [css/app.css index.html]", paths)
+	}
+}
+
+func requireTestS3Endpoint(t *testing.T, endpoint string) {
+	t.Helper()
+	client, err := minio.New(endpoint, &minio.Options{
+		Creds: credentials.NewStaticV4("rustfsadmin", "rustfsadmin", ""),
+	})
+	if err != nil {
+		t.Skipf("S3 endpoint %s is not usable: %v", endpoint, err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if _, err := client.BucketExists(ctx, "spot-sites"); err != nil {
+		t.Skipf("S3 endpoint %s is not reachable as RustFS/S3; start compose or set SPOT_TEST_S3_ENDPOINT: %v", endpoint, err)
 	}
 }
 

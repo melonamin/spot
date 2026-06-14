@@ -1,72 +1,26 @@
 # Mesh deployment overlay.
 #
-# Peer-IP identity needs the front proxy to see the caller's real mesh
-# IP. Bridge port-publishing SNATs every inbound connection to the docker
-# gateway (192.168.x.1), so the resolver would only ever see the gateway,
-# never a peer. Running Caddy on the host network preserves the source IP
-# all the way to the X-Forwarded-For header.
+# Peer-IP identity only works if spot-api sees the caller's real mesh
+# source IP. Docker bridge publishing hides that behind the Docker
+# gateway, so the mesh overlay runs spot-api on the host network.
 #
 # Usage (requires one mesh provider's env vars in .env):
 #
 #   docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
 #
-# Caddy then serves on the host's :443 (not :8443). Compose prints a
-# harmless "published ports discarded in host mode" warning for the base
-# file's 8443:443 mapping.
+# Publish SPOT_MESH_DOMAIN and *.SPOT_MESH_DOMAIN to this host's mesh IP.
 
-# SPOT_DOMAIN is set to a non-.localhost name here so the browser can
-# reach the site over the mesh IP. `.localhost` is hardwired to loopback
-# (RFC 6761) and can never carry a peer IP. `spot.test` is governed by
-# /etc/hosts — map it to the VM's mesh IP. Keep it two labels (or bump
-# the {labels.N} index in the Caddyfile). Swap in your real domain when
-# you set up wildcard DNS.
 services:
-  spot-api:
-    # Expose to host loopback so the host-networked Caddy can reach it.
-    ports:
-      - "127.0.0.1:8080:8080"
-    environment:
-      SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
-      # Host-networked Caddy connects through the published loopback
-      # port, but Docker's userland proxy SNATs that to the compose
-      # network's gateway — spot-api never sees 127.0.0.1. The network
-      # subnet is pinned below precisely so this trust can name the
-      # exact gateway instead of a whole docker range.
-      SPOT_TRUSTED_PROXIES: "${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.28.0.1/32}"
-
-  # On the mesh, everything is served through Caddy: keep the S3 and
-  # Postgres ports off the network. Containers reach them over the
-  # compose network; on-VM tooling uses loopback.
   rustfs:
     ports: !override
       - "127.0.0.1:9000:9000"
       - "127.0.0.1:9001:9001"
 
-  postgres:
-    ports: !override
-      - "127.0.0.1:5433:5432"
-
-  caddy:
-    # The stock image plus the Cloudflare DNS module, for
-    # SPOT_TLS_MODE=tls-cloudflare (see caddy/Caddyfile).
-    build: ./caddy
-    image: spot-caddy
+  spot-api:
     network_mode: host
+    ports: !override []
     environment:
-      SPOT_API_UPSTREAM: "127.0.0.1:8080"
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
-      SPOT_TLS_MODE: "${SPOT_TLS_MODE:-tls-internal}"
-      SPOT_SITE_LABEL: "${SPOT_SITE_LABEL:-2}"
-      CF_API_TOKEN: "${CF_API_TOKEN:-}"
-
-# Pin the compose network so the userland-proxy source IP (the gateway)
-# is a stable, nameable address for SPOT_TRUSTED_PROXIES — trusting a
-# single /32 instead of every docker bridge on the host. Changing an
-# existing deployment's subnet needs `docker compose down` first (the
-# network must be recreated; volumes are untouched).
-networks:
-  default:
-    ipam:
-      config:
-        - subnet: 172.28.0.0/24
-          gateway: 172.28.0.1
+      SPOT_S3_ENDPOINT: "127.0.0.1:9000"
+      SPOT_TRUSTED_PROXIES: "${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128}"
+      SPOT_DEV_IDENTITY_EMAIL: ""

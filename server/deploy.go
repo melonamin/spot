@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
@@ -27,9 +28,19 @@ const (
 	maxDeployFiles = 2000
 )
 
-// SiteStore writes deployed sites into the same S3 bucket the CLI syncs
-// to; the rclone FUSE mount makes new files visible to Caddy within
-// seconds. Deploys go through the server so browsers never see storage
+type SiteStorage interface {
+	Put(ctx context.Context, site, path, contentType string, data []byte) error
+	List(ctx context.Context, site string) ([]string, error)
+	Open(ctx context.Context, site, path string) (io.ReadCloser, SiteFileInfo, error)
+	Remove(ctx context.Context, site, path string) error
+}
+
+type SiteFileInfo struct {
+	LastModified time.Time
+}
+
+// SiteStore writes deployed sites into an S3-compatible bucket. Deploys
+// and reads go through the server so browsers never see storage
 // credentials.
 type SiteStore struct {
 	client *minio.Client
@@ -42,6 +53,9 @@ func NewSiteStore(endpoint, accessKey, secretKey, bucket string) (*SiteStore, er
 	})
 	if err != nil {
 		return nil, fmt.Errorf("site store client: %w", err)
+	}
+	if err := ensureS3Bucket(context.Background(), client, bucket); err != nil {
+		return nil, fmt.Errorf("site store bucket %s: %w", bucket, err)
 	}
 	return &SiteStore{client: client, bucket: bucket}, nil
 }
@@ -73,18 +87,22 @@ func (s *SiteStore) List(ctx context.Context, site string) ([]string, error) {
 	return paths, nil
 }
 
-func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser, minio.ObjectInfo, error) {
+func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser, SiteFileInfo, error) {
 	key := site + "/" + path
 	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
-		return nil, minio.ObjectInfo{}, fmt.Errorf("open site file %s: %w", key, err)
+		return nil, SiteFileInfo{}, fmt.Errorf("open site file %s: %w", key, err)
 	}
 	info, err := obj.Stat()
 	if err != nil {
 		obj.Close()
-		return nil, minio.ObjectInfo{}, fmt.Errorf("stat site file %s: %w", key, err)
+		var resp minio.ErrorResponse
+		if errors.As(err, &resp) && (resp.StatusCode == 404 || resp.Code == "NoSuchKey" || resp.Code == "NoSuchBucket") {
+			return nil, SiteFileInfo{}, ErrNotFound
+		}
+		return nil, SiteFileInfo{}, fmt.Errorf("stat site file %s: %w", key, err)
 	}
-	return obj, info, nil
+	return obj, SiteFileInfo{LastModified: info.LastModified}, nil
 }
 
 func (s *SiteStore) Remove(ctx context.Context, site, path string) error {
@@ -106,8 +124,8 @@ type deployFile struct {
 // handleDeploy publishes a site from the browser: a multipart form with
 // a "site" name field and one "files" part per file, each part's
 // filename carrying the file's site-relative path. Semantics match the
-// CLI's rclone sync — the uploaded set replaces the site and stale
-// objects are removed.
+// CLI's sync semantics: the uploaded set replaces the site and stale
+// files are removed.
 //
 // The endpoint only answers on the apex domain. Combined with the
 // same-origin check, that means a deployed site's JavaScript cannot
@@ -183,6 +201,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	siteLock := s.siteMutationLock(site)
+	siteLock.Lock()
+	defer siteLock.Unlock()
+
 	authz, err := s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
 	if errors.Is(err, ErrDeployForbidden) {
 		s.recordDeployAudit(r, DeployAuditEvent{
@@ -212,16 +234,28 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	keep := make(map[string]bool, len(files))
 	for _, f := range files {
+		keep[f.path] = true
+	}
+	removed := make(map[string]bool)
+	for _, old := range conflictingStalePaths(existing, files, keep) {
+		if err := s.sites.Remove(r.Context(), site, old); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not remove stale file "+old)
+			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
+			return
+		}
+		removed[old] = true
+	}
+	for _, f := range files {
 		if err := s.sites.Put(r.Context(), site, f.path, contentTypeFor(f.path, f.data), f.data); err != nil {
 			log.Printf("deploy %s: %v", site, err)
 			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not store "+f.path)
 			httpError(w, http.StatusInternalServerError, "could not store "+f.path)
 			return
 		}
-		keep[f.path] = true
 	}
 	for _, old := range existing {
-		if keep[old] {
+		if keep[old] || removed[old] {
 			continue
 		}
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
@@ -243,9 +277,29 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	s.updatePolicyCacheFromDeploy(site, files)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,
-		"url":   "https://" + site + "." + s.spotDomain + "/",
+		"url":   s.siteURL(r, site),
 		"files": len(files),
 	})
+}
+
+func conflictingStalePaths(existing []string, files []deployFile, keep map[string]bool) []string {
+	var out []string
+	for _, old := range existing {
+		if keep[old] {
+			continue
+		}
+		for _, f := range files {
+			if pathShapeConflict(old, f.path) {
+				out = append(out, old)
+				break
+			}
+		}
+	}
+	return out
+}
+
+func pathShapeConflict(old, next string) bool {
+	return strings.HasPrefix(old, next+"/") || strings.HasPrefix(next, old+"/")
 }
 
 func (s *Server) updatePolicyCacheFromDeploy(site string, files []deployFile) {
@@ -394,9 +448,8 @@ func partFilename(part *multipart.Part) string {
 	return params["filename"]
 }
 
-// contentTypeFor picks the stored content type by extension first:
-// Caddy serves the FUSE mount by extension anyway, and sniffing alone
-// would mislabel CSS and JS as text/plain.
+// contentTypeFor picks the stored content type by extension first;
+// sniffing alone would mislabel CSS and JS as text/plain.
 func contentTypeFor(path string, data []byte) string {
 	if ct := mime.TypeByExtension(filepath.Ext(path)); ct != "" {
 		return ct
@@ -439,7 +492,26 @@ func normalizeDeploy(files []deployFile) ([]deployFile, error) {
 			kept[i].path = kept[i].path[len(root)+1:]
 		}
 	}
+	if err := validateDeployPathShapes(kept); err != nil {
+		return nil, err
+	}
 	return kept, nil
+}
+
+func validateDeployPathShapes(files []deployFile) error {
+	seen := make(map[string]struct{}, len(files))
+	for i, f := range files {
+		if _, ok := seen[f.path]; ok {
+			return fmt.Errorf("duplicate file path %q", f.path)
+		}
+		seen[f.path] = struct{}{}
+		for _, other := range files[:i] {
+			if pathShapeConflict(f.path, other.path) {
+				return fmt.Errorf("file path %q conflicts with %q", f.path, other.path)
+			}
+		}
+	}
+	return nil
 }
 
 func hasRootIndex(files []deployFile) bool {
@@ -469,9 +541,8 @@ func commonRoot(files []deployFile) (string, bool) {
 }
 
 // cleanSitePath validates one site-relative file path from a deploy.
-// Paths become S3 keys and, through the FUSE mount, filesystem paths
-// Caddy serves — so traversal and oddball segments are rejected rather
-// than sanitized.
+// Paths become storage keys or local filesystem paths, so traversal and
+// oddball segments are rejected rather than sanitized.
 func cleanSitePath(raw string) (string, error) {
 	raw = strings.TrimPrefix(raw, "/")
 	if raw == "" {
@@ -495,6 +566,9 @@ func cleanSitePath(raw string) (string, error) {
 		case ".", "..":
 			return "", fmt.Errorf("file path %q must not contain . or .. segments", raw)
 		}
+	}
+	if !validSitePath(raw) {
+		return "", fmt.Errorf("file path %q contains unsupported characters", raw)
 	}
 	return raw, nil
 }

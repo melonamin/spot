@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -27,8 +28,8 @@ type Server struct {
 	policies       *PolicyStore
 	hub            *Hub
 	roomHub        *RoomHub
-	files          *FileStore
-	sites          *SiteStore
+	files          FileStorage
+	sites          SiteStorage
 	deployAuth     DeployAuthorizer
 	siteAdmin      SiteAdmin
 	siteManager    SiteManager
@@ -38,6 +39,9 @@ type Server struct {
 	spotDomain     string
 	sitesDir       string
 	trustedProxies *TrustedProxies
+	serveStatic    bool
+	siteLocksMu    sync.Mutex
+	siteLocks      map[string]*sync.Mutex
 
 	dbLimit       *RateLimiter
 	fileLimit     *RateLimiter
@@ -56,6 +60,26 @@ func (s *Server) requestHost(r *http.Request) string {
 		}
 	}
 	return r.Host
+}
+
+func (s *Server) requestScheme(r *http.Request) string {
+	if s.trustsRemote(r) {
+		if proto := firstForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
+			return proto
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func firstForwardedProto(raw string) string {
+	proto := strings.ToLower(strings.TrimSpace(strings.Split(raw, ",")[0]))
+	if proto == "http" || proto == "https" {
+		return proto
+	}
+	return ""
 }
 
 func (s *Server) trustsRemote(r *http.Request) bool {
@@ -77,7 +101,7 @@ func (s *Server) rejectUntrustedForwardedHeaders(next http.Handler) http.Handler
 }
 
 func hasForwardedHeaders(r *http.Request) bool {
-	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host"} {
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
 		if r.Header.Get(header) != "" {
 			return true
 		}
@@ -133,7 +157,36 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
 	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
-	return s.rejectUntrustedForwardedHeaders(mux)
+	mux.HandleFunc("/api/", http.NotFound)
+	mux.HandleFunc("/api", http.NotFound)
+	if s.serveStatic {
+		mux.HandleFunc("/", s.handleStatic)
+	}
+	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(mux))
+}
+
+func (s *Server) rejectUnknownHosts(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" || validSpotHost(s.requestHost(r), s.spotDomain) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpError(w, http.StatusBadRequest, "request host is not part of this Spot domain")
+	})
+}
+
+func (s *Server) siteMutationLock(site string) *sync.Mutex {
+	s.siteLocksMu.Lock()
+	defer s.siteLocksMu.Unlock()
+	if s.siteLocks == nil {
+		s.siteLocks = make(map[string]*sync.Mutex)
+	}
+	lock := s.siteLocks[site]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.siteLocks[site] = lock
+	}
+	return lock
 }
 
 // sameOriginOnly rejects browser-originated cross-site API calls. Spot

@@ -83,6 +83,7 @@ func TestCleanSitePath(t *testing.T) {
 		{"a/./b.html", "", true},
 		{"a//b.html", "", true},
 		{"a/b.html/", "", true},
+		{"a:b.html", "", true},
 		{"bad\nname.html", "", true},
 		{strings.Repeat("a", 513), "", true},
 	}
@@ -190,6 +191,16 @@ func TestNormalizeDeploy(t *testing.T) {
 			wantErr: "duplicate",
 		},
 		{
+			name:    "file and directory collide",
+			in:      files("index.html", "docs", "docs/index.html"),
+			wantErr: "conflicts",
+		},
+		{
+			name:    "collide after folder wrapping",
+			in:      files("site/index.html", "site/docs", "site/docs/index.html"),
+			wantErr: "conflicts",
+		},
+		{
 			name:    "only junk",
 			in:      files(".DS_Store"),
 			wantErr: "no files",
@@ -224,17 +235,39 @@ func TestNormalizeDeploy(t *testing.T) {
 	}
 }
 
-// newTestSiteStore returns a store pointing at an unreachable endpoint:
-// requests that fail validation must return before any S3 call, so
-// these tests pass with no network at all.
-func newTestSiteStore(t *testing.T) *SiteStore {
+// newTestSiteStore returns a local store for tests that are not asserting
+// storage behavior.
+func newTestSiteStore(t *testing.T) SiteStorage {
 	t.Helper()
-	sites, err := NewSiteStore("localhost:1", "k", "s", "spot-sites")
+	sites, err := NewLocalSiteStore(filepath.Join(t.TempDir(), "sites"))
 	if err != nil {
 		t.Fatalf("site store: %v", err)
 	}
 	return sites
 }
+
+type failingSiteStore struct{}
+
+func (f failingSiteStore) Put(context.Context, string, string, string, []byte) error {
+	return io.ErrUnexpectedEOF
+}
+func (f failingSiteStore) List(context.Context, string) ([]string, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+func (f failingSiteStore) Open(context.Context, string, string) (io.ReadCloser, SiteFileInfo, error) {
+	return nil, SiteFileInfo{}, io.ErrUnexpectedEOF
+}
+func (f failingSiteStore) Remove(context.Context, string, string) error { return io.ErrUnexpectedEOF }
+
+type failingFileStore struct{}
+
+func (f failingFileStore) Put(context.Context, string, string, string, io.Reader, int64) (StoredFile, error) {
+	return StoredFile{}, io.ErrUnexpectedEOF
+}
+func (f failingFileStore) Get(context.Context, string, string, string) (io.ReadCloser, string, error) {
+	return nil, "", io.ErrUnexpectedEOF
+}
+func (f failingFileStore) RemoveSite(context.Context, string) error { return io.ErrUnexpectedEOF }
 
 func deployRequest(t *testing.T, host, site string, files map[string]string) *http.Request {
 	t.Helper()
@@ -377,7 +410,7 @@ func TestDeployForbiddenIsAuditedBeforeStorage(t *testing.T) {
 func TestDeployStorageFailureIsAudited(t *testing.T) {
 	auth := &recordingDeployAuth{action: "update"}
 	srv := &Server{
-		sites:          newTestSiteStore(t),
+		sites:          failingSiteStore{},
 		deployAuth:     auth,
 		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
 		spotDomain:     "spot.localhost",
@@ -397,6 +430,48 @@ func TestDeployStorageFailureIsAudited(t *testing.T) {
 	if event := auth.events[0]; event.Status != "failed" || event.Action != "update" {
 		t.Fatalf("audit event = %+v", event)
 	}
+}
+
+func TestDeployHandlesLocalPathShapeConflicts(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv := &Server{
+		sites:          sites,
+		deployAuth:     &recordingDeployAuth{},
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	call := func(files map[string]string) int {
+		t.Helper()
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo", files))
+		return rec.Code
+	}
+
+	if code := call(map[string]string{"index.html": "home", "docs": "file"}); code != http.StatusOK {
+		t.Fatalf("file deploy = %d, want 200", code)
+	}
+	if code := call(map[string]string{"index.html": "home", "docs/index.html": "dir"}); code != http.StatusOK {
+		t.Fatalf("file-to-dir deploy = %d, want 200", code)
+	}
+	rc, _, err := sites.Open(context.Background(), "demo", "docs/index.html")
+	if err != nil {
+		t.Fatalf("open docs/index.html: %v", err)
+	}
+	rc.Close()
+	if code := call(map[string]string{"index.html": "home", "docs": "file again"}); code != http.StatusOK {
+		t.Fatalf("dir-to-file deploy = %d, want 200", code)
+	}
+	rc, _, err = sites.Open(context.Background(), "demo", "docs")
+	if err != nil {
+		t.Fatalf("open docs: %v", err)
+	}
+	rc.Close()
 }
 
 func TestUpdatePolicyCacheFromDeploy(t *testing.T) {

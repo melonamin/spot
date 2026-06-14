@@ -334,7 +334,7 @@ func TestRestrictedFileDownloadsCheckSitePolicy(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "secret", accessFileName, `{"allow": ["sasha@example.com"]}`)
 	srv := authzServer(t, dir)
-	srv.files = mustTestFileStore(t)
+	srv.files = failingFileStore{}
 
 	denied := httptest.NewRequest(http.MethodGet,
 		"http://spot-api/api/files/secret/00000000000000000000000000000000/report.txt", nil)
@@ -355,13 +355,4 @@ func TestRestrictedFileDownloadsCheckSitePolicy(t *testing.T) {
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("allowed peer should pass policy and hit the unavailable store: got %d, want 500", rec.Code)
 	}
-}
-
-func mustTestFileStore(t *testing.T) *FileStore {
-	t.Helper()
-	files, err := NewFileStore("localhost:1", "k", "s", "spot-uploads")
-	if err != nil {
-		t.Fatalf("file store: %v", err)
-	}
-	return files
 }

@@ -3,9 +3,8 @@
 default:
     @just --list
 
-# Bring the whole stack up (Caddy on https://*.spot.localhost:8443).
+# Bring the local stack up (spot-api on http://*.spot.localhost:8080).
 up:
-    mkdir -p data/sites
     docker compose up -d --build
 
 down:
@@ -21,11 +20,14 @@ logs *args:
 build:
     cd server && go build ./...
 
+build-binary:
+    cd server && go build -o spot-api .
+
 # Unit tests (no external services needed).
 test:
     cd server && go vet ./... && go test ./...
 
-# Integration tests against the compose PostgreSQL (run `just up` first).
+# Integration tests against SQLite.
 test-integration:
     cd server && go test -tags integration ./...
 

@@ -6,19 +6,19 @@
 # platform lives. Via environment (or $XDG_CONFIG_HOME/spot/env,
 # default ~/.config/spot/env, sourced if present):
 #   SPOT_URL   apex URL of the Spot deployment
-#              (default https://spot.localhost:8443)
+#              (default http://spot.localhost:8080)
 set -eu
 
 spot_config="${XDG_CONFIG_HOME:-$HOME/.config}/spot/env"
 [ -f "$spot_config" ] && . "$spot_config"
 
-SPOT_URL=${SPOT_URL:-https://spot.localhost:8443}
+SPOT_URL=${SPOT_URL:-http://spot.localhost:8080}
 SPOT_URL=${SPOT_URL%/}
 SPOT_SCHEME=${SPOT_URL%%://*}
 SPOT_HOSTPORT=${SPOT_URL#*://}
 SPOT_DOMAIN=${SPOT_HOSTPORT%%:*}
 
-# Dev serves on Caddy's internal CA; localhost is trusted implicitly.
+# Local HTTPS dev may use a private CA; localhost is trusted implicitly.
 case $SPOT_DOMAIN in
     localhost|*.localhost) SPOT_CURL_OPTS=-k ;;
     *) SPOT_CURL_OPTS= ;;

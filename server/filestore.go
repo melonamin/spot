@@ -9,12 +9,19 @@ import (
 	"io"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/minio/minio-go/v7"
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
 var filenameSafeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
+
+type FileStorage interface {
+	Put(ctx context.Context, site, filename, contentType string, r io.Reader, size int64) (StoredFile, error)
+	Get(ctx context.Context, site, id, name string) (io.ReadCloser, string, error)
+	RemoveSite(ctx context.Context, site string) error
+}
 
 // FileStore holds site file uploads in an S3 bucket. Uploads go through
 // the server so browsers never see storage credentials.
@@ -29,6 +36,9 @@ func NewFileStore(endpoint, accessKey, secretKey, bucket string) (*FileStore, er
 	})
 	if err != nil {
 		return nil, fmt.Errorf("file store client: %w", err)
+	}
+	if err := ensureS3Bucket(context.Background(), client, bucket); err != nil {
+		return nil, fmt.Errorf("file store bucket %s: %w", bucket, err)
 	}
 	return &FileStore{client: client, bucket: bucket}, nil
 }
@@ -105,6 +115,30 @@ func (f *FileStore) RemoveSite(ctx context.Context, site string) error {
 		}
 	}
 	return nil
+}
+
+func ensureS3Bucket(ctx context.Context, client *minio.Client, bucket string) error {
+	deadline := time.Now().Add(30 * time.Second)
+	for {
+		exists, err := client.BucketExists(ctx, bucket)
+		if err == nil && exists {
+			return nil
+		}
+		if err == nil {
+			err = client.MakeBucket(ctx, bucket, minio.MakeBucketOptions{})
+			if err == nil {
+				return nil
+			}
+		}
+		if time.Now().After(deadline) {
+			return err
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-time.After(time.Second):
+		}
+	}
 }
 
 func newFileID() (string, error) {

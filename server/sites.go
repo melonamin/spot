@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -79,7 +81,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 		restricted, allowCount, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
 		out = append(out, ownedSiteJSON{
 			Name:            site.Name,
-			URL:             "https://" + site.Name + "." + s.spotDomain + "/",
+			URL:             s.siteURL(r, site.Name),
 			DownloadAllowed: downloadAllowed,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
@@ -117,12 +119,12 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		preview := ""
-		if s.hasSitePreview(site.Name) {
+		if s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
 		out = append(out, publicSiteJSON{
 			Name:            site.Name,
-			URL:             "https://" + site.Name + "." + s.spotDomain + "/",
+			URL:             s.siteURL(r, site.Name),
 			DownloadAllowed: downloadAllowed,
 			Owner:           ownerDisplay(site),
 			Yours:           site.OwnedBy(viewer),
@@ -132,6 +134,28 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+}
+
+func (s *Server) siteURL(r *http.Request, site string) string {
+	return s.requestScheme(r) + "://" + siteHostForRequest(s.requestHost(r), s.spotDomain, site) + "/"
+}
+
+func siteHostForRequest(requestHost, spotDomain, site string) string {
+	host := requestHost
+	port := ""
+	if h, p, err := net.SplitHostPort(requestHost); err == nil {
+		host = h
+		port = p
+	}
+	host = strings.TrimSuffix(host, ".")
+	if !sameHost(host, spotDomain) {
+		host = strings.TrimSuffix(spotDomain, ".")
+	}
+	siteHost := site + "." + host
+	if port != "" {
+		return net.JoinHostPort(siteHost, port)
+	}
+	return siteHost
 }
 
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
@@ -153,10 +177,13 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The purge runs while the registry holds the site's row lock, so a
-	// concurrent redeploy cannot interleave with it. Everything scoped to
-	// the site goes: served files, uploads, and private collections —
-	// otherwise the next claimant of the name would inherit them.
+	siteLock := s.siteMutationLock(site)
+	siteLock.Lock()
+	defer siteLock.Unlock()
+
+	// Everything scoped to the site goes: served files, uploads, and
+	// private collections. If purge fails, the registry row stays claimed
+	// so the owner can retry instead of freeing a partially purged name.
 	removedFiles := 0
 	purge := func(ctx context.Context) error {
 		paths, err := s.sites.List(ctx, site)
