@@ -25,6 +25,24 @@ export NETBIRD_API_TOKEN=
 export TAILSCALE_API_TOKEN=
 export TAILSCALE_OAUTH_CLIENT_ID=
 export TAILSCALE_OAUTH_CLIENT_SECRET=
+# Compose lets exported shell variables override .env. Keep e2e pinned to the
+# repo-local AI settings when present, so a developer's ambient shell key cannot
+# accidentally make the local stack use different credentials.
+load_env_value() {
+    key=$1
+    [ -f .env ] || return 0
+    value=$(sed -n "s/^$key=//p" .env | tail -n 1 | tr -d '\r')
+    [ -n "$value" ] || return 0
+    case $value in
+        \"*\") value=${value#\"}; value=${value%\"} ;;
+        \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    export "$key=$value"
+}
+for key in OPENAI_API_KEY OPENAI_BASE_URL SPOT_AI_MODEL SPOT_AI_ALLOWED_MODELS \
+    SPOT_AI_IMAGE_MODEL SPOT_AI_ALLOWED_IMAGE_MODELS; do
+    load_env_value "$key"
+done
 # The CLI must target the local stack — a developer's ~/.config/spot/env
 # may pin SPOT_URL to a real deployment, and the sourced config file
 # overrides even an exported SPOT_URL.
@@ -32,16 +50,98 @@ XDG_CONFIG_HOME="$(mktemp -d)"
 export XDG_CONFIG_HOME
 COMPOSE_PROJECT_NAME="spot-e2e-$$"
 export COMPOSE_PROJECT_NAME
+E2E_COMPOSE_FILE="docker-compose.yml"
 cleanup() {
     docker compose -p "$COMPOSE_PROJECT_NAME" down --remove-orphans -v >/dev/null 2>&1 || true
     rm -rf "$XDG_CONFIG_HOME"
 }
 trap cleanup EXIT INT TERM
+
+compose() {
+    COMPOSE_FILE=$E2E_COMPOSE_FILE docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
+}
+
+if [ "${SPOT_E2E_AI:-}" = "fake" ]; then
+    fake_ai_go="$XDG_CONFIG_HOME/fake-ai.go"
+    cat > "$fake_ai_go" <<'EOF'
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Model == "" {
+			req.Model = "fake-chat"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": req.Model,
+			"choices": []map[string]any{{
+				"message":       map[string]string{"content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]int{"prompt_tokens": 2, "completion_tokens": 1},
+		})
+	})
+	http.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{
+				"b64_json":       "iVBORw0KGgo=",
+				"revised_prompt": "fake",
+			}},
+			"usage": map[string]any{},
+		})
+	})
+	if err := http.ListenAndServe(":8081", nil); err != nil {
+		panic(err)
+	}
+}
+EOF
+    fake_ai_override="$XDG_CONFIG_HOME/docker-compose.fake-ai.yml"
+    cat > "$fake_ai_override" <<EOF
+services:
+  fake-ai:
+    image: golang:1.26-alpine
+    working_dir: /src
+    command: go run /src/fake-ai.go
+    volumes:
+      - $fake_ai_go:/src/fake-ai.go:ro
+  spot-api:
+    depends_on:
+      - rustfs
+      - fake-ai
+    environment:
+      OPENAI_API_KEY: spot-e2e-fake-key
+      OPENAI_BASE_URL: http://fake-ai:8081
+      SPOT_AI_MODEL: fake-chat
+      SPOT_AI_ALLOWED_MODELS: fake-chat
+      SPOT_AI_IMAGE_MODEL: fake-image
+      SPOT_AI_ALLOWED_IMAGE_MODELS: fake-image
+EOF
+    E2E_COMPOSE_FILE="docker-compose.yml:$fake_ai_override"
+fi
+
 # Free the fixed local ports used by the developer stack, but keep its
 # named volumes intact.
 docker compose -p spot down --remove-orphans
-docker compose -p "$COMPOSE_PROJECT_NAME" down --remove-orphans -v
-docker compose -p "$COMPOSE_PROJECT_NAME" up -d --build --remove-orphans
+compose down --remove-orphans -v
+compose up -d --build --remove-orphans
 
 echo "==> waiting for spot-api"
 ready=""
@@ -280,7 +380,15 @@ echo "    webdeploy deleted"
 echo "==> AI proxy"
 ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'
 image_body='{"prompt":"A tiny blue square"}'
-if [ -n "${OPENAI_API_KEY:-}" ]; then
+if [ "${SPOT_E2E_AI:-}" = "fake" ]; then
+    ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
+        http://demo.spot.localhost:8080/api/ai/chat)
+    echo "$ai_res" | grep -q '"text":"ok"' || fail "fake AI chat did not return ok: $ai_res"
+    image_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$image_body" \
+        http://demo.spot.localhost:8080/api/ai/image)
+    echo "$image_res" | grep -q '"images":' || fail "fake AI image did not return images: $image_res"
+    echo "    fake OpenAI-compatible API calls succeeded"
+elif [ -n "${OPENAI_API_KEY:-}" ]; then
     ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
         http://demo.spot.localhost:8080/api/ai/chat)
     echo "$ai_res" | grep -q '"text"' || fail "AI chat with key did not return text: $ai_res"
