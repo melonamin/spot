@@ -1,11 +1,16 @@
 package main
 
 import (
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 func TestParseForwardGroups(t *testing.T) {
@@ -212,6 +217,50 @@ func TestForwardAuthSiteAccess(t *testing.T) {
 				t.Fatalf("authorizeSiteAccess = %d, want %d", got, tt.want)
 			}
 		})
+	}
+}
+
+// TestForwardAuthWebsocketIdentity drives a real websocket through the full
+// handler stack with no mesh resolver configured, so the realtime identity
+// can only come from forward-auth. The joiner's own presence carries the
+// email asserted by the trusted proxy, proving websocketIdentity honors it.
+func TestForwardAuthWebsocketIdentity(t *testing.T) {
+	srv := &Server{
+		forwardAuth:    NewForwardAuth("", "", "", ""),
+		policies:       NewPolicyStore(t.TempDir(), 0),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+	ts := httptest.NewServer(srv.routes())
+	defer ts.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	wsURL := "ws" + strings.TrimPrefix(ts.URL, "http") + "/api/ws"
+	conn, _, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{HTTPHeader: http.Header{
+		"X-Forwarded-Host": []string{"ops.spot.localhost"},
+		"Remote-Email":     []string{"operator@corp.com"},
+		"Remote-Name":      []string{"Operator"},
+	}})
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer conn.CloseNow()
+
+	if err := wsjson.Write(ctx, conn, wsRequest{Type: "room_join", Room: "control"}); err != nil {
+		t.Fatalf("join: %v", err)
+	}
+	for {
+		var ev RoomEvent
+		if err := wsjson.Read(ctx, conn, &ev); err != nil {
+			t.Fatalf("read presence: %v", err)
+		}
+		if ev.Type == "room_presence" {
+			if len(ev.Users) != 1 || ev.Users[0].Email != "operator@corp.com" {
+				t.Fatalf("presence users = %+v, want forward-auth operator@corp.com", ev.Users)
+			}
+			return
+		}
 	}
 }
 
