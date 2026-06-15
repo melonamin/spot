@@ -11,6 +11,9 @@ CREATE TABLE IF NOT EXISTS documents (
 CREATE INDEX IF NOT EXISTS documents_scope_collection_idx
     ON documents (scope, collection, created_at DESC);
 
+CREATE INDEX IF NOT EXISTS documents_scope_collection_cursor_idx
+    ON documents (scope, collection, created_at DESC, id DESC);
+
 CREATE TABLE IF NOT EXISTS sites (
     name text PRIMARY KEY,
     owner_email text NOT NULL DEFAULT '',

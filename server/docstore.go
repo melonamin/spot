@@ -58,11 +58,12 @@ func (s *DocStore) Create(ctx context.Context, scope, collection, owner string, 
 
 // List returns a collection's documents, newest first. When owner is
 // non-empty, only documents stamped with that owner key are returned; an
-// empty owner returns every document in the scope.
-func (s *DocStore) List(ctx context.Context, scope, collection string, limit int, owner string) ([]Document, error) {
+// empty owner returns every document in the scope. afterID, when present,
+// starts after that document in the same newest-first order.
+func (s *DocStore) List(ctx context.Context, scope, collection string, limit int, owner, afterID string) ([]Document, error) {
 	rows, err := s.db.QueryContext(ctx,
 		listDocumentsSQL,
-		scope, collection, owner, limit,
+		scope, collection, owner, limit, afterID,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
@@ -93,6 +94,17 @@ func (s *DocStore) Get(ctx context.Context, scope, collection, id string) (Docum
 }
 
 func (s *DocStore) Update(ctx context.Context, scope, collection, id string, data map[string]any) (Document, error) {
+	return s.update(ctx, scope, collection, id, "", data)
+}
+
+// UpdateOwned updates a document only when it belongs to owner. It returns
+// ErrNotFound for missing documents and owner mismatches so callers do not
+// leak another visitor's document IDs.
+func (s *DocStore) UpdateOwned(ctx context.Context, scope, collection, id, owner string, data map[string]any) (Document, error) {
+	return s.update(ctx, scope, collection, id, owner, data)
+}
+
+func (s *DocStore) update(ctx context.Context, scope, collection, id, owner string, data map[string]any) (Document, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return Document{}, fmt.Errorf("encode document: %w", err)
@@ -105,7 +117,7 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 
 	var doc Document
 	doc.Data = data
-	err = tx.QueryRowContext(ctx, updateDocumentSQL, scope, collection, id, raw).
+	err = tx.QueryRowContext(ctx, updateDocumentSQL, scope, collection, id, raw, owner).
 		Scan(&doc.ID, &doc.Owner, &doc.CreatedAt, &doc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrNotFound
@@ -121,6 +133,16 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 }
 
 func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) error {
+	return s.delete(ctx, scope, collection, id, "")
+}
+
+// DeleteOwned deletes a document only when it belongs to owner. It returns
+// ErrNotFound for missing documents and owner mismatches.
+func (s *DocStore) DeleteOwned(ctx context.Context, scope, collection, id, owner string) error {
+	return s.delete(ctx, scope, collection, id, owner)
+}
+
+func (s *DocStore) delete(ctx context.Context, scope, collection, id, owner string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin delete: %w", err)
@@ -129,7 +151,7 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 
 	res, err := tx.ExecContext(ctx,
 		deleteDocumentSQL,
-		scope, collection, id,
+		scope, collection, id, owner,
 	)
 	if err != nil {
 		return fmt.Errorf("delete document: %w", err)
@@ -177,17 +199,24 @@ const (
 
 	listDocumentsSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ?1 AND collection = ?2 AND (?3 = '' OR owner = ?3)
-		ORDER BY created_at DESC
+		  AND (?5 = '' OR (
+			created_at < (SELECT created_at FROM documents WHERE scope = ?1 AND collection = ?2 AND id = ?5)
+			OR (
+				created_at = (SELECT created_at FROM documents WHERE scope = ?1 AND collection = ?2 AND id = ?5)
+				AND id < ?5
+			)
+		  ))
+		ORDER BY created_at DESC, id DESC
 		LIMIT ?4`
 
 	getDocumentSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`
 
 	updateDocumentSQL = `UPDATE documents SET data = ?4, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
-		WHERE scope = ?1 AND collection = ?2 AND id = ?3
+		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?5 = '' OR owner = ?5)
 		RETURNING id, owner, created_at, updated_at`
 
-	deleteDocumentSQL = `DELETE FROM documents WHERE scope = ? AND collection = ? AND id = ?`
+	deleteDocumentSQL = `DELETE FROM documents WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?4 = '' OR owner = ?4)`
 
 	purgeScopeSQL = `DELETE FROM documents WHERE scope = ?`
 )

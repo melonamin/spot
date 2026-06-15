@@ -51,7 +51,7 @@ func TestDocumentOwnershipOverHTTP(t *testing.T) {
 	}
 
 	srv.resolver = NewStaticResolver("bob@example.com", "Bob", nil)
-	create(`{"title": "bob note"}`)
+	bob := create(`{"title": "bob note"}`)
 
 	list := func(query string) []Document {
 		t.Helper()
@@ -76,6 +76,46 @@ func TestDocumentOwnershipOverHTTP(t *testing.T) {
 	}
 	if all := list(""); len(all) != 2 {
 		t.Errorf("list all = %d docs, want 2", len(all))
+	}
+	firstPage := list("?limit=1")
+	if len(firstPage) != 1 {
+		t.Fatalf("first page = %d docs, want 1", len(firstPage))
+	}
+	secondPage := list("?limit=1&after=" + firstPage[0].ID)
+	if len(secondPage) != 1 {
+		t.Fatalf("second page = %d docs, want 1", len(secondPage))
+	}
+	if secondPage[0].ID == firstPage[0].ID {
+		t.Fatalf("second page repeated cursor document %s", firstPage[0].ID)
+	}
+
+	updateMine := func(id, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPut, "http://demo.spot.localhost/api/db/notes/"+id+"?mine=true",
+			strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := updateMine(alice.ID, `{"title": "stolen"}`); code != http.StatusNotFound {
+		t.Fatalf("bob update alice mine = %d, want 404", code)
+	}
+	if code := updateMine(bob.ID, `{"title": "bob edited"}`); code != http.StatusOK {
+		t.Fatalf("bob update bob mine = %d, want 200", code)
+	}
+
+	deleteMine := func(id string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodDelete, "http://demo.spot.localhost/api/db/notes/"+id+"?mine=true", nil)
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := deleteMine(alice.ID); code != http.StatusNotFound {
+		t.Fatalf("bob delete alice mine = %d, want 404", code)
+	}
+	if code := deleteMine(bob.ID); code != http.StatusNoContent {
+		t.Fatalf("bob delete bob mine = %d, want 204", code)
 	}
 
 	// Without a resolver the caller cannot be identified, so mine must fail

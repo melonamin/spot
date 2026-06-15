@@ -472,18 +472,22 @@ const me = await spot.me();
 const posts = spot.db.collection('posts');
 const doc = await posts.create({ title: 'Hello' }); // { id, owner, data, created_at, updated_at }
 const docs = await posts.list({ limit: 100 });      // newest first
+const next = await posts.list({ limit: 100, after: docs.at(-1)?.id });
 const mine = await posts.list({ mine: true });      // only docs this visitor created
 await posts.get(doc.id);
 await posts.update(doc.id, { title: 'Bye' });       // replaces data
+await posts.updateMine(doc.id, { title: 'Mine' });  // only if this visitor owns it
 await posts.delete(doc.id);
+await posts.deleteMine(doc.id);
 \`\`\`
 
 Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
 up to 1 MB. Each document records an \`owner\` — the mesh identity that
 created it — so multiple visitors can keep private data in one shared
 site; \`list({ mine: true })\` returns only the caller's documents. Writes
-are not restricted to the owner, so enforce per-user editing in your own
-logic when you need it.
+are not restricted to the owner by default, so use \`updateMine\`,
+\`deleteMine\`, or \`{ mine: true }\` on mutations when only the creator
+should be able to change a document.
 
 Collections are private to this site, except collections named
 \`shared-*\`: those are global and readable/writable by every Spot site.
@@ -515,6 +519,7 @@ the room. Presence updates when visitors join, leave, or call
 const room = spot.realtime.room('control');
 room.on('cursor', ({ from, data }) => renderCursor(from.email, data));
 room.onPresence((users) => renderOnline(users));
+room.onStatus((status) => renderConnection(status)); // connecting/open/reconnecting/closed
 room.setPresence({ role: 'operator' });
 room.send('cursor', { x: 12, y: 8 });
 \`\`\`
@@ -566,6 +571,16 @@ const stored = await spot.files.upload(fileInput.files[0]);
 const files = await spot.files.list();   // [{ id, name, size, url }, ...]
 await spot.files.delete(stored);         // or spot.files.delete(id, name)
 \`\`\`
+
+### Site management (Spot root only)
+
+\`\`\`js
+const mine = await spot.sites.mine();
+const publicSites = await spot.sites.public();
+await spot.sites.delete('old-demo');
+\`\`\`
+
+These platform APIs work from the Spot root, not from site subdomains.
 
 ### Rate limits
 

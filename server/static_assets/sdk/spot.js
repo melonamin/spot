@@ -18,21 +18,32 @@
     return body;
   };
 
+  const query = (params) => {
+    const qs = new URLSearchParams();
+    for (const [key, value] of Object.entries(params)) {
+      if (value !== undefined && value !== false && value !== null) qs.set(key, String(value));
+    }
+    const encoded = qs.toString();
+    return encoded ? `?${encoded}` : '';
+  };
+
   const collection = (name) => ({
     // list({ limit, mine }). Each document carries an `owner` (the mesh
     // identity that created it). Pass mine:true to return only documents
-    // owned by the current visitor.
-    list: async ({ limit = 100, mine = false } = {}) => {
-      const params = new URLSearchParams({ limit });
-      if (mine) params.set('mine', 'true');
-      return (await api(`/api/db/${name}?${params}`)).documents;
+    // owned by the current visitor. Pass after:<doc id> for cursor paging.
+    list: async ({ limit = 100, mine = false, after } = {}) => {
+      return (await api(`/api/db/${name}${query({ limit, mine, after })}`)).documents;
     },
     create: (data) =>
       api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data) }),
     get: (id) => api(`/api/db/${name}/${id}`),
-    update: (id, data) =>
-      api(`/api/db/${name}/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id) => api(`/api/db/${name}/${id}`, { method: 'DELETE' }),
+    update: (id, data, { mine = false } = {}) =>
+      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'PUT', body: JSON.stringify(data) }),
+    updateMine: (id, data) =>
+      api(`/api/db/${name}/${id}?mine=true`, { method: 'PUT', body: JSON.stringify(data) }),
+    delete: (id, { mine = false } = {}) =>
+      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE' }),
+    deleteMine: (id) => api(`/api/db/${name}/${id}?mine=true`, { method: 'DELETE' }),
     // Live changes from all visitors. Returns an unsubscribe function;
     // reconnects automatically until unsubscribed.
     subscribe: (handlers = {}) => {
@@ -82,12 +93,20 @@
     const handlers = new Map();
     const presenceHandlers = new Set();
     const errorHandlers = new Set();
+    const statusHandlers = new Set();
     const queue = [];
     const maxQueue = 100;
     let ws;
     let closed = false;
     let presenceData;
     let reconnectTimer;
+    let status = 'connecting';
+
+    const emitStatus = (next) => {
+      if (status === next) return;
+      status = next;
+      for (const handler of statusHandlers) handler(status);
+    };
 
     const sendWire = (msg) => {
       if (closed) return;
@@ -116,8 +135,10 @@
 
     const connect = () => {
       if (closed) return;
+      emitStatus(ws ? 'reconnecting' : 'connecting');
       ws = new WebSocket(`${proto}//${location.host}/api/ws`);
       ws.addEventListener('open', () => {
+        emitStatus('open');
         ws.send(JSON.stringify({ type: 'room_join', room: name }));
         if (presenceData !== undefined) {
           ws.send(JSON.stringify({ type: 'room_presence', room: name, data: presenceData }));
@@ -155,6 +176,7 @@
       });
       ws.addEventListener('close', () => {
         if (closed) return;
+        emitStatus('reconnecting');
         reconnectTimer = setTimeout(() => {
           reconnectTimer = undefined;
           connect();
@@ -187,8 +209,14 @@
         errorHandlers.add(handler);
         return () => errorHandlers.delete(handler);
       },
+      onStatus: (handler) => {
+        statusHandlers.add(handler);
+        handler(status);
+        return () => statusHandlers.delete(handler);
+      },
       close: () => {
         closed = true;
+        emitStatus('closed');
         if (reconnectTimer) {
           clearTimeout(reconnectTimer);
           reconnectTimer = undefined;
@@ -299,6 +327,12 @@
           method: 'DELETE',
         });
       },
+    },
+    sites: {
+      // Apex-only platform APIs: these work from the Spot root, not site subdomains.
+      mine: async () => (await api('/api/sites/mine')).sites,
+      public: async () => (await api('/api/sites/public')).sites,
+      delete: (name) => api(`/api/sites/${encodeURIComponent(name)}`, { method: 'DELETE' }),
     },
   };
 })();

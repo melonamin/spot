@@ -282,9 +282,11 @@ All calls are same-origin:
 ```js
 const me = await spot.me();
 const posts = spot.db.collection('posts');
-await posts.create({ title: 'Hello Spot DB' });
+const doc = await posts.create({ title: 'Hello Spot DB' });
 const docs = await posts.list();
+const next = await posts.list({ limit: 25, after: docs.at(-1)?.id });
 const mine = await posts.list({ mine: true });
+await posts.updateMine(doc.id, { title: 'Only I can edit this path' });
 ```
 
 Collections are private to their site, except `shared-*` collections,
@@ -293,7 +295,9 @@ which live in one global namespace every site can read and write.
 Every document records an `owner` — the mesh identity that created it — so
 several visitors can keep private records in one shared site.
 `list({ mine: true })` returns only the caller's documents. Writes are not
-restricted to the owner; enforce per-user editing in site logic when needed.
+restricted to the owner by default; use `updateMine`, `deleteMine`, or
+`{ mine: true }` on mutations when only the creator should be able to change
+a document.
 
 Realtime DB subscriptions are process-local and delivered after SQLite
 commits:
@@ -312,6 +316,7 @@ Ephemeral realtime rooms are also process-local and are not persisted:
 const room = spot.realtime.room('control');
 room.on('cursor', ({ from, data }) => drawCursor(from.email, data));
 room.onPresence((users) => renderOnline(users));
+room.onStatus((status) => renderConnection(status));
 room.setPresence({ role: 'operator' });
 room.send('cursor', { x: 12, y: 8 });
 ```
@@ -357,6 +362,14 @@ Important APIs:
   and registry claim.
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
+
+On the Spot root, the SDK wraps the site APIs:
+
+```js
+const mine = await spot.sites.mine();
+const publicSites = await spot.sites.public();
+await spot.sites.delete('old-demo');
+```
 
 ## Files, Text AI, and Image Generation
 

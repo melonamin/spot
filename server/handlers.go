@@ -798,15 +798,16 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	owner := ""
-	if mine := r.URL.Query().Get("mine"); mine == "1" || mine == "true" {
-		owner = s.callerKey(r)
-		if owner == "" {
-			httpError(w, http.StatusBadRequest, "mine=true requires an identified visitor")
-			return
-		}
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
 	}
-	docs, err := s.store.List(r.Context(), scope, collection, limit, owner)
+	after := r.URL.Query().Get("after")
+	if after != "" && !idRe.MatchString(after) {
+		httpError(w, http.StatusBadRequest, "after must be a document UUID")
+		return
+	}
+	docs, err := s.store.List(r.Context(), scope, collection, limit, owner, after)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -861,7 +862,17 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	doc, err := s.store.Update(r.Context(), scope, collection, id, data)
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	var doc Document
+	var err error
+	if owner != "" {
+		doc, err = s.store.UpdateOwned(r.Context(), scope, collection, id, owner, data)
+	} else {
+		doc, err = s.store.Update(r.Context(), scope, collection, id, data)
+	}
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -878,11 +889,34 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.Delete(r.Context(), scope, collection, id); err != nil {
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	var err error
+	if owner != "" {
+		err = s.store.DeleteOwned(r.Context(), scope, collection, id, owner)
+	} else {
+		err = s.store.Delete(r.Context(), scope, collection, id)
+	}
+	if err != nil {
 		s.storeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (s *Server) mineOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	mine := r.URL.Query().Get("mine")
+	if mine != "1" && mine != "true" {
+		return "", true
+	}
+	owner := s.callerKey(r)
+	if owner == "" {
+		httpError(w, http.StatusBadRequest, "mine=true requires an identified visitor")
+		return "", false
+	}
+	return owner, true
 }
 
 func (s *Server) storeError(w http.ResponseWriter, err error) {

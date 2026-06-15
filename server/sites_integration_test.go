@@ -252,7 +252,7 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 	if paths, err := sites.List(ctx, site); err != nil || len(paths) != 0 {
 		t.Errorf("site files after delete = %v (%v), want none", paths, err)
 	}
-	if docs, err := store.List(ctx, site, "notes", 10, ""); err != nil || len(docs) != 0 {
+	if docs, err := store.List(ctx, site, "notes", 10, "", ""); err != nil || len(docs) != 0 {
 		t.Errorf("documents after delete = %v (%v), want none", docs, err)
 	}
 	if uploads := filesList(ctx, files, site); len(uploads) != 0 {

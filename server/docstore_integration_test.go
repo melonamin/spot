@@ -68,7 +68,7 @@ func TestDocStoreCRUD(t *testing.T) {
 		t.Errorf("Update timestamp did not advance: %v -> %v", created.UpdatedAt, updated.UpdatedAt)
 	}
 
-	docs, err := store.List(ctx, scope, coll, 10, "")
+	docs, err := store.List(ctx, scope, coll, 10, "", "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestDocStoreOwnership(t *testing.T) {
 		t.Fatalf("Create anon: %v", err)
 	}
 
-	all, err := store.List(ctx, scope, coll, 100, "")
+	all, err := store.List(ctx, scope, coll, 100, "", "")
 	if err != nil {
 		t.Fatalf("List all: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestDocStoreOwnership(t *testing.T) {
 		t.Errorf("List all returned %d, want 3", len(all))
 	}
 
-	mine, err := store.List(ctx, scope, coll, 100, "alice@example.com")
+	mine, err := store.List(ctx, scope, coll, 100, "alice@example.com", "")
 	if err != nil {
 		t.Fatalf("List mine: %v", err)
 	}
@@ -184,7 +184,7 @@ func TestDocStoreScopeIsolation(t *testing.T) {
 	if _, err := store.Get(ctx, "it-site-b", "notes", doc.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("cross-scope Get: err = %v, want ErrNotFound", err)
 	}
-	docs, err := store.List(ctx, "it-site-b", "notes", 10, "")
+	docs, err := store.List(ctx, "it-site-b", "notes", 10, "", "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
