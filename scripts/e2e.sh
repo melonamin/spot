@@ -238,16 +238,20 @@ echo "    webdeploy deleted"
 
 echo "==> AI proxy"
 ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'
-if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+image_body='{"prompt":"A tiny blue square"}'
+if [ -n "${OPENAI_API_KEY:-}" ]; then
     ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
         http://demo.spot.localhost:8080/api/ai/chat)
     echo "$ai_res" | grep -q '"text"' || fail "AI chat with key did not return text: $ai_res"
-    echo "    real Claude API call succeeded"
+    echo "    real OpenAI-compatible API call succeeded"
 else
     code=$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
         -d "$ai_body" http://demo.spot.localhost:8080/api/ai/chat)
     [ "$code" = "503" ] || fail "AI chat without key returned $code, want 503"
-    echo "    no ANTHROPIC_API_KEY in env: 503 fail-loud verified"
+    code=$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+        -d "$image_body" http://demo.spot.localhost:8080/api/ai/image)
+    [ "$code" = "503" ] || fail "AI image without key returned $code, want 503"
+    echo "    no OPENAI_API_KEY in env: AI endpoints 503 fail-loud verified"
 fi
 
 echo "==> rate limiting: upload endpoint throttles a parallel burst"

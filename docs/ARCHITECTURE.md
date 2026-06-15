@@ -60,7 +60,7 @@ Startup flow:
 5. Site and file storage are wired:
    - `SiteStore` and `FileStore` for S3-compatible storage.
    - `LocalSiteStore` and `LocalFileStore` for filesystem storage.
-6. Optional `AIProxy` is created when `ANTHROPIC_API_KEY` is set.
+6. Optional `AIProxy` is created when `OPENAI_API_KEY` is set.
 7. `Server.routes()` builds the HTTP mux and wraps it with forwarded-header and
    host validation.
 
@@ -264,7 +264,7 @@ Site-only APIs:
 - Documents: `/api/db/{collection}`
 - Files: `/api/files`
 - Realtime: `/api/ws`
-- AI: `/api/ai/chat`
+- AI: `/api/ai/chat`, `/api/ai/image`
 - Source download: `/api/download`
 
 Apex-and-site APIs:
@@ -357,8 +357,9 @@ only when site access allows it and policy does not disable downloads.
 
 The AI API is implemented in `server/ai.go`.
 
-`POST /api/ai/chat` lets deployed sites call an Anthropic-compatible chat API
-through the server-side key.
+`POST /api/ai/chat` lets deployed sites call an OpenAI-compatible chat API
+through the server-side key. `POST /api/ai/image` lets deployed sites generate
+images through the same OpenAI-compatible gateway.
 
 Access rules:
 
@@ -369,8 +370,13 @@ Access rules:
   `_access.json` opts into `ai: "visitors"`.
 - Requested models must be in the deployment's allowed model set.
 
-The AI proxy is optional. Without `ANTHROPIC_API_KEY`, the endpoint returns
-`503`.
+The AI proxy is optional. Without `OPENAI_API_KEY`, `/api/ai/chat` and
+`/api/ai/image` return `503`. Chat calls use `/v1/chat/completions`; image
+calls use `/v1/images/generations` and normalize returned base64 images into
+browser-ready `data_url` values. The built-in image allowlist includes
+`gpt-image-2` and `gemini-3.1-flash-image`; deployments can point
+`OPENAI_BASE_URL` at LiteLLM and map those names or local aliases to provider
+routes there.
 
 ## Client SDK and Platform UI
 
@@ -421,7 +427,7 @@ Use this map when deciding where a change belongs:
 | Mesh identity | `server/identity.go`, `server/identity_tailscale.go` |
 | `_access.json` behavior | `server/policy.go`, `server/policy_resolve.go` |
 | Realtime document events or rooms | `server/realtime.go`, websocket handling in `server/handlers.go` |
-| AI chat proxy | `server/ai.go` |
+| AI text and image proxy | `server/ai.go` |
 | Rate limits | `server/ratelimit.go`, route wiring in `server/handlers.go` |
 | Config and startup wiring | `server/main.go` |
 | Docker/Caddy deployment shape | `docker-compose*.yml`, `caddy/` |

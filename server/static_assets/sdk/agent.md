@@ -29,5 +29,5 @@ After `spot init`, read the generated skill for the selected agent before
 building or deploying Spot sites. It is written to
 `<agent>/skills/spot/SKILL.md`, for example `.claude/skills/spot/SKILL.md`
 or `.codex/skills/spot/SKILL.md`; `spot init` prints the exact path(s) it
-wrote. The skill documents identity, database, realtime, AI, file uploads,
-access control, and deployment conventions.
+wrote. The skill documents identity, database, realtime, text AI, AI image
+generation, file uploads, access control, and deployment conventions.
