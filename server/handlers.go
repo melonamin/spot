@@ -25,6 +25,7 @@ var roomEventRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 type Server struct {
 	store          *DocStore
 	resolver       IdentityResolver
+	forwardAuth    *ForwardAuth
 	policies       *PolicyStore
 	hub            *Hub
 	roomHub        *RoomHub
@@ -245,7 +246,22 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 // mesh, and a non-nil error for a resolver outage. It writes no response, so
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
+// forwardAuthIdentity returns the identity asserted by a trusted auth proxy
+// via forward-auth headers. It is only honored when forward auth is enabled
+// and the socket peer is a trusted proxy, so an untrusted client cannot
+// assert an identity by sending Remote-* headers. ok is false when no proxy
+// identity applies, so callers fall through to the mesh resolver.
+func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
+	if s.forwardAuth == nil || !s.trustsRemote(r) {
+		return Identity{}, false
+	}
+	return s.forwardAuth.identityFrom(r.Header, s.clientIP(r))
+}
+
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	if id, ok := s.forwardAuthIdentity(r); ok {
+		return id, true, nil
+	}
 	if s.resolver == nil {
 		return Identity{}, false, nil
 	}
@@ -264,9 +280,9 @@ func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
 	id, found, err := s.resolvePeer(r)
