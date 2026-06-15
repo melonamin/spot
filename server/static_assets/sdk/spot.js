@@ -19,8 +19,14 @@
   };
 
   const collection = (name) => ({
-    list: async ({ limit = 100 } = {}) =>
-      (await api(`/api/db/${name}?limit=${limit}`)).documents,
+    // list({ limit, mine }). Each document carries an `owner` (the mesh
+    // identity that created it). Pass mine:true to return only documents
+    // owned by the current visitor.
+    list: async ({ limit = 100, mine = false } = {}) => {
+      const params = new URLSearchParams({ limit });
+      if (mine) params.set('mine', 'true');
+      return (await api(`/api/db/${name}?${params}`)).documents;
+    },
     create: (data) =>
       api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data) }),
     get: (id) => api(`/api/db/${name}/${id}`),
@@ -212,6 +218,57 @@
           method: 'POST',
           body: JSON.stringify({ messages, ...opts }),
         }),
+      // stream([{role, content}, ...], {onToken, model, system, max_tokens, signal})
+      // Calls onToken(delta, text) as tokens arrive and resolves with the
+      // final { text, model, stop_reason, usage }.
+      stream: async (messages, opts = {}) => {
+        const { onToken, signal, ...rest } = opts;
+        const res = await fetch('/api/ai/chat/stream', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ messages, ...rest }),
+          signal,
+        });
+        if (!res.ok || !res.body) {
+          const body = await res.json().catch(() => null);
+          throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        const result = { text: '', model: undefined, stop_reason: undefined, usage: undefined };
+        let buffer = '';
+        for (;;) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          let sep;
+          while ((sep = buffer.indexOf('\n\n')) >= 0) {
+            const frame = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+            const line = frame.split('\n').find((l) => l.startsWith('data:'));
+            if (!line) continue;
+            const payload = line.slice(5).trim();
+            if (!payload) continue;
+            let msg;
+            try {
+              msg = JSON.parse(payload);
+            } catch {
+              continue;
+            }
+            if (msg.error) throw new Error(msg.error);
+            if (msg.delta) {
+              result.text += msg.delta;
+              onToken?.(msg.delta, result.text);
+            }
+            if (msg.done) {
+              result.model = msg.model;
+              result.stop_reason = msg.stop_reason;
+              result.usage = msg.usage;
+            }
+          }
+        }
+        return result;
+      },
       // image('prompt', {model, size, aspect_ratio, image_size, quality, output_format})
       // -> { provider, model, images: [{ b64, mime_type, data_url }] }
       image: (prompt, opts = {}) =>
@@ -231,6 +288,16 @@
           throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
         }
         return body;
+      },
+      // list() -> [{ id, name, size, url }, ...]
+      list: async () => (await api('/api/files')).files,
+      // delete(file) where file is a stored descriptor or (id, name).
+      delete: (file, name) => {
+        const id = typeof file === 'object' ? file.id : file;
+        const fileName = typeof file === 'object' ? file.name : name;
+        return api(`/api/files/${encodeURIComponent(id)}/${encodeURIComponent(fileName)}`, {
+          method: 'DELETE',
+        });
       },
     },
   };

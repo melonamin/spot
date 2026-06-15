@@ -284,10 +284,16 @@ const me = await spot.me();
 const posts = spot.db.collection('posts');
 await posts.create({ title: 'Hello Spot DB' });
 const docs = await posts.list();
+const mine = await posts.list({ mine: true });
 ```
 
 Collections are private to their site, except `shared-*` collections,
 which live in one global namespace every site can read and write.
+
+Every document records an `owner` — the mesh identity that created it — so
+several visitors can keep private records in one shared site.
+`list({ mine: true })` returns only the caller's documents. Writes are not
+restricted to the owner; enforce per-user editing in site logic when needed.
 
 Realtime DB subscriptions are process-local and delivered after SQLite
 commits:
@@ -358,6 +364,8 @@ Uploads go through Spot, so browsers never see storage credentials:
 
 ```js
 const stored = await spot.files.upload(file);
+const files = await spot.files.list();
+await spot.files.delete(stored);
 ```
 
 Images, PDFs, plain text, audio, and video render inline. HTML, SVG, and
@@ -375,6 +383,12 @@ SPOT_AI_IMAGE_MODEL=gemini-3.1-flash-image-preview
 
 ```js
 const chat = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+
+// Stream tokens as they arrive:
+await spot.ai.stream([{ role: 'user', content: 'Write a haiku' }], {
+  onToken: (delta, text) => render(text),
+});
+
 const art = await spot.ai.image('A tiny cyberpunk greenhouse at night');
 const img = new Image();
 img.src = art.images[0].data_url;

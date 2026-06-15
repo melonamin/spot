@@ -470,15 +470,20 @@ const me = await spot.me();
 
 \`\`\`js
 const posts = spot.db.collection('posts');
-const doc = await posts.create({ title: 'Hello' }); // { id, data, created_at, updated_at }
+const doc = await posts.create({ title: 'Hello' }); // { id, owner, data, created_at, updated_at }
 const docs = await posts.list({ limit: 100 });      // newest first
+const mine = await posts.list({ mine: true });      // only docs this visitor created
 await posts.get(doc.id);
 await posts.update(doc.id, { title: 'Bye' });       // replaces data
 await posts.delete(doc.id);
 \`\`\`
 
 Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
-up to 1 MB.
+up to 1 MB. Each document records an \`owner\` — the mesh identity that
+created it — so multiple visitors can keep private data in one shared
+site; \`list({ mine: true })\` returns only the caller's documents. Writes
+are not restricted to the owner, so enforce per-user editing in your own
+logic when you need it.
 
 Collections are private to this site, except collections named
 \`shared-*\`: those are global and readable/writable by every Spot site.
@@ -533,6 +538,13 @@ const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]
 // Optional second-level fields in the request: system, max_tokens.
 // model is accepted only when the deployment allowlists it.
 
+// Stream tokens as they arrive (same options as chat, plus onToken/signal):
+const final = await spot.ai.stream(
+  [{ role: 'user', content: 'Write a haiku' }],
+  { onToken: (delta, text) => render(text) },
+);
+// final = { text, model, stop_reason, usage }
+
 const art = await spot.ai.image('A tiny cyberpunk greenhouse at night');
 // art = { provider, model, images: [{ b64, mime_type, data_url }] }
 const img = new Image();
@@ -550,6 +562,9 @@ document.body.append(img);
 const stored = await spot.files.upload(fileInput.files[0]);
 // stored = { id, name, size, content_type, url } — content is immutable
 // per upload (25 MB max). If this site is restricted, downloads are too.
+
+const files = await spot.files.list();   // [{ id, name, size, url }, ...]
+await spot.files.delete(stored);         // or spot.files.delete(id, name)
 \`\`\`
 
 ### Rate limits

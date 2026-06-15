@@ -158,9 +158,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
 	mux.HandleFunc("DELETE /api/sites/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeleteSite)))
+	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileList)))
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
+	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileDelete)))
 	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
+	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChatStream)))
 	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIImage)))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
@@ -255,6 +258,26 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 		id.PeerIP = ip
 	}
 	return id, true
+}
+
+// callerKey resolves the visitor's stable identity key (lowercased email
+// or peer IP, see actorKey) without writing any error response. It returns
+// "" when no resolver is configured or the peer cannot be identified, so
+// document ownership is best-effort: stamped whenever identity is
+// available and skipped on open, resolver-less installs.
+func (s *Server) callerKey(r *http.Request) string {
+	if s.resolver == nil {
+		return ""
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil || !found {
+		return ""
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	return actorKey(id)
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
@@ -377,6 +400,63 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, stored)
+}
+
+func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
+	if s.files == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
+		return
+	}
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
+		return
+	}
+	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
+	files, err := s.files.List(r.Context(), site)
+	if err != nil {
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not list files")
+		return
+	}
+	if files == nil {
+		files = []StoredFile{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	if s.files == nil {
+		httpError(w, http.StatusServiceUnavailable,
+			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
+		return
+	}
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
+		return
+	}
+	if !s.authorizeSiteAccess(w, r, site) {
+		return
+	}
+	id := r.PathValue("id")
+	if !fileIDRe.MatchString(id) {
+		httpError(w, http.StatusBadRequest, "invalid file id")
+		return
+	}
+	if err := s.files.Delete(r.Context(), site, id, r.PathValue("name")); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httpError(w, http.StatusNotFound, "file not found")
+			return
+		}
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not delete the file")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -718,7 +798,15 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	docs, err := s.store.List(r.Context(), scope, collection, limit)
+	owner := ""
+	if mine := r.URL.Query().Get("mine"); mine == "1" || mine == "true" {
+		owner = s.callerKey(r)
+		if owner == "" {
+			httpError(w, http.StatusBadRequest, "mine=true requires an identified visitor")
+			return
+		}
+	}
+	docs, err := s.store.List(r.Context(), scope, collection, limit, owner)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -735,7 +823,7 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	doc, err := s.store.Create(r.Context(), scope, collection, data)
+	doc, err := s.store.Create(r.Context(), scope, collection, s.callerKey(r), data)
 	if err != nil {
 		s.storeError(w, err)
 		return

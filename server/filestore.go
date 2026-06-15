@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"sort"
 	"strings"
 	"time"
 
@@ -20,6 +21,8 @@ var filenameSafeRe = regexp.MustCompile(`[^a-zA-Z0-9._-]+`)
 type FileStorage interface {
 	Put(ctx context.Context, site, filename, contentType string, r io.Reader, size int64) (StoredFile, error)
 	Get(ctx context.Context, site, id, name string) (io.ReadCloser, string, error)
+	List(ctx context.Context, site string) ([]StoredFile, error)
+	Delete(ctx context.Context, site, id, name string) error
 	RemoveSite(ctx context.Context, site string) error
 }
 
@@ -101,6 +104,43 @@ func (f *FileStore) Get(ctx context.Context, site, id, name string) (io.ReadClos
 	return obj, stat.ContentType, nil
 }
 
+// List returns the uploads stored for a site, newest-name first is not
+// guaranteed; results are ordered by name. ContentType is omitted because
+// it would cost one stat per object; callers that need it fetch the file.
+func (f *FileStore) List(ctx context.Context, site string) ([]StoredFile, error) {
+	if !siteNameRe.MatchString(site) {
+		return nil, fmt.Errorf("invalid file site")
+	}
+	var files []StoredFile
+	for obj := range f.client.ListObjects(ctx, f.bucket, minio.ListObjectsOptions{
+		Prefix:    site + "/",
+		Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return nil, fmt.Errorf("list uploads for %s: %w", site, obj.Err)
+		}
+		if file, ok := storedFileFromKey(obj.Key, obj.Size); ok {
+			files = append(files, file)
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files, nil
+}
+
+// Delete removes a single upload. It is idempotent: deleting a key that is
+// already gone is not an error, so the two storage backends behave the
+// same. A malformed site, id, or name fails closed as ErrNotFound.
+func (f *FileStore) Delete(ctx context.Context, site, id, name string) error {
+	if !siteNameRe.MatchString(site) || !fileIDRe.MatchString(id) || sanitizeFilename(name) != name {
+		return ErrNotFound
+	}
+	key := site + "/" + id + "/" + name
+	if err := f.client.RemoveObject(ctx, f.bucket, key, minio.RemoveObjectOptions{}); err != nil {
+		return fmt.Errorf("delete file %s: %w", key, err)
+	}
+	return nil
+}
+
 // RemoveSite deletes every upload stored for a site. Used when the site
 // is deleted, so a later claimant of the name cannot serve or inherit
 // the old owner's uploads.
@@ -145,6 +185,22 @@ func ensureS3Bucket(ctx context.Context, client *minio.Client, bucket string) er
 		case <-time.After(time.Second):
 		}
 	}
+}
+
+// storedFileFromKey parses a "site/id/name" object key into a StoredFile.
+// It returns false for keys that are not exactly three non-empty segments,
+// so directory markers and malformed keys are skipped in listings.
+func storedFileFromKey(key string, size int64) (StoredFile, bool) {
+	parts := strings.SplitN(key, "/", 3)
+	if len(parts) != 3 || parts[0] == "" || parts[1] == "" || parts[2] == "" {
+		return StoredFile{}, false
+	}
+	return StoredFile{
+		ID:   parts[1],
+		Name: parts[2],
+		Size: size,
+		URL:  "/api/files/" + key,
+	}, true
 }
 
 func newFileID() (string, error) {

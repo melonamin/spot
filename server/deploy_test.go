@@ -267,6 +267,12 @@ func (f failingFileStore) Put(context.Context, string, string, string, io.Reader
 func (f failingFileStore) Get(context.Context, string, string, string) (io.ReadCloser, string, error) {
 	return nil, "", io.ErrUnexpectedEOF
 }
+func (f failingFileStore) List(context.Context, string) ([]StoredFile, error) {
+	return nil, io.ErrUnexpectedEOF
+}
+func (f failingFileStore) Delete(context.Context, string, string, string) error {
+	return io.ErrUnexpectedEOF
+}
 func (f failingFileStore) RemoveSite(context.Context, string) error { return io.ErrUnexpectedEOF }
 
 func deployRequest(t *testing.T, host, site string, files map[string]string) *http.Request {

@@ -54,7 +54,7 @@ func TestRealtimeEndToEnd(t *testing.T) {
 		if time.Now().After(deadline) {
 			t.Fatal("no realtime event arrived within 15s")
 		}
-		doc, err := store.Create(ctx, "it-rt", "rt-posts", map[string]any{"n": float64(1)})
+		doc, err := store.Create(ctx, "it-rt", "rt-posts", "", map[string]any{"n": float64(1)})
 		if err != nil {
 			t.Fatalf("Create: %v", err)
 		}

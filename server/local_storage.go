@@ -75,6 +75,64 @@ func (f *LocalFileStore) Get(_ context.Context, site, id, name string) (io.ReadC
 	return file, contentType, nil
 }
 
+// List returns the uploads stored for a site, ordered by name. Like the
+// S3 store it omits ContentType to avoid opening every file.
+func (f *LocalFileStore) List(_ context.Context, site string) ([]StoredFile, error) {
+	if !siteNameRe.MatchString(site) {
+		return nil, fmt.Errorf("invalid file site")
+	}
+	base := filepath.Join(f.root, site)
+	ids, err := os.ReadDir(base)
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, fmt.Errorf("list uploads for %s: %w", site, err)
+	}
+	var files []StoredFile
+	for _, idEntry := range ids {
+		if !idEntry.IsDir() || !fileIDRe.MatchString(idEntry.Name()) {
+			continue
+		}
+		id := idEntry.Name()
+		names, err := os.ReadDir(filepath.Join(base, id))
+		if err != nil {
+			return nil, fmt.Errorf("list upload %s/%s: %w", site, id, err)
+		}
+		for _, nameEntry := range names {
+			if nameEntry.IsDir() {
+				continue
+			}
+			info, err := nameEntry.Info()
+			if err != nil {
+				return nil, fmt.Errorf("stat upload %s/%s/%s: %w", site, id, nameEntry.Name(), err)
+			}
+			if file, ok := storedFileFromKey(site+"/"+id+"/"+nameEntry.Name(), info.Size()); ok {
+				files = append(files, file)
+			}
+		}
+	}
+	sort.Slice(files, func(i, j int) bool { return files[i].Name < files[j].Name })
+	return files, nil
+}
+
+// Delete removes a single upload and its now-empty id directory. It is
+// idempotent: a missing file is not an error, matching the S3 store. A
+// malformed site, id, or name fails closed as ErrNotFound.
+func (f *LocalFileStore) Delete(_ context.Context, site, id, name string) error {
+	if !siteNameRe.MatchString(site) || !fileIDRe.MatchString(id) || sanitizeFilename(name) != name {
+		return ErrNotFound
+	}
+	dir := filepath.Join(f.root, site, id)
+	if err := os.Remove(filepath.Join(dir, name)); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("delete file %s/%s/%s: %w", site, id, name, err)
+	}
+	// Each id directory holds exactly one upload, so it is empty now; remove
+	// it when possible and leave it otherwise.
+	os.Remove(dir)
+	return nil
+}
+
 func (f *LocalFileStore) RemoveSite(_ context.Context, site string) error {
 	if !siteNameRe.MatchString(site) {
 		return fmt.Errorf("invalid file site")

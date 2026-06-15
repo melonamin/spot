@@ -13,6 +13,7 @@ var ErrNotFound = errors.New("document not found")
 
 type Document struct {
 	ID        string         `json:"id"`
+	Owner     string         `json:"owner"`
 	Data      map[string]any `json:"data"`
 	CreatedAt time.Time      `json:"created_at"`
 	UpdatedAt time.Time      `json:"updated_at"`
@@ -25,7 +26,11 @@ type DocStore struct {
 	hub *Hub
 }
 
-func (s *DocStore) Create(ctx context.Context, scope, collection string, data map[string]any) (Document, error) {
+// Create stores a new document. owner is the stable identity key of the
+// visitor who created it (see actorKey); it is "" when the request could
+// not be attributed to an identity, which keeps open, resolver-less
+// installs working.
+func (s *DocStore) Create(ctx context.Context, scope, collection, owner string, data map[string]any) (Document, error) {
 	raw, err := json.Marshal(data)
 	if err != nil {
 		return Document{}, fmt.Errorf("encode document: %w", err)
@@ -37,8 +42,9 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 	defer tx.Rollback()
 
 	var doc Document
+	doc.Owner = owner
 	doc.Data = data
-	err = tx.QueryRowContext(ctx, insertDocumentSQL, scope, collection, raw).
+	err = tx.QueryRowContext(ctx, insertDocumentSQL, scope, collection, owner, raw).
 		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
 	if err != nil {
 		return Document{}, fmt.Errorf("insert document: %w", err)
@@ -50,10 +56,13 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 	return doc, nil
 }
 
-func (s *DocStore) List(ctx context.Context, scope, collection string, limit int) ([]Document, error) {
+// List returns a collection's documents, newest first. When owner is
+// non-empty, only documents stamped with that owner key are returned; an
+// empty owner returns every document in the scope.
+func (s *DocStore) List(ctx context.Context, scope, collection string, limit int, owner string) ([]Document, error) {
 	rows, err := s.db.QueryContext(ctx,
 		listDocumentsSQL,
-		scope, collection, limit,
+		scope, collection, owner, limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("list documents: %w", err)
@@ -97,7 +106,7 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 	var doc Document
 	doc.Data = data
 	err = tx.QueryRowContext(ctx, updateDocumentSQL, scope, collection, id, raw).
-		Scan(&doc.ID, &doc.CreatedAt, &doc.UpdatedAt)
+		Scan(&doc.ID, &doc.Owner, &doc.CreatedAt, &doc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Document{}, ErrNotFound
 	}
@@ -162,21 +171,21 @@ func (s *DocStore) publishChange(action, scope, collection, id string, doc *Docu
 }
 
 const (
-	insertDocumentSQL = `INSERT INTO documents (scope, collection, data)
-		VALUES (?, ?, ?)
+	insertDocumentSQL = `INSERT INTO documents (scope, collection, owner, data)
+		VALUES (?, ?, ?, ?)
 		RETURNING id, created_at, updated_at`
 
-	listDocumentsSQL = `SELECT id, data, created_at, updated_at FROM documents
-		WHERE scope = ? AND collection = ?
+	listDocumentsSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
+		WHERE scope = ?1 AND collection = ?2 AND (?3 = '' OR owner = ?3)
 		ORDER BY created_at DESC
-		LIMIT ?`
+		LIMIT ?4`
 
-	getDocumentSQL = `SELECT id, data, created_at, updated_at FROM documents
+	getDocumentSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`
 
 	updateDocumentSQL = `UPDATE documents SET data = ?4, updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
 		WHERE scope = ?1 AND collection = ?2 AND id = ?3
-		RETURNING id, created_at, updated_at`
+		RETURNING id, owner, created_at, updated_at`
 
 	deleteDocumentSQL = `DELETE FROM documents WHERE scope = ? AND collection = ? AND id = ?`
 
@@ -186,7 +195,7 @@ const (
 func scanDocument(scan func(dest ...any) error) (Document, error) {
 	var doc Document
 	var raw []byte
-	if err := scan(&doc.ID, &raw, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
+	if err := scan(&doc.ID, &doc.Owner, &raw, &doc.CreatedAt, &doc.UpdatedAt); err != nil {
 		return Document{}, err
 	}
 	if err := json.Unmarshal(raw, &doc.Data); err != nil {

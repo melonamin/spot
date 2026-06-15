@@ -133,6 +133,9 @@ separate copy to keep in sync.
 Tables:
 
 - `documents`: schemaless JSON documents grouped by `scope` and `collection`.
+  Each row also records an `owner` (the creator's identity key) so a site
+  can keep per-visitor data and filter to `list({ mine: true })`. The column
+  is added to existing databases by an idempotent migration in `server/db.go`.
 - `sites`: site ownership records.
 - `site_deploy_audit`: deploy and delete audit history.
 
@@ -148,8 +151,12 @@ The site registry is implemented in `server/site_registry.go`. It owns:
 - delete authorization,
 - deploy audit writes.
 
-There is no migration framework yet. Schema changes should be additive and
-idempotent in `schema.sql`, with focused tests around the new behavior.
+There is no migration framework. Schema changes should be additive and
+idempotent in `schema.sql`, with focused tests around the new behavior. New
+tables and indexes use `CREATE ... IF NOT EXISTS`; columns added to an
+existing table go through `applyAdditiveMigrations` in `server/db.go`, which
+guards each `ALTER TABLE ADD COLUMN` with a `pragma_table_info` check because
+SQLite has no `ADD COLUMN IF NOT EXISTS`.
 
 ## Storage
 
@@ -262,9 +269,9 @@ Apex-only APIs:
 Site-only APIs:
 
 - Documents: `/api/db/{collection}`
-- Files: `/api/files`
+- Files: `/api/files` (upload and list), `/api/files/{id}/{name}` (delete)
 - Realtime: `/api/ws`
-- AI: `/api/ai/chat`, `/api/ai/image`
+- AI: `/api/ai/chat`, `/api/ai/chat/stream`, `/api/ai/image`
 - Source download: `/api/download`
 
 Apex-and-site APIs:
@@ -342,6 +349,10 @@ Upload rules:
 - Stored upload names are sanitized base names.
 - Upload IDs are random 16-byte hex strings.
 
+`GET /api/files` lists a site's uploads and `DELETE /api/files/{id}/{name}`
+removes one; both are same-origin, site-scoped, and gated by the same site
+access check as upload. Delete is idempotent across both storage backends.
+
 Download hardening:
 
 - `X-Content-Type-Options: nosniff`.
@@ -358,8 +369,10 @@ only when site access allows it and policy does not disable downloads.
 The AI API is implemented in `server/ai.go`.
 
 `POST /api/ai/chat` lets deployed sites call an OpenAI-compatible chat API
-through the server-side key. `POST /api/ai/image` lets deployed sites generate
-images through the same OpenAI-compatible gateway.
+through the server-side key. `POST /api/ai/chat/stream` does the same with
+`stream: true`, relaying upstream tokens to the browser as server-sent
+events. `POST /api/ai/image` lets deployed sites generate images through the
+same OpenAI-compatible gateway.
 
 Access rules:
 

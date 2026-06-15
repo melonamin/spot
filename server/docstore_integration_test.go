@@ -40,7 +40,7 @@ func TestDocStoreCRUD(t *testing.T) {
 	ctx := context.Background()
 	const scope, coll = "it-crud", "posts"
 
-	created, err := store.Create(ctx, scope, coll, map[string]any{"title": "hello", "n": float64(1)})
+	created, err := store.Create(ctx, scope, coll, "", map[string]any{"title": "hello", "n": float64(1)})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -68,7 +68,7 @@ func TestDocStoreCRUD(t *testing.T) {
 		t.Errorf("Update timestamp did not advance: %v -> %v", created.UpdatedAt, updated.UpdatedAt)
 	}
 
-	docs, err := store.List(ctx, scope, coll, 10)
+	docs, err := store.List(ctx, scope, coll, 10, "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
@@ -103,7 +103,7 @@ func TestSharedCollectionsCrossSites(t *testing.T) {
 		t.Fatalf("shared scopes differ: %q vs %q", scopeA, scopeB)
 	}
 
-	doc, err := store.Create(ctx, scopeA, "shared-it-libs", map[string]any{"lib": "cursors"})
+	doc, err := store.Create(ctx, scopeA, "shared-it-libs", "", map[string]any{"lib": "cursors"})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -119,11 +119,64 @@ func TestSharedCollectionsCrossSites(t *testing.T) {
 	}
 }
 
+func TestDocStoreOwnership(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	const scope, coll = "it-own", "notes"
+
+	alice, err := store.Create(ctx, scope, coll, "alice@example.com", map[string]any{"n": float64(1)})
+	if err != nil {
+		t.Fatalf("Create alice: %v", err)
+	}
+	if alice.Owner != "alice@example.com" {
+		t.Errorf("created owner = %q, want alice@example.com", alice.Owner)
+	}
+	if _, err := store.Create(ctx, scope, coll, "bob@example.com", map[string]any{"n": float64(2)}); err != nil {
+		t.Fatalf("Create bob: %v", err)
+	}
+	// An unattributed write keeps an empty owner and is not "mine" for anyone.
+	if _, err := store.Create(ctx, scope, coll, "", map[string]any{"n": float64(3)}); err != nil {
+		t.Fatalf("Create anon: %v", err)
+	}
+
+	all, err := store.List(ctx, scope, coll, 100, "")
+	if err != nil {
+		t.Fatalf("List all: %v", err)
+	}
+	if len(all) != 3 {
+		t.Errorf("List all returned %d, want 3", len(all))
+	}
+
+	mine, err := store.List(ctx, scope, coll, 100, "alice@example.com")
+	if err != nil {
+		t.Fatalf("List mine: %v", err)
+	}
+	if len(mine) != 1 || mine[0].ID != alice.ID {
+		t.Errorf("List owner=alice returned %d docs, want only alice's", len(mine))
+	}
+
+	// Reading a document surfaces its owner, and updating preserves it.
+	got, err := store.Get(ctx, scope, coll, alice.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if got.Owner != "alice@example.com" {
+		t.Errorf("Get owner = %q, want alice@example.com", got.Owner)
+	}
+	updated, err := store.Update(ctx, scope, coll, alice.ID, map[string]any{"n": float64(9)})
+	if err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	if updated.Owner != "alice@example.com" {
+		t.Errorf("Update owner = %q, want preserved alice@example.com", updated.Owner)
+	}
+}
+
 func TestDocStoreScopeIsolation(t *testing.T) {
 	store := newTestStore(t)
 	ctx := context.Background()
 
-	doc, err := store.Create(ctx, "it-site-a", "notes", map[string]any{"secret": true})
+	doc, err := store.Create(ctx, "it-site-a", "notes", "", map[string]any{"secret": true})
 	if err != nil {
 		t.Fatalf("Create: %v", err)
 	}
@@ -131,7 +184,7 @@ func TestDocStoreScopeIsolation(t *testing.T) {
 	if _, err := store.Get(ctx, "it-site-b", "notes", doc.ID); !errors.Is(err, ErrNotFound) {
 		t.Errorf("cross-scope Get: err = %v, want ErrNotFound", err)
 	}
-	docs, err := store.List(ctx, "it-site-b", "notes", 10)
+	docs, err := store.List(ctx, "it-site-b", "notes", 10, "")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}
