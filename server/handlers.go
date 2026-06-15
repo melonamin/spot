@@ -334,20 +334,16 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"site is restricted but the identity resolver is not configured")
 		return false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("authz: resolve %s: %v", ip, err)
+		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
 		return false
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	if !found || !policy.Allows(id) {
 		httpError(w, http.StatusForbidden,
@@ -819,9 +815,12 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 }
 
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
+	if id, ok := s.forwardAuthIdentity(r); ok {
+		return id, true
+	}
 	if s.resolver == nil {
 		writeWSError(ctx, conn,
-			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)

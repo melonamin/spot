@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"time"
 )
 
 func TestParseForwardGroups(t *testing.T) {
@@ -167,6 +168,50 @@ func TestForwardAuthPrecedence(t *testing.T) {
 	id, ok = srv.resolveIdentity(rec, noHeader, "test")
 	if !ok || id.Email != "mesh@corp.com" {
 		t.Fatalf("without forward-auth header: ok=%v email=%q, want mesh fallback", ok, id.Email)
+	}
+}
+
+// TestForwardAuthSiteAccess covers the visitor gate (authorizeSiteAccess),
+// which fronts restricted static files, the db/files APIs, and realtime when
+// Spot sits behind an auth proxy such as Pangolin. A restricted site admits a
+// proxy-asserted visitor by email or group, denies strangers, and ignores
+// Remote-* from an untrusted socket.
+func TestForwardAuthSiteAccess(t *testing.T) {
+	policies := NewPolicyStore(t.TempDir(), time.Minute)
+	policies.Set("locked", &AccessPolicy{Allow: []string{"alice@corp.com", "ops"}}, nil)
+	srv := &Server{
+		forwardAuth:    NewForwardAuth("", "", "", ""),
+		policies:       policies,
+		trustedProxies: testTrustedProxies(t),
+	}
+
+	access := func(remoteAddr string, headers map[string]string) int {
+		req := httptest.NewRequest(http.MethodGet, "http://locked.spot.localhost/api/authz", nil)
+		req.RemoteAddr = remoteAddr
+		for k, v := range headers {
+			req.Header.Set(k, v)
+		}
+		rec := httptest.NewRecorder()
+		srv.authorizeSiteAccess(rec, req, "locked")
+		return rec.Code
+	}
+
+	for _, tt := range []struct {
+		name       string
+		remoteAddr string
+		headers    map[string]string
+		want       int
+	}{
+		{"allowed by email", "192.0.2.10:443", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusOK},
+		{"allowed by group", "192.0.2.10:443", map[string]string{"Remote-Email": "carol@corp.com", "Remote-Groups": "ops"}, http.StatusOK},
+		{"stranger denied", "192.0.2.10:443", map[string]string{"Remote-Email": "stranger@corp.com"}, http.StatusForbidden},
+		{"untrusted ignored", "198.51.100.9:54321", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusForbidden},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := access(tt.remoteAddr, tt.headers); got != tt.want {
+				t.Fatalf("authorizeSiteAccess = %d, want %d", got, tt.want)
+			}
+		})
 	}
 }
 
