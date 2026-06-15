@@ -203,7 +203,7 @@ func validateDeploymentSafety(cfg config) error {
 	if !netbird && !tailscale {
 		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET")
 	}
-	if storageMode == storageModeS3 && cfg.S3Endpoint != "" && cfg.S3AccessKey == "rustfsadmin" && cfg.S3SecretKey == "rustfsadmin" {
+	if storageMode == storageModeS3 && cfg.S3Endpoint != "" && (cfg.S3AccessKey == "rustfsadmin" || cfg.S3SecretKey == "rustfsadmin") {
 		return errors.New("shared deployments must replace the default RustFS credentials")
 	}
 	return nil
@@ -377,7 +377,6 @@ func main() {
 		ai:             ai,
 		aiAccess:       cfg.AIAccess,
 		spotDomain:     cfg.SpotDomain,
-		sitesDir:       cfg.SitesDir,
 		trustedProxies: trustedProxies,
 		serveStatic:    true,
 	}

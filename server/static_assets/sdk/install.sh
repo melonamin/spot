@@ -16,11 +16,22 @@ case $spot_url in
         ;;
 esac
 
+# The URL is persisted into the config file the CLI reads, so reject any
+# shell-special or unsafe character before writing it.
+nl=$(printf '\nx')
+nl=${nl%x}
+case $spot_url in
+    *[" \$\`;&|<>\"'$nl"]*)
+        echo "error: Spot URL contains an unsafe character" >&2
+        exit 1
+        ;;
+esac
+
 spot_url=${spot_url%/}
 install_dir=${SPOT_INSTALL_DIR:-"$HOME/.local/bin"}
 config_home=${XDG_CONFIG_HOME:-"$HOME/.config"}
 config_dir="$config_home/spot"
-tmp=${TMPDIR:-/tmp}/spot-cli.$$
+tmp=$(mktemp "${TMPDIR:-/tmp}/spot-cli.XXXXXX")
 curl_opts="-fsSL"
 
 # Local HTTPS dev may use a private CA; only a true localhost-suffixed

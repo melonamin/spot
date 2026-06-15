@@ -9,8 +9,15 @@
 #              (default http://spot.localhost:8080)
 set -eu
 
+# Read SPOT_URL from the config without executing the file: parse it as
+# KEY=VALUE and accept only the SPOT_URL key, so a hostile value cannot
+# run as shell. An env-provided SPOT_URL takes precedence.
 spot_config="${XDG_CONFIG_HOME:-$HOME/.config}/spot/env"
-[ -f "$spot_config" ] && . "$spot_config"
+if [ -z "${SPOT_URL:-}" ] && [ -f "$spot_config" ]; then
+    while IFS='=' read -r key value; do
+        [ "$key" = SPOT_URL ] && SPOT_URL=$value
+    done < "$spot_config"
+fi
 
 SPOT_URL=${SPOT_URL:-http://spot.localhost:8080}
 SPOT_URL=${SPOT_URL%/}
@@ -77,21 +84,29 @@ deploy() {
     # — the shape /api/deploy expects. The server syncs: files absent
     # from the upload are removed from the live site. Dot directories
     # (.git and friends) stay home; the server drops them anyway.
+    #
+    # Quote the path and filename= values so curl does not treat ';' ','
+    # or '@' in a filename as -F metacharacters.
     set -- -F "site=$name"
     if [ -f "$src" ]; then
-        set -- "$@" -F "files=@$file;filename=index.html"
+        set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
     else
         while IFS= read -r f; do
             [ -n "$f" ] || continue
             f=${f#./}
-            set -- "$@" -F "files=@$f;filename=$f"
+            set -- "$@" -F "files=@\"$f\";filename=\"$f\""
         done <<EOF
 $(cd "$dir" && find . -name '.?*' -prune -o -type f -print)
 EOF
     fi
 
-    out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
-        "$@" "$SPOT_URL/api/deploy")
+    # Capture curl's exit without tripping set -e, so a network/HTTP
+    # failure reaches the friendly message below instead of aborting.
+    if ! out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
+        "$@" "$SPOT_URL/api/deploy"); then
+        echo "error: could not reach $SPOT_URL/api/deploy" >&2
+        exit 1
+    fi
     status=$(printf '%s' "$out" | tail -n 1)
     body=$(printf '%s' "$out" | sed '$d')
     if [ "$status" != "200" ]; then

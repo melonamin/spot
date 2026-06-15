@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +20,14 @@ const (
 	maxAITokens      = 16000
 	aiAccessOwners   = "owners"
 	aiAccessVisitors = "visitors"
+
+	// Thinking and the text response share max_tokens, so cap the thinking
+	// budget below it and always reserve aiOutputReserveTokens for the reply.
+	// Without this a hard prompt can spend the whole budget reasoning and
+	// return empty text with a 200 OK.
+	aiOutputReserveTokens = 4000
+	// Anthropic requires a thinking budget of at least 1024 tokens.
+	aiMinThinkingTokens = 1024
 )
 
 // AIProxy forwards chat requests to the Claude API with the server-side
@@ -129,11 +136,6 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	params := anthropic.MessageNewParams{
 		Model:     anthropic.Model(s.ai.model),
 		MaxTokens: defaultAITokens,
-		// Adaptive thinking lets the model decide how much to reason —
-		// the right default for a proxy that sees arbitrary tasks.
-		Thinking: anthropic.ThinkingConfigParamUnion{
-			OfAdaptive: &anthropic.ThinkingConfigAdaptiveParam{},
-		},
 	}
 	if req.Model != "" {
 		if !s.ai.modelAllowed(req.Model) {
@@ -144,6 +146,15 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.MaxTokens > 0 {
 		params.MaxTokens = min(req.MaxTokens, maxAITokens)
+	}
+	// Bound thinking below max_tokens so the text response always has room.
+	// The proxy sees arbitrary tasks, so let the model reason freely up to a
+	// budget that reserves aiOutputReserveTokens for the reply.
+	thinkingBudget := params.MaxTokens - aiOutputReserveTokens
+	if thinkingBudget >= aiMinThinkingTokens {
+		params.Thinking = anthropic.ThinkingConfigParamUnion{
+			OfEnabled: &anthropic.ThinkingConfigEnabledParam{BudgetTokens: thinkingBudget},
+		}
 	}
 	if req.System != "" {
 		params.System = []anthropic.TextBlockParam{{Text: req.System}}
@@ -193,13 +204,15 @@ func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site str
 	if s.aiAccess == aiAccessVisitors {
 		return true
 	}
-	visitorAI, err := s.siteAllowsVisitorAI(r.Context(), site)
+	// Resolve the site policy once and reuse it, so the visitor-AI check does
+	// not cost a second _access.json fetch per request.
+	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"this site's "+accessFileName+" is unreadable; AI access denied until it is fixed")
 		return false
 	}
-	if visitorAI {
+	if policy.AllowsAIVisitors() {
 		return true
 	}
 	if s.siteManager == nil {
@@ -225,12 +238,4 @@ func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site str
 		return false
 	}
 	return true
-}
-
-func (s *Server) siteAllowsVisitorAI(ctx context.Context, site string) (bool, error) {
-	policy, err := s.policyForSite(ctx, site)
-	if err != nil {
-		return false, err
-	}
-	return policy.AllowsAIVisitors(), nil
 }

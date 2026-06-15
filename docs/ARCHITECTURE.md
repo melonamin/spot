@@ -194,7 +194,11 @@ Deploy invariants:
 
 - Site names must be valid DNS labels.
 - Deploys are size-limited and file-count-limited.
-- The full deploy is validated before live files are changed.
+- The full deploy is validated before live files are changed. A malformed
+  `_access.json` is rejected with `400` at deploy time so a deployer is not
+  silently locked out by a policy that fails closed at serve time.
+- New files are written before stale files are removed, so a storage failure
+  mid-deploy leaves the previous content intact rather than half-applied.
 - A per-site mutex prevents concurrent mutations of the same site.
 - The first successful deploy claims the site for the actor.
 - Later deploys require the same owner or a configured platform admin.
@@ -246,7 +250,7 @@ Cross-origin boundary:
 
 - `sameOriginOnly` protects browser APIs that use ambient identity.
 - It rejects browser-originated cross-site API calls where `Origin` does not
-  match the request host.
+  match the request host and scheme.
 
 Apex-only APIs:
 
@@ -381,12 +385,14 @@ Common files:
 - `sdk/agent.md`: agent-facing instructions distributed by Spot.
 
 Embedded copies live in `server/static_assets/sdk/` and are compiled into the Go
-binary. After editing embedded SDK assets, run:
+binary. After editing SDK assets in `sdk/`, regenerate the embedded copies:
 
 ```sh
-cd server
-go generate ./...
+just generate
 ```
+
+`just check-generate` regenerates and then fails if the embedded copies have
+drifted from `sdk/`, so stale embedded assets are caught instead of shipped.
 
 Then run tests from the repository root with:
 

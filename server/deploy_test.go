@@ -337,6 +337,13 @@ func TestDeployValidation(t *testing.T) {
 		!strings.Contains(body, "..") {
 		t.Errorf("traversal = %d %s, want 400 ..", code, body)
 	}
+	// A malformed _access.json is rejected at deploy time so a broken
+	// allowlist never ships and silently fails closed to every visitor.
+	if code, body := call(deployRequest(t, "spot.localhost", "demo",
+		map[string]string{"index.html": "<h1>hi</h1>", accessFileName: `{not json`})); code != http.StatusBadRequest ||
+		!strings.Contains(body, accessFileName) {
+		t.Errorf("broken %s = %d %s, want 400 %s", accessFileName, code, body, accessFileName)
+	}
 
 	plain := httptest.NewRequest(http.MethodPost, "http://spot-api/api/deploy",
 		strings.NewReader("not multipart"))

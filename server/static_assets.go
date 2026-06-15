@@ -72,7 +72,7 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 			rc, info, err = s.sites.Open(r.Context(), site, indexPath)
 			if err == nil {
 				rc.Close()
-				redirectToDir(w, r)
+				redirectToDir(w, r, requestPath)
 				return
 			}
 		}
@@ -97,8 +97,11 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 	}
 }
 
-func redirectToDir(w http.ResponseWriter, r *http.Request) {
-	target := r.URL.Path + "/"
+func redirectToDir(w http.ResponseWriter, r *http.Request, cleanPath string) {
+	// Build the Location from the cleaned request path so it can never carry
+	// a leading "//" (protocol-relative open redirect) or other uncleaned
+	// segments from r.URL.Path.
+	target := "/" + cleanPath + "/"
 	if r.URL.RawQuery != "" {
 		target += "?" + r.URL.RawQuery
 	}

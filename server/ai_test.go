@@ -45,6 +45,7 @@ func aiTestServer(t *testing.T, upstream string) *Server {
 	return &Server{
 		ai:         NewAIProxy("test-key", []string{"claude-haiku-4-5"}, option.WithBaseURL(upstream)),
 		aiAccess:   aiAccessVisitors,
+		sites:      newTestSiteStore(t),
 		spotDomain: "spot.localhost",
 	}
 }
@@ -79,13 +80,18 @@ func TestAIChat(t *testing.T) {
 		t.Errorf("usage = %+v", res.Usage)
 	}
 
-	// Server-side defaults: current Opus model, adaptive thinking.
+	// Server-side defaults: current Opus model, thinking enabled with a budget
+	// bounded below max_tokens so the text reply always has room.
 	if upstreamBody["model"] != defaultAIModel {
 		t.Errorf("upstream model = %v, want %s", upstreamBody["model"], defaultAIModel)
 	}
 	thinking, _ := upstreamBody["thinking"].(map[string]any)
-	if thinking["type"] != "adaptive" {
-		t.Errorf("upstream thinking = %v, want adaptive", upstreamBody["thinking"])
+	if thinking["type"] != "enabled" {
+		t.Errorf("upstream thinking = %v, want enabled", upstreamBody["thinking"])
+	}
+	wantBudget := float64(defaultAITokens - aiOutputReserveTokens)
+	if thinking["budget_tokens"] != wantBudget {
+		t.Errorf("upstream thinking budget = %v, want %v", thinking["budget_tokens"], wantBudget)
 	}
 	if upstreamBody["max_tokens"] != float64(defaultAITokens) {
 		t.Errorf("upstream max_tokens = %v, want %d", upstreamBody["max_tokens"], defaultAITokens)
@@ -136,6 +142,7 @@ func TestAIChatCustomUpstream(t *testing.T) {
 	srv := &Server{
 		ai:         NewAIProxyWithUpstream("test-key", api.URL, "", nil),
 		aiAccess:   aiAccessVisitors,
+		sites:      newTestSiteStore(t),
 		spotDomain: "spot.localhost",
 	}
 
@@ -163,6 +170,7 @@ func TestAIChatDeploymentDefaultModel(t *testing.T) {
 	srv := &Server{
 		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6", []string{"claude-haiku-4-5"}),
 		aiAccess:   aiAccessVisitors,
+		sites:      newTestSiteStore(t),
 		spotDomain: "spot.localhost",
 	}
 
@@ -191,6 +199,7 @@ func TestAIChatRejectsUnallowedModel(t *testing.T) {
 	srv := &Server{
 		ai:         NewAIProxyWithUpstream("test-key", api.URL, "claude-sonnet-4-6", nil),
 		aiAccess:   aiAccessVisitors,
+		sites:      newTestSiteStore(t),
 		spotDomain: "spot.localhost",
 	}
 
@@ -218,6 +227,7 @@ func TestAIChatOwnersOnly(t *testing.T) {
 		aiAccess:    aiAccessOwners,
 		siteManager: fakeSiteManager{allowed: true},
 		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
+		sites:       newTestSiteStore(t),
 		spotDomain:  "spot.localhost",
 	}
 	rec := postChat(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)

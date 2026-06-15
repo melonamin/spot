@@ -48,6 +48,19 @@ func TestValidSpotHost(t *testing.T) {
 	}
 }
 
+// TestValidSpotHostEmptyDomain pins the test-only behavior of an empty
+// spotDomain accepting any host. Production rejects an empty SPOT_DOMAIN at
+// startup, so this branch is unreachable with real traffic; the test guards
+// against it silently changing and breaking the many tests that build a
+// Server without a domain.
+func TestValidSpotHostEmptyDomain(t *testing.T) {
+	for _, host := range []string{"anything.example.com", "spot.localhost", ""} {
+		if !validSpotHost(host, "") {
+			t.Errorf("validSpotHost(%q, \"\") = false, want true", host)
+		}
+	}
+}
+
 func TestScopeFor(t *testing.T) {
 	scope, err := scopeFor("mysite", "posts")
 	if err != nil {

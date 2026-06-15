@@ -33,26 +33,40 @@
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       let ws;
       let closed = false;
+      let reconnectTimer;
       const connect = () => {
+        if (closed) return;
         ws = new WebSocket(`${proto}//${location.host}/api/ws`);
         ws.addEventListener('open', () => {
           ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
         });
         ws.addEventListener('message', (e) => {
-          const msg = JSON.parse(e.data);
+          let msg;
+          try {
+            msg = JSON.parse(e.data);
+          } catch {
+            return;
+          }
+          if (msg.type === 'error') {
+            const err = new Error(msg.error || 'spot subscribe error');
+            if (handlers.onError) handlers.onError(err);
+            else console.error('spot:', err.message);
+            return;
+          }
           if (msg.collection !== name) return;
           if (msg.type === 'create') handlers.onCreate?.(msg.doc);
           if (msg.type === 'update') handlers.onUpdate?.(msg.doc);
           if (msg.type === 'delete') handlers.onDelete?.(msg.id);
         });
         ws.addEventListener('close', () => {
-          if (!closed) setTimeout(connect, 1000);
+          if (!closed) reconnectTimer = setTimeout(connect, 1000);
         });
       };
       connect();
       return () => {
         closed = true;
-        ws.close();
+        if (reconnectTimer) clearTimeout(reconnectTimer);
+        if (ws) ws.close();
       };
     },
   });
@@ -105,7 +119,12 @@
         flush();
       });
       ws.addEventListener('message', (e) => {
-        const msg = JSON.parse(e.data);
+        let msg;
+        try {
+          msg = JSON.parse(e.data);
+        } catch {
+          return;
+        }
         if (msg.type === 'error') {
           emitError(new Error(msg.error || 'realtime error'));
           return;

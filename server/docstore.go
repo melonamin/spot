@@ -46,7 +46,7 @@ func (s *DocStore) Create(ctx context.Context, scope, collection string, data ma
 	if err := tx.Commit(); err != nil {
 		return Document{}, fmt.Errorf("commit insert: %w", err)
 	}
-	s.publishChange(ctx, "create", scope, collection, doc.ID, &doc)
+	s.publishChange("create", scope, collection, doc.ID, &doc)
 	return doc, nil
 }
 
@@ -107,7 +107,7 @@ func (s *DocStore) Update(ctx context.Context, scope, collection, id string, dat
 	if err := tx.Commit(); err != nil {
 		return Document{}, fmt.Errorf("commit update: %w", err)
 	}
-	s.publishChange(ctx, "update", scope, collection, id, &doc)
+	s.publishChange("update", scope, collection, id, &doc)
 	return doc, nil
 }
 
@@ -135,7 +135,7 @@ func (s *DocStore) Delete(ctx context.Context, scope, collection, id string) err
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit delete: %w", err)
 	}
-	s.publishChange(ctx, "delete", scope, collection, id, nil)
+	s.publishChange("delete", scope, collection, id, nil)
 	return nil
 }
 
@@ -149,7 +149,7 @@ func (s *DocStore) PurgeScope(ctx context.Context, scope string) error {
 	return nil
 }
 
-func (s *DocStore) publishChange(_ context.Context, action, scope, collection, id string, doc *Document) {
+func (s *DocStore) publishChange(action, scope, collection, id string, doc *Document) {
 	if s.hub == nil {
 		return
 	}

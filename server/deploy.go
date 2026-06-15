@@ -26,6 +26,10 @@ var siteNameRe = regexp.MustCompile(`^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$`)
 const (
 	maxDeploySize  = 100 << 20
 	maxDeployFiles = 2000
+	// maxRawDeployParts caps multipart parts before junk is filtered, as a
+	// DoS guard. The user-facing maxDeployFiles limit is applied to the
+	// published file count instead, so it reflects what actually ships.
+	maxRawDeployParts = maxDeployFiles * 4
 )
 
 type SiteStorage interface {
@@ -169,7 +173,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			}
 			site = strings.TrimSpace(string(raw))
 		case "files":
-			if len(files) >= maxDeployFiles {
+			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
 					fmt.Sprintf("too many files in the deploy (max %d)", maxDeployFiles))
 				return
@@ -190,6 +194,15 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	files, err = normalizeDeploy(files)
 	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if len(files) > maxDeployFiles {
+		httpError(w, http.StatusBadRequest,
+			fmt.Sprintf("too many files in the deploy (max %d)", maxDeployFiles))
+		return
+	}
+	if err := validateDeployPolicy(site, files); err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -228,7 +241,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	existing, err := s.sites.List(r.Context(), site)
 	if err != nil {
 		log.Printf("deploy %s: %v", site, err)
-		s.recordDeployFailure(r, site, actor, authz.Action, files, "could not read current files")
+		s.failDeployStorage(r, site, actor, authz.Action, files, "could not read current files")
 		httpError(w, http.StatusInternalServerError, "could not read the site's current files")
 		return
 	}
@@ -236,20 +249,27 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	for _, f := range files {
 		keep[f.path] = true
 	}
+	// Remove stale paths that collide in shape with an incoming path (a file
+	// where a new directory now lives, or vice versa) before writing: the
+	// shapes cannot coexist, so the new content cannot be stored until the
+	// conflicting old path is gone.
 	removed := make(map[string]bool)
 	for _, old := range conflictingStalePaths(existing, files, keep) {
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not remove stale file "+old)
+			s.failDeployStorage(r, site, actor, authz.Action, files, "could not remove stale file "+old)
 			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
 			return
 		}
 		removed[old] = true
 	}
+	// Write every new file before removing the remaining stale files: a
+	// storage failure mid-write then leaves those previous (non-conflicting)
+	// files intact rather than punching holes in the live site.
 	for _, f := range files {
 		if err := s.sites.Put(r.Context(), site, f.path, contentTypeFor(f.path, f.data), f.data); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not store "+f.path)
+			s.failDeployStorage(r, site, actor, authz.Action, files, "could not store "+f.path)
 			httpError(w, http.StatusInternalServerError, "could not store "+f.path)
 			return
 		}
@@ -260,7 +280,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.recordDeployFailure(r, site, actor, authz.Action, files, "could not remove stale file "+old)
+			s.failDeployStorage(r, site, actor, authz.Action, files, "could not remove stale file "+old)
 			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
 			return
 		}
@@ -300,6 +320,23 @@ func conflictingStalePaths(existing []string, files []deployFile, keep map[strin
 
 func pathShapeConflict(old, next string) bool {
 	return strings.HasPrefix(old, next+"/") || strings.HasPrefix(next, old+"/")
+}
+
+// validateDeployPolicy rejects a deploy whose _access.json cannot be
+// parsed, so a malformed allowlist fails at deploy time with a clear
+// message instead of silently shipping a site that fails closed to every
+// visitor. Serving-time behavior stays fail-closed unchanged.
+func validateDeployPolicy(site string, files []deployFile) error {
+	for _, f := range files {
+		if f.path != accessFileName {
+			continue
+		}
+		if _, err := parseAccessPolicy(site, f.data); err != nil {
+			return fmt.Errorf("invalid %s: %w", accessFileName, err)
+		}
+		break
+	}
+	return nil
 }
 
 func (s *Server) updatePolicyCacheFromDeploy(site string, files []deployFile) {
@@ -405,6 +442,29 @@ func cloneAccessPolicy(policy *AccessPolicy) *AccessPolicy {
 	clone := *policy
 	clone.Allow = append([]string(nil), policy.Allow...)
 	return &clone
+}
+
+// claimDeleter releases a site name claimed by a first deploy. It is an
+// optional capability of the deploy authorizer, asserted at call time so
+// authorizers without it (or test fakes) need not implement it.
+type claimDeleter interface {
+	DeleteClaim(ctx context.Context, site string) error
+}
+
+// failDeployStorage records the storage-failure audit and, when the
+// failed deploy was the site's first (a "create"), releases the name it
+// just claimed so the orphaned row does not lock the name forever. A
+// redeploy keeps the existing site's claim untouched.
+func (s *Server) failDeployStorage(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
+	s.recordDeployFailure(r, site, actor, action, files, message)
+	if action != "create" {
+		return
+	}
+	if deleter, ok := s.deployAuth.(claimDeleter); ok {
+		if err := deleter.DeleteClaim(r.Context(), site); err != nil {
+			log.Printf("deploy %s: release orphaned claim: %v", site, err)
+		}
+	}
 }
 
 func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
