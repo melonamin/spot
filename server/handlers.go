@@ -148,9 +148,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
+	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCount)))
 	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
 	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
+	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.handleIncrement)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
@@ -158,9 +160,12 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
 	mux.HandleFunc("DELETE /api/sites/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeleteSite)))
+	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileList)))
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
+	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileDelete)))
 	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
+	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChatStream)))
 	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIImage)))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
@@ -234,27 +239,69 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
+// resolvePeer looks up the visitor's mesh identity by client IP, filling
+// PeerIP from the request when the resolver omits it. It returns found=false
+// with a nil error when no resolver is configured or the peer is not in the
+// mesh, and a non-nil error for a resolver outage. It writes no response, so
+// callers map the outcome to their own status. Shared by resolveIdentity and
+// callerKey so the lookup cannot drift between them.
+func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	if s.resolver == nil {
+		return Identity{}, false, nil
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	if !found {
+		return Identity{}, false, nil
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	return id, true, nil
+}
+
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
 	if s.resolver == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("%s: resolve %s: %v", purpose, ip, err)
+		log.Printf("%s: resolve %s: %v", purpose, s.clientIP(r), err)
 		httpError(w, http.StatusBadGateway, "could not reach the identity resolver")
 		return Identity{}, false
 	}
 	if !found {
-		httpError(w, http.StatusNotFound, "no identity matches "+ip)
+		httpError(w, http.StatusNotFound, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
 	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
+	if id.Groups == nil {
+		id.Groups = []string{}
 	}
 	return id, true
+}
+
+// callerKey resolves the visitor's stable identity key (lowercased email
+// or peer IP, see actorKey) without writing any error response. It returns
+// "" with a nil error when no resolver is configured or the peer is not in
+// the mesh, so document ownership is best-effort on open, resolver-less
+// installs. A non-nil error means the resolver itself failed (a transient
+// outage): a mine-scoped read or write surfaces it as 503, while the create
+// path treats it as best-effort and stamps an empty owner so an open site
+// keeps accepting writes during a blip.
+func (s *Server) callerKey(r *http.Request) (string, error) {
+	id, found, err := s.resolvePeer(r)
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", nil
+	}
+	return actorKey(id), nil
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
@@ -325,18 +372,31 @@ func normalizeHost(host string) string {
 
 const defaultMaxUpload = 25 << 20
 
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+// requireFileSite runs the shared preamble for the host-addressed file
+// handlers: it checks the file store is configured, resolves the site from the
+// request host, and authorizes site access. It writes the matching error
+// response and returns ok=false on failure. handleDownload takes the site from
+// the path instead, so it does not use this.
+func (s *Server) requireFileSite(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if s.files == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
-		return
+		return "", false
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
-		return
+		return "", false
 	}
 	if !s.authorizeSiteAccess(w, r, site) {
+		return "", false
+	}
+	return site, true
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
 		return
 	}
 	maxUpload := s.maxUpload
@@ -377,6 +437,45 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, stored)
+}
+
+func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
+		return
+	}
+	files, err := s.files.List(r.Context(), site)
+	if err != nil {
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not list files")
+		return
+	}
+	if files == nil {
+		files = []StoredFile{}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"files": files})
+}
+
+func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
+		return
+	}
+	id := r.PathValue("id")
+	if !fileIDRe.MatchString(id) {
+		httpError(w, http.StatusBadRequest, "invalid file id")
+		return
+	}
+	if err := s.files.Delete(r.Context(), site, id, r.PathValue("name")); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			httpError(w, http.StatusNotFound, "file not found")
+			return
+		}
+		log.Printf("files: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not delete the file")
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
@@ -424,12 +523,56 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// meResponse is the identity plus capabilities a page can use to gate its UI.
+// Identity is embedded so its fields (email, name, peer_name, peer_ip, groups)
+// stay at the top level.
+type meResponse struct {
+	Identity
+	AIAllowed bool `json:"ai_allowed"`
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.resolveIdentity(w, r, "identity")
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, id)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	writeJSON(w, http.StatusOK, meResponse{
+		Identity:  id,
+		AIAllowed: s.aiAllowedFor(r.Context(), site, id),
+	})
+}
+
+// aiAllowedFor reports whether the visitor may spend the deployment's
+// server-side AI key on this site, mirroring authorizeAIUse without writing a
+// response. It is a best-effort read for UI gating: any inability to determine
+// access (apex root, unreadable policy, unconfigured owner checks, lookup
+// error) reports false rather than failing the request. It shares the visitor
+// rule (aiVisitorsAllowed) with authorizeAIUse; keep the two in step.
+func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) bool {
+	if site == "" || s.ai == nil || !s.ai.configured() {
+		return false
+	}
+	policy, err := s.policyForSite(ctx, site)
+	if err != nil {
+		return false
+	}
+	if policy != nil && policy.RestrictsAccess() && !policy.Allows(actor) {
+		return false
+	}
+	if s.aiVisitorsAllowed(policy) {
+		return true
+	}
+	if s.siteManager == nil {
+		return false
+	}
+	// Only an owner-gated site that does not opt visitors in reaches here, so
+	// the ownership lookup runs solely when it is the only way to answer; the
+	// cheaper visitor/policy paths above short-circuit the common cases. This
+	// is one indexed sites-table read per /api/me call in the default owners
+	// mode — acceptable for a per-page-load capability check, so it is not cached.
+	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
+	return err == nil && allowed
 }
 
 const maxAccessSuggestions = 20
@@ -565,6 +708,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				s.hub.Subscribe(scope, req.Collection, docOut)
+				if err := wsjson.Write(ctx, conn, map[string]string{
+					"type":       "subscribed",
+					"collection": req.Collection,
+				}); err != nil {
+					return
+				}
 			case "unsubscribe":
 				scope, err := scopeFor(site, req.Collection)
 				if err != nil {
@@ -718,12 +867,193 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 		}
 		limit = n
 	}
-	docs, err := s.store.List(r.Context(), scope, collection, limit)
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	// A batch fetch by id short-circuits filters, sort, and paging.
+	if raw := r.URL.Query().Get("ids"); raw != "" {
+		ids := strings.Split(raw, ",")
+		if len(ids) > maxBatchIDs {
+			httpError(w, http.StatusBadRequest, fmt.Sprintf("ids accepts at most %d document UUIDs", maxBatchIDs))
+			return
+		}
+		for _, id := range ids {
+			if !idRe.MatchString(id) {
+				httpError(w, http.StatusBadRequest, "ids must be a comma-separated list of document UUIDs")
+				return
+			}
+		}
+		var docs []Document
+		var err error
+		if owner != "" {
+			docs, err = s.store.GetManyOwned(r.Context(), scope, collection, ids, owner)
+		} else {
+			docs, err = s.store.GetMany(r.Context(), scope, collection, ids)
+		}
+		if err != nil {
+			s.storeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"documents": docs})
+		return
+	}
+
+	after := r.URL.Query().Get("after")
+	if after != "" && !idRe.MatchString(after) {
+		httpError(w, http.StatusBadRequest, "after must be a document UUID")
+		return
+	}
+	where, ok := parseWhere(w, r)
+	if !ok {
+		return
+	}
+	sort := r.URL.Query().Get("sort")
+	if after != "" && sort != "" {
+		httpError(w, http.StatusBadRequest, "after cursor is only supported for the default order; drop sort or after")
+		return
+	}
+	docs, err := s.store.Query(r.Context(), scope, collection, ListQuery{
+		Limit: limit,
+		Owner: owner,
+		After: after,
+		Where: where,
+		Sort:  sort,
+		Order: r.URL.Query().Get("order"),
+	})
 	if err != nil {
 		s.storeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"documents": docs})
+}
+
+// maxBatchIDs caps how many ids a single getMany request may fetch.
+const maxBatchIDs = 100
+
+func (s *Server) handleCount(w http.ResponseWriter, r *http.Request) {
+	scope, collection, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	where, ok := parseWhere(w, r)
+	if !ok {
+		return
+	}
+	n, err := s.store.Count(r.Context(), scope, collection, owner, where)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+func (s *Server) handleIncrement(w http.ResponseWriter, r *http.Request) {
+	scope, collection, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	id, ok := readID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Field string   `json:"field"`
+		By    *float64 `json:"by"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+	if err := dec.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, `request body must be {"field": string, "by"?: number}`)
+		return
+	}
+	if body.Field == "" {
+		httpError(w, http.StatusBadRequest, "field is required")
+		return
+	}
+	by := 1.0
+	if body.By != nil {
+		by = *body.By
+	}
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	doc, err := s.store.IncrementOwned(r.Context(), scope, collection, id, owner, body.Field, by)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// parseWhere reads an optional `where` query parameter — a JSON object of
+// field -> value (equality) or field -> {op: value} — into filters. Field
+// names and operators are validated by the document store.
+func parseWhere(w http.ResponseWriter, r *http.Request) ([]Filter, bool) {
+	raw := r.URL.Query().Get("where")
+	if raw == "" {
+		return nil, true
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		httpError(w, http.StatusBadRequest, "where must be a JSON object")
+		return nil, false
+	}
+	if obj == nil {
+		httpError(w, http.StatusBadRequest, "where must be a JSON object")
+		return nil, false
+	}
+	filters := make([]Filter, 0, len(obj))
+	for field, rawVal := range obj {
+		// A nested object is an operator map ({gte: 3}); anything else is an
+		// equality test against the value.
+		if trimmed := strings.TrimSpace(string(rawVal)); strings.HasPrefix(trimmed, "{") {
+			var ops map[string]json.RawMessage
+			if err := json.Unmarshal(rawVal, &ops); err != nil {
+				httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+				return nil, false
+			}
+			// An empty operator object would otherwise contribute no filter and
+			// silently widen the query to the whole collection; reject it.
+			if len(ops) == 0 {
+				httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q must name at least one operator", field))
+				return nil, false
+			}
+			for op, rawOpVal := range ops {
+				f := Filter{Field: field, Op: op}
+				if op == "in" {
+					var arr []any
+					if err := json.Unmarshal(rawOpVal, &arr); err != nil {
+						httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q: in needs an array", field))
+						return nil, false
+					}
+					f.Value = arr
+				} else {
+					var v any
+					if err := json.Unmarshal(rawOpVal, &v); err != nil {
+						httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+						return nil, false
+					}
+					f.Value = v
+				}
+				filters = append(filters, f)
+			}
+			continue
+		}
+		var v any
+		if err := json.Unmarshal(rawVal, &v); err != nil {
+			httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+			return nil, false
+		}
+		filters = append(filters, Filter{Field: field, Op: "eq", Value: v})
+	}
+	return filters, true
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -735,7 +1065,16 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	doc, err := s.store.Create(r.Context(), scope, collection, data)
+	// Ownership is best-effort on create: a resolver outage degrades to an
+	// unattributed (empty-owner) document rather than failing the write, so an
+	// open site keeps accepting writes during a transient mesh blip. Restricted
+	// sites already required a resolved identity in s.scope's authorizeSiteAccess.
+	owner, err := s.callerKey(r)
+	if err != nil {
+		log.Printf("create: resolve owner (continuing unattributed): %v", err)
+		owner = ""
+	}
+	doc, err := s.store.Create(r.Context(), scope, collection, owner, data)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -773,7 +1112,13 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	doc, err := s.store.Update(r.Context(), scope, collection, id, data)
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	doc, err := s.store.UpdateOwned(r.Context(), scope, collection, id, owner, data)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -790,20 +1135,50 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if err := s.store.Delete(r.Context(), scope, collection, id); err != nil {
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	if err := s.store.DeleteOwned(r.Context(), scope, collection, id, owner); err != nil {
 		s.storeError(w, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) storeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrNotFound) {
-		httpError(w, http.StatusNotFound, "document not found")
-		return
+func (s *Server) mineOwner(w http.ResponseWriter, r *http.Request) (string, bool) {
+	mine := r.URL.Query().Get("mine")
+	if mine != "1" && mine != "true" {
+		return "", true
 	}
-	log.Printf("docstore: %v", err)
-	httpError(w, http.StatusInternalServerError, "database error")
+	owner, err := s.callerKey(r)
+	if err != nil {
+		log.Printf("mine: resolve owner: %v", err)
+		httpError(w, http.StatusServiceUnavailable, "could not reach the identity resolver")
+		return "", false
+	}
+	if owner == "" {
+		httpError(w, http.StatusBadRequest, "mine=true requires an identified visitor")
+		return "", false
+	}
+	return owner, true
+}
+
+func (s *Server) storeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, ErrNotFound):
+		httpError(w, http.StatusNotFound, "document not found")
+	case errors.Is(err, ErrBadQuery):
+		// ErrBadQuery messages are built from validated tokens only.
+		httpError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrFieldNotNumeric):
+		httpError(w, http.StatusConflict, "cannot increment a non-numeric field")
+	default:
+		log.Printf("docstore: %v", err)
+		httpError(w, http.StatusInternalServerError, "database error")
+	}
 }
 
 func readID(w http.ResponseWriter, r *http.Request) (string, bool) {

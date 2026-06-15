@@ -24,7 +24,7 @@ func TestSQLiteDocStorePublishesInProcess(t *testing.T) {
 	events := make(chan Event, 4)
 	hub.Subscribe("demo", "notes", events)
 
-	created, err := store.Create(ctx, "demo", "notes", map[string]any{"title": "hello"})
+	created, err := store.Create(ctx, "demo", "notes", "", map[string]any{"title": "hello"})
 	if err != nil {
 		t.Fatalf("create: %v", err)
 	}

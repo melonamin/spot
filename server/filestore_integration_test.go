@@ -4,7 +4,9 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -165,6 +167,61 @@ func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
 	}
 	if !strings.Contains(got.Header.Get("Content-Security-Policy"), "sandbox") {
 		t.Errorf("CSP = %q, want sandbox", got.Header.Get("Content-Security-Policy"))
+	}
+}
+
+// TestFileStoreListAndDelete exercises the List and Delete store methods
+// against the real RustFS from the compose stack (`just up` first).
+func TestFileStoreListAndDelete(t *testing.T) {
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:9000"
+	}
+	files, err := NewFileStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-uploads")
+	if err != nil {
+		t.Fatalf("file store (is `just up` running?): %v", err)
+	}
+	ctx := context.Background()
+	const site = "it-files-listdel"
+	t.Cleanup(func() { files.RemoveSite(ctx, site) })
+
+	a, err := files.Put(ctx, site, "alpha.txt", "text/plain", strings.NewReader("a"), 1)
+	if err != nil {
+		t.Fatalf("put alpha: %v", err)
+	}
+	b, err := files.Put(ctx, site, "beta.txt", "text/plain", strings.NewReader("bb"), 2)
+	if err != nil {
+		t.Fatalf("put beta: %v", err)
+	}
+
+	listed, err := files.List(ctx, site)
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(listed) != 2 || listed[0].Name != "alpha.txt" || listed[1].Name != "beta.txt" {
+		t.Fatalf("list = %+v, want alpha then beta", listed)
+	}
+	if listed[0].ID != a.ID || listed[0].Size != 1 || listed[1].Size != 2 {
+		t.Errorf("list metadata = %+v", listed)
+	}
+
+	if err := files.Delete(ctx, site, a.ID, a.Name); err != nil {
+		t.Fatalf("delete alpha: %v", err)
+	}
+	if _, _, err := files.Get(ctx, site, a.ID, a.Name); !errors.Is(err, ErrNotFound) {
+		t.Errorf("get deleted = %v, want ErrNotFound", err)
+	}
+	// Deleting again is idempotent on S3 too.
+	if err := files.Delete(ctx, site, a.ID, a.Name); err != nil {
+		t.Errorf("delete twice: %v", err)
+	}
+
+	listed, err = files.List(ctx, site)
+	if err != nil {
+		t.Fatalf("list after delete: %v", err)
+	}
+	if len(listed) != 1 || listed[0].ID != b.ID {
+		t.Fatalf("list after delete = %+v, want only beta", listed)
 	}
 }
 

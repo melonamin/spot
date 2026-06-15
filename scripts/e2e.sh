@@ -25,6 +25,24 @@ export NETBIRD_API_TOKEN=
 export TAILSCALE_API_TOKEN=
 export TAILSCALE_OAUTH_CLIENT_ID=
 export TAILSCALE_OAUTH_CLIENT_SECRET=
+# Compose lets exported shell variables override .env. Keep e2e pinned to the
+# repo-local AI settings when present, so a developer's ambient shell key cannot
+# accidentally make the local stack use different credentials.
+load_env_value() {
+    key=$1
+    [ -f .env ] || return 0
+    value=$(sed -n "s/^$key=//p" .env | tail -n 1 | tr -d '\r')
+    [ -n "$value" ] || return 0
+    case $value in
+        \"*\") value=${value#\"}; value=${value%\"} ;;
+        \'*\') value=${value#\'}; value=${value%\'} ;;
+    esac
+    export "$key=$value"
+}
+for key in OPENAI_API_KEY OPENAI_BASE_URL SPOT_AI_MODEL SPOT_AI_ALLOWED_MODELS \
+    SPOT_AI_IMAGE_MODEL SPOT_AI_ALLOWED_IMAGE_MODELS; do
+    load_env_value "$key"
+done
 # The CLI must target the local stack — a developer's ~/.config/spot/env
 # may pin SPOT_URL to a real deployment, and the sourced config file
 # overrides even an exported SPOT_URL.
@@ -32,16 +50,98 @@ XDG_CONFIG_HOME="$(mktemp -d)"
 export XDG_CONFIG_HOME
 COMPOSE_PROJECT_NAME="spot-e2e-$$"
 export COMPOSE_PROJECT_NAME
+E2E_COMPOSE_FILE="docker-compose.yml"
 cleanup() {
     docker compose -p "$COMPOSE_PROJECT_NAME" down --remove-orphans -v >/dev/null 2>&1 || true
     rm -rf "$XDG_CONFIG_HOME"
 }
 trap cleanup EXIT INT TERM
+
+compose() {
+    COMPOSE_FILE=$E2E_COMPOSE_FILE docker compose -p "$COMPOSE_PROJECT_NAME" "$@"
+}
+
+if [ "${SPOT_E2E_AI:-}" = "fake" ]; then
+    fake_ai_go="$XDG_CONFIG_HOME/fake-ai.go"
+    cat > "$fake_ai_go" <<'EOF'
+package main
+
+import (
+	"encoding/json"
+	"net/http"
+)
+
+func main() {
+	http.HandleFunc("/v1/chat/completions", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		var req struct {
+			Model string `json:"model"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&req)
+		if req.Model == "" {
+			req.Model = "fake-chat"
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"model": req.Model,
+			"choices": []map[string]any{{
+				"message":       map[string]string{"content": "ok"},
+				"finish_reason": "stop",
+			}},
+			"usage": map[string]int{"prompt_tokens": 2, "completion_tokens": 1},
+		})
+	})
+	http.HandleFunc("/v1/images/generations", func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]string{{
+				"b64_json":       "iVBORw0KGgo=",
+				"revised_prompt": "fake",
+			}},
+			"usage": map[string]any{},
+		})
+	})
+	if err := http.ListenAndServe(":8081", nil); err != nil {
+		panic(err)
+	}
+}
+EOF
+    fake_ai_override="$XDG_CONFIG_HOME/docker-compose.fake-ai.yml"
+    cat > "$fake_ai_override" <<EOF
+services:
+  fake-ai:
+    image: golang:1.26-alpine
+    working_dir: /src
+    command: go run /src/fake-ai.go
+    volumes:
+      - $fake_ai_go:/src/fake-ai.go:ro
+  spot-api:
+    depends_on:
+      - rustfs
+      - fake-ai
+    environment:
+      OPENAI_API_KEY: spot-e2e-fake-key
+      OPENAI_BASE_URL: http://fake-ai:8081
+      SPOT_AI_MODEL: fake-chat
+      SPOT_AI_ALLOWED_MODELS: fake-chat
+      SPOT_AI_IMAGE_MODEL: fake-image
+      SPOT_AI_ALLOWED_IMAGE_MODELS: fake-image
+EOF
+    E2E_COMPOSE_FILE="docker-compose.yml:$fake_ai_override"
+fi
+
 # Free the fixed local ports used by the developer stack, but keep its
 # named volumes intact.
 docker compose -p spot down --remove-orphans
-docker compose -p "$COMPOSE_PROJECT_NAME" down --remove-orphans -v
-docker compose -p "$COMPOSE_PROJECT_NAME" up -d --build --remove-orphans
+compose down --remove-orphans -v
+compose up -d --build --remove-orphans
 
 echo "==> waiting for spot-api"
 ready=""
@@ -85,6 +185,47 @@ id=$(echo "$created" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
 echo "==> database API: list"
 $CURL http://demo.spot.localhost:8080/api/db/entries | grep -q "e2e was here" \
     || fail "created document missing from list"
+
+echo "==> database API: query, sort, count, getMany"
+qa=$($CURL -X POST -H 'Content-Type: application/json' -d '{"status":"open","priority":3}' \
+    http://demo.spot.localhost:8080/api/db/tasks)
+qa_id=$(echo "$qa" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+qb=$($CURL -X POST -H 'Content-Type: application/json' -d '{"status":"open","priority":1}' \
+    http://demo.spot.localhost:8080/api/db/tasks)
+qb_id=$(echo "$qb" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+$CURL -X POST -H 'Content-Type: application/json' -d '{"status":"done","priority":5}' \
+    http://demo.spot.localhost:8080/api/db/tasks >/dev/null
+# where filter as URL-encoded JSON: {"status":"open"}
+cnt=$($CURL "http://demo.spot.localhost:8080/api/db/tasks/count?where=%7B%22status%22%3A%22open%22%7D")
+echo "$cnt" | grep -q '"count":2' || fail "count(where status=open) != 2: $cnt"
+# Filtered + sorted query returns 200 and excludes the done task.
+q=$($CURL "http://demo.spot.localhost:8080/api/db/tasks?where=%7B%22status%22%3A%22open%22%7D&sort=priority&order=asc")
+echo "$q" | grep -q '"priority":5' && fail "query where status=open leaked the done task: $q"
+echo "$q" | grep -q '"priority":1' || fail "query returned no open tasks: $q"
+# getMany returns exactly the requested ids.
+gm=$($CURL "http://demo.spot.localhost:8080/api/db/tasks?ids=$qa_id,$qb_id")
+echo "$gm" | grep -q "$qa_id" || fail "getMany missing id $qa_id: $gm"
+echo "$gm" | grep -q "$qb_id" || fail "getMany missing id $qb_id: $gm"
+# An empty operator object must not silently widen the query to everything.
+ewcode=$($CURL -o /dev/null -w '%{http_code}' \
+    "http://demo.spot.localhost:8080/api/db/tasks?where=%7B%22status%22%3A%7B%7D%7D")
+[ "$ewcode" = "400" ] || fail "where with empty operator returned $ewcode, want 400"
+
+echo "==> database API: increment is atomic and persists"
+ic=$($CURL -X POST -H 'Content-Type: application/json' -d '{"label":"counter"}' \
+    http://demo.spot.localhost:8080/api/db/counters)
+ic_id=$(echo "$ic" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+[ -n "$ic_id" ] || fail "increment setup create failed: $ic"
+$CURL -X POST -H 'Content-Type: application/json' -d '{"field":"views"}' \
+    "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment" | grep -q '"views":1' \
+    || fail "increment did not set views to 1"
+$CURL -X POST -H 'Content-Type: application/json' -d '{"field":"views","by":4}' \
+    "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment" | grep -q '"views":5' \
+    || fail "increment by 4 did not reach 5"
+# A non-numeric field cannot be incremented.
+code=$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"field":"label"}' "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment")
+[ "$code" = "409" ] || fail "incrementing a string field returned $code, want 409"
 
 echo "==> database API: scope isolation (other site must not see it)"
 other=$(curl -s --resolve other.spot.localhost:8080:127.0.0.1 \
@@ -239,7 +380,15 @@ echo "    webdeploy deleted"
 echo "==> AI proxy"
 ai_body='{"messages":[{"role":"user","content":"Reply with the single word ok"}]}'
 image_body='{"prompt":"A tiny blue square"}'
-if [ -n "${OPENAI_API_KEY:-}" ]; then
+if [ "${SPOT_E2E_AI:-}" = "fake" ]; then
+    ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
+        http://demo.spot.localhost:8080/api/ai/chat)
+    echo "$ai_res" | grep -q '"text":"ok"' || fail "fake AI chat did not return ok: $ai_res"
+    image_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$image_body" \
+        http://demo.spot.localhost:8080/api/ai/image)
+    echo "$image_res" | grep -q '"images":' || fail "fake AI image did not return images: $image_res"
+    echo "    fake OpenAI-compatible API calls succeeded"
+elif [ -n "${OPENAI_API_KEY:-}" ]; then
     ai_res=$($CURL -X POST -H 'Content-Type: application/json' -d "$ai_body" \
         http://demo.spot.localhost:8080/api/ai/chat)
     echo "$ai_res" | grep -q '"text"' || fail "AI chat with key did not return text: $ai_res"
@@ -258,13 +407,16 @@ echo "==> rate limiting: upload endpoint throttles a parallel burst"
 printf 'x' > /tmp/spot-e2e-rl.txt
 # Sequential requests refill the bucket between calls; only a parallel
 # burst reliably exceeds it (uploads: 2/s, burst 10).
-limited=$(seq 1 15 | xargs -P 15 -I{} curl -s \
+limited=$(seq 1 15 | xargs -P 15 -I{} curl -s -D "/tmp/spot-e2e-rl-hdr-{}.txt" \
     --resolve demo.spot.localhost:8080:127.0.0.1 \
     -o /dev/null -w '%{http_code}\n' -F "file=@/tmp/spot-e2e-rl.txt" \
     http://demo.spot.localhost:8080/api/files | grep -c '^429$' || true)
-rm -f /tmp/spot-e2e-rl.txt
 [ "${limited:-0}" -ge 1 ] || fail "no 429 across 15 parallel uploads"
 echo "    $limited of 15 burst requests were throttled"
+# Only the 429 responses carry Retry-After; the SDK honors it when backing off.
+grep -qi 'retry-after' /tmp/spot-e2e-rl-hdr-*.txt \
+    || fail "throttled (429) responses carried no Retry-After header"
+rm -f /tmp/spot-e2e-rl.txt /tmp/spot-e2e-rl-hdr-*.txt
 
 echo "==> identity API"
 me_file=$(mktemp)
@@ -274,6 +426,8 @@ rm -f "$me_file"
 if [ "$code" = "200" ]; then
     echo "$me" | grep -q "\"email\":\"$SPOT_DEV_IDENTITY_EMAIL\"" \
         || fail "/api/me returned unexpected dev identity: $me"
+    echo "$me" | grep -q '"ai_allowed":' || fail "/api/me missing ai_allowed: $me"
+    echo "$me" | grep -q '"groups":' || fail "/api/me missing groups: $me"
 else
     case "$code:$me" in
         503:*"identity resolver not configured"*|404:*"no identity matches"*) ;;

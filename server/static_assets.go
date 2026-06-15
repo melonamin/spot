@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/404.html ../sdk/spot.js ../sdk/install.sh ../sdk/agent.md ../sdk/spot static_assets/sdk/"
+//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/404.html ../sdk/spot.js ../sdk/spot.d.ts ../sdk/install.sh ../sdk/agent.md ../sdk/spot static_assets/sdk/"
 //go:embed static_assets/sdk/*
 var staticAssets embed.FS
 
@@ -45,8 +45,8 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 	if !s.authorizeSiteAccess(w, r, site) {
 		return
 	}
-	if r.URL.Path == "/spot.js" {
-		s.serveEmbeddedAsset(w, r, "spot.js")
+	if r.URL.Path == "/spot.js" || r.URL.Path == "/spot.d.ts" {
+		s.serveEmbeddedAsset(w, r, strings.TrimPrefix(r.URL.Path, "/"))
 		return
 	}
 	if s.sites == nil {

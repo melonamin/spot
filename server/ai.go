@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -149,62 +150,190 @@ type aiImageAsset struct {
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
 }
 
-func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
-	if s.ai == nil || !s.ai.configured() {
-		httpError(w, http.StatusServiceUnavailable,
-			"AI proxy not configured: set OPENAI_API_KEY")
-		return
-	}
-	site := siteFromHost(s.requestHost(r), s.spotDomain)
-	if site == "" {
-		httpError(w, http.StatusBadRequest, "AI API must be called from a site subdomain")
-		return
-	}
-	if !s.authorizeSiteAccess(w, r, site) {
-		return
-	}
-	if !s.authorizeAIUse(w, r, site) {
-		return
-	}
-
+// decodeChatRequest reads and validates a chat request body, writing the
+// matching 400 response and returning ok=false when the body is not a JSON
+// object or carries no messages. Shared by the buffered and streaming handlers
+// so both enforce the same 1 MB cap and validation.
+func decodeChatRequest(w http.ResponseWriter, r *http.Request) (aiChatRequest, bool) {
 	var req aiChatRequest
 	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
 	if err := dec.Decode(&req); err != nil {
 		httpError(w, http.StatusBadRequest, "request body must be a JSON object with a messages array")
-		return
+		return aiChatRequest{}, false
 	}
 	if len(req.Messages) == 0 {
 		httpError(w, http.StatusBadRequest, "messages must contain at least one entry")
+		return aiChatRequest{}, false
+	}
+	return req, true
+}
+
+// requireAISite runs the shared preamble for the AI handlers: it checks the
+// proxy is configured (writing unconfiguredMsg on failure), resolves the site
+// from the request host, and authorizes both site access and AI use. It writes
+// the matching error response and returns false when any check fails. The site
+// is consumed by the authorization checks; the AI handlers do not need it
+// afterward.
+func (s *Server) requireAISite(w http.ResponseWriter, r *http.Request, unconfiguredMsg string) bool {
+	if s.ai == nil || !s.ai.configured() {
+		httpError(w, http.StatusServiceUnavailable, unconfiguredMsg)
+		return false
+	}
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	if site == "" {
+		httpError(w, http.StatusBadRequest, "AI API must be called from a site subdomain")
+		return false
+	}
+	if !s.authorizeSiteAccess(w, r, site) {
+		return false
+	}
+	if !s.authorizeAIUse(w, r, site) {
+		return false
+	}
+	return true
+}
+
+func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAISite(w, r, "AI proxy not configured: set OPENAI_API_KEY") {
+		return
+	}
+
+	req, ok := decodeChatRequest(w, r)
+	if !ok {
 		return
 	}
 
 	res, err := s.ai.generateChat(r.Context(), req)
 	if err != nil {
-		var bad badAIRequestError
-		if errors.As(err, &bad) {
-			httpError(w, http.StatusBadRequest, bad.Error())
-			return
-		}
-		var forbidden forbiddenAIModelError
-		if errors.As(err, &forbidden) {
-			httpError(w, http.StatusForbidden, forbidden.Error())
-			return
-		}
-		var upstream upstreamAIError
-		if errors.As(err, &upstream) {
-			httpError(w, http.StatusBadGateway, upstream.Error())
-			return
-		}
-		log.Printf("ai: %v", err)
-		httpError(w, http.StatusBadGateway, "could not reach the OpenAI-compatible API")
+		writeAIChatError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, res)
 }
 
+// writeAIChatError maps a chat generation error onto the right HTTP status.
+// Shared by the buffered and streaming handlers so both classify a bad
+// request, a forbidden model, and an upstream failure the same way.
+func writeAIChatError(w http.ResponseWriter, err error) {
+	var bad badAIRequestError
+	if errors.As(err, &bad) {
+		httpError(w, http.StatusBadRequest, bad.Error())
+		return
+	}
+	var forbidden forbiddenAIModelError
+	if errors.As(err, &forbidden) {
+		httpError(w, http.StatusForbidden, forbidden.Error())
+		return
+	}
+	var upstream upstreamAIError
+	if errors.As(err, &upstream) {
+		httpError(w, http.StatusBadGateway, upstream.Error())
+		return
+	}
+	log.Printf("ai: %v", err)
+	httpError(w, http.StatusBadGateway, "could not reach the OpenAI-compatible API")
+}
+
+// handleAIChatStream streams a chat completion to the browser as
+// server-sent events: one {"delta": "..."} frame per token, a terminal
+// {"done": true, ...} frame with the model, stop reason, and usage, and
+// {"error": "..."} if generation fails after streaming has begun. Errors
+// that occur before the first token are reported as ordinary HTTP errors.
+func (s *Server) handleAIChatStream(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAISite(w, r, "AI proxy not configured: set OPENAI_API_KEY") {
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		httpError(w, http.StatusInternalServerError, "streaming is not supported by this server")
+		return
+	}
+
+	req, ok := decodeChatRequest(w, r)
+	if !ok {
+		return
+	}
+
+	started := false
+	res, err := s.ai.streamChat(r.Context(), req, func(delta string) error {
+		if !started {
+			started = true
+			writeSSEHeaders(w)
+		}
+		return writeSSE(w, flusher, map[string]any{"delta": delta})
+	})
+	if err != nil {
+		if !started {
+			writeAIChatError(w, err)
+			return
+		}
+		// Headers are already sent; surface the failure in-band.
+		writeSSE(w, flusher, map[string]any{"error": err.Error()})
+		return
+	}
+	if !started {
+		writeSSEHeaders(w)
+	}
+	writeSSE(w, flusher, map[string]any{
+		"done":        true,
+		"model":       res.Model,
+		"stop_reason": res.StopReason,
+		"usage":       res.Usage,
+	})
+}
+
+func writeSSEHeaders(w http.ResponseWriter) {
+	h := w.Header()
+	h.Set("Content-Type", "text/event-stream")
+	h.Set("Cache-Control", "no-cache")
+	h.Set("Connection", "keep-alive")
+	// Stop intermediary proxies (e.g. Caddy) from buffering the stream, so
+	// tokens reach the browser as they are produced.
+	h.Set("X-Accel-Buffering", "no")
+	w.WriteHeader(http.StatusOK)
+}
+
+func writeSSE(w http.ResponseWriter, flusher http.Flusher, v any) error {
+	payload, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintf(w, "data: %s\n\n", payload); err != nil {
+		return err
+	}
+	flusher.Flush()
+	return nil
+}
+
 type openAIChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
+}
+
+// openAIUsage accepts either OpenAI's prompt/completion field names or the
+// input/output aliases some gateways use. Fields are pointers so an absent
+// field can be told apart from a genuine zero, and the pair is coalesced by
+// presence rather than by truthiness.
+type openAIUsage struct {
+	PromptTokens     *int64 `json:"prompt_tokens"`
+	CompletionTokens *int64 `json:"completion_tokens"`
+	InputTokens      *int64 `json:"input_tokens"`
+	OutputTokens     *int64 `json:"output_tokens"`
+}
+
+func (u openAIUsage) input() int64  { return coalesceTokens(u.PromptTokens, u.InputTokens) }
+func (u openAIUsage) output() int64 { return coalesceTokens(u.CompletionTokens, u.OutputTokens) }
+
+// coalesceTokens returns the first field that was actually present, preserving
+// a legitimate zero instead of overwriting it with the alias.
+func coalesceTokens(primary, fallback *int64) int64 {
+	if primary != nil {
+		return *primary
+	}
+	if fallback != nil {
+		return *fallback
+	}
+	return 0
 }
 
 type openAIChatResponse struct {
@@ -215,19 +344,17 @@ type openAIChatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		InputTokens      int64 `json:"input_tokens"`
-		OutputTokens     int64 `json:"output_tokens"`
-	} `json:"usage"`
+	Usage openAIUsage `json:"usage"`
 }
 
-func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatResponse, error) {
+// buildChatPayload validates the request and assembles the upstream
+// /v1/chat/completions body. Streaming and non-streaming chat share it so
+// the model allowlist and role checks stay identical on both paths.
+func (p *AIProxy) buildChatPayload(req aiChatRequest) (map[string]any, string, error) {
 	model := p.model
 	if req.Model != "" {
 		if !p.modelAllowed(req.Model) {
-			return aiChatResponse{}, forbiddenAIModelError{kind: "AI model"}
+			return nil, "", forbiddenAIModelError{kind: "AI model"}
 		}
 		model = req.Model
 	}
@@ -240,7 +367,7 @@ func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatRe
 		case "user", "assistant":
 			messages = append(messages, openAIChatMessage{Role: m.Role, Content: m.Content})
 		default:
-			return aiChatResponse{}, badAIRequestError(fmt.Sprintf("message role must be user or assistant, got %q", m.Role))
+			return nil, "", badAIRequestError(fmt.Sprintf("message role must be user or assistant, got %q", m.Role))
 		}
 	}
 
@@ -251,6 +378,14 @@ func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatRe
 	}
 	if req.MaxTokens > 0 {
 		payload["max_completion_tokens"] = min(req.MaxTokens, maxAITokens)
+	}
+	return payload, model, nil
+}
+
+func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatResponse, error) {
+	payload, model, err := p.buildChatPayload(req)
+	if err != nil {
+		return aiChatResponse{}, err
 	}
 
 	var apiRes openAIChatResponse
@@ -267,32 +402,153 @@ func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatRe
 		res.Text = apiRes.Choices[0].Message.Content
 		res.StopReason = apiRes.Choices[0].FinishReason
 	}
-	res.Usage.InputTokens = apiRes.Usage.PromptTokens
-	if res.Usage.InputTokens == 0 {
-		res.Usage.InputTokens = apiRes.Usage.InputTokens
+	res.Usage.InputTokens = apiRes.Usage.input()
+	res.Usage.OutputTokens = apiRes.Usage.output()
+	return res, nil
+}
+
+type openAIChatStreamChunk struct {
+	Model   string `json:"model"`
+	Error   any    `json:"error"`
+	Choices []struct {
+		Delta struct {
+			Content string `json:"content"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	} `json:"choices"`
+	Usage *openAIUsage `json:"usage"`
+}
+
+// streamChat forwards a chat request to the gateway with server-sent
+// streaming enabled, invoking onDelta for each token as it arrives. The
+// returned response carries the accumulated text plus the final model,
+// stop reason, and usage. Errors before the first delta (a forbidden
+// model or an upstream failure) come back synchronously so the handler
+// can answer with an HTTP status; a failure mid-stream returns after some
+// deltas have already been delivered.
+func (p *AIProxy) streamChat(ctx context.Context, req aiChatRequest, onDelta func(string) error) (res aiChatResponse, err error) {
+	payload, model, err := p.buildChatPayload(req)
+	if err != nil {
+		return aiChatResponse{}, err
 	}
-	res.Usage.OutputTokens = apiRes.Usage.CompletionTokens
-	if res.Usage.OutputTokens == 0 {
-		res.Usage.OutputTokens = apiRes.Usage.OutputTokens
+	payload["stream"] = true
+	payload["stream_options"] = map[string]any{"include_usage": true}
+
+	var body bytes.Buffer
+	if err := json.NewEncoder(&body).Encode(payload); err != nil {
+		return aiChatResponse{}, err
+	}
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, p.baseURL+"/v1/chat/completions", &body)
+	if err != nil {
+		return aiChatResponse{}, err
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+	httpReq.Header.Set("Authorization", "Bearer "+p.apiKey)
+	httpReq.Header.Set("Accept", "text/event-stream")
+
+	client := p.httpClient
+	if client == nil {
+		client = http.DefaultClient
+	}
+	resp, err := client.Do(httpReq)
+	if err != nil {
+		return aiChatResponse{}, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return aiChatResponse{}, decodeAIUpstreamError(resp)
+	}
+
+	res = aiChatResponse{Model: model}
+	// Accumulate the streamed text in a Builder rather than res.Text += delta
+	// (which is O(n^2) over a long completion); the named return's Text is
+	// finalized from it on every exit path, including a mid-stream error.
+	var text strings.Builder
+	defer func() { res.Text = text.String() }()
+	terminal := false
+	scanner := bufio.NewScanner(resp.Body)
+	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if !strings.HasPrefix(line, "data:") {
+			continue
+		}
+		data := strings.TrimSpace(strings.TrimPrefix(line, "data:"))
+		if data == "" {
+			continue
+		}
+		if data == "[DONE]" {
+			terminal = true
+			break
+		}
+		var chunk openAIChatStreamChunk
+		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
+			return res, upstreamAIError{message: "AI stream returned malformed data"}
+		}
+		if msg, isErr := aiStreamError(chunk.Error); isErr {
+			return res, upstreamAIError{message: msg}
+		}
+		if chunk.Model != "" {
+			res.Model = chunk.Model
+		}
+		if len(chunk.Choices) > 0 {
+			if reason := chunk.Choices[0].FinishReason; reason != "" {
+				res.StopReason = reason
+			}
+			if delta := chunk.Choices[0].Delta.Content; delta != "" {
+				text.WriteString(delta)
+				if err := onDelta(delta); err != nil {
+					return res, err
+				}
+			}
+		}
+		if chunk.Usage != nil {
+			res.Usage.InputTokens = chunk.Usage.input()
+			res.Usage.OutputTokens = chunk.Usage.output()
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		return res, fmt.Errorf("read AI stream: %w", err)
+	}
+	if !terminal {
+		return res, upstreamAIError{message: "AI stream ended before completion"}
 	}
 	return res, nil
 }
 
+// aiStreamError extracts a human-readable message from a stream chunk's error
+// field and reports whether it represents a real error. A nil, false,
+// empty-string, or empty-object value carries no error (ok=false), so a
+// placeholder error field does not abort an otherwise-valid stream.
+func aiStreamError(raw any) (string, bool) {
+	switch e := raw.(type) {
+	case nil:
+		return "", false
+	case bool:
+		if e {
+			return "AI stream returned an error", true
+		}
+		return "", false
+	case string:
+		if s := strings.TrimSpace(e); s != "" {
+			return s, true
+		}
+		return "", false
+	case map[string]any:
+		if msg, ok := e["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return msg, true
+		}
+		if len(e) > 0 {
+			return "AI stream returned an error", true
+		}
+		return "", false
+	default:
+		return "AI stream returned an error", true
+	}
+}
+
 func (s *Server) handleAIImage(w http.ResponseWriter, r *http.Request) {
-	if s.ai == nil || !s.ai.configured() {
-		httpError(w, http.StatusServiceUnavailable,
-			"AI image proxy not configured: set OPENAI_API_KEY")
-		return
-	}
-	site := siteFromHost(s.requestHost(r), s.spotDomain)
-	if site == "" {
-		httpError(w, http.StatusBadRequest, "AI API must be called from a site subdomain")
-		return
-	}
-	if !s.authorizeSiteAccess(w, r, site) {
-		return
-	}
-	if !s.authorizeAIUse(w, r, site) {
+	if !s.requireAISite(w, r, "AI image proxy not configured: set OPENAI_API_KEY") {
 		return
 	}
 
@@ -491,6 +747,14 @@ func mimeTypeForImageData(b64, requestedFormat string) string {
 	}
 }
 
+// aiVisitorsAllowed reports whether AI use is open to any site visitor — the
+// deployment runs in visitors mode, or the site's policy opts visitors in.
+// Both the AI gate (authorizeAIUse) and the /api/me capability (aiAllowedFor)
+// consult it so the visitor rule cannot drift between them.
+func (s *Server) aiVisitorsAllowed(policy *AccessPolicy) bool {
+	return s.aiAccess == aiAccessVisitors || policy.AllowsAIVisitors()
+}
+
 func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site string) bool {
 	if s.aiAccess == aiAccessVisitors {
 		return true
@@ -503,7 +767,7 @@ func (s *Server) authorizeAIUse(w http.ResponseWriter, r *http.Request, site str
 			"this site's "+accessFileName+" is unreadable; AI access denied until it is fixed")
 		return false
 	}
-	if policy.AllowsAIVisitors() {
+	if s.aiVisitorsAllowed(policy) {
 		return true
 	}
 	if s.siteManager == nil {

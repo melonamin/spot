@@ -2,13 +2,17 @@ CREATE TABLE IF NOT EXISTS documents (
     id text PRIMARY KEY DEFAULT (lower(hex(randomblob(4))) || '-' || lower(hex(randomblob(2))) || '-4' || substr(lower(hex(randomblob(2))), 2) || '-' || substr('89ab', abs(random()) % 4 + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' || lower(hex(randomblob(6)))),
     scope text NOT NULL,
     collection text NOT NULL,
+    owner text NOT NULL DEFAULT '',
     data text NOT NULL,
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS documents_scope_collection_idx
-    ON documents (scope, collection, created_at DESC);
+-- Covers both the default newest-first listing and cursor paging (which adds
+-- id as a tiebreaker). It subsumes a plain (scope, collection, created_at DESC)
+-- index, so only this one is kept; applyAdditiveMigrations drops the older one.
+CREATE INDEX IF NOT EXISTS documents_scope_collection_cursor_idx
+    ON documents (scope, collection, created_at DESC, id DESC);
 
 CREATE TABLE IF NOT EXISTS sites (
     name text PRIMARY KEY,

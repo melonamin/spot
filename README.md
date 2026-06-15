@@ -280,14 +280,35 @@ Sites load `/spot.js` from their own origin:
 All calls are same-origin:
 
 ```js
-const me = await spot.me();
+const me = await spot.me(); // { email, name, peer_name, peer_ip, groups, ai_allowed }
 const posts = spot.db.collection('posts');
-await posts.create({ title: 'Hello Spot DB' });
+const doc = await posts.create({ title: 'Hello Spot DB' });
 const docs = await posts.list();
+const next = await posts.list({ limit: 25, after: docs.at(-1)?.id });
+const mine = await posts.list({ mine: true });
+await posts.updateMine(doc.id, { title: 'Only I can edit this path' });
+
+// Filter, sort, count, batch read, and iterate. where ops: eq ne gt gte lt lte in.
+const open = await posts.list({ where: { status: 'open' }, sort: 'priority', order: 'desc' });
+const total = await posts.count({ where: { status: 'open' } });
+const some = await posts.getMany([doc.id, next?.[0]?.id]);
+for await (const p of posts.iterate({ pageSize: 100 })) { /* every doc, paged */ }
+
+// Atomic counter — no read-modify-write, safe under concurrency:
+await posts.increment(doc.id, 'views');
 ```
 
 Collections are private to their site, except `shared-*` collections,
 which live in one global namespace every site can read and write.
+
+Every document records an `owner` — the mesh identity that created it — so
+several visitors can keep private records in one shared site.
+`list({ mine: true })` returns only the caller's documents. Writes are not
+restricted to the owner by default; use `updateMine`, `deleteMine`, or
+`{ mine: true }` on mutations when only the creator should be able to change
+a document. The `owner` (a lowercased email or peer IP) is included in every
+read response, so on a site many visitors can read, treat it as visible to all
+of them.
 
 Realtime DB subscriptions are process-local and delivered after SQLite
 commits:
@@ -297,8 +318,13 @@ const unsubscribe = posts.subscribe({
   onCreate: (doc) => console.log(doc),
   onUpdate: (doc) => console.log(doc),
   onDelete: (id) => console.log(id),
-});
+}, { replay: true }); // replay current docs as onCreate first, then live changes
 ```
+
+Every call rejects with a `spot.SpotError` (`status`, `code`, and `retryAfter`
+on a 429). The SDK retries rate-limited and transient failures automatically
+with backoff; tune it with `spot.configure({ retry })` or a per-call
+`{ retry }` option.
 
 Ephemeral realtime rooms are also process-local and are not persisted:
 
@@ -306,6 +332,7 @@ Ephemeral realtime rooms are also process-local and are not persisted:
 const room = spot.realtime.room('control');
 room.on('cursor', ({ from, data }) => drawCursor(from.email, data));
 room.onPresence((users) => renderOnline(users));
+room.onStatus((status) => renderConnection(status));
 room.setPresence({ role: 'operator' });
 room.send('cursor', { x: 12, y: 8 });
 ```
@@ -352,12 +379,22 @@ Important APIs:
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
 
+On the Spot root, the SDK wraps the site APIs:
+
+```js
+const mine = await spot.sites.mine();
+const publicSites = await spot.sites.public();
+await spot.sites.delete('old-demo');
+```
+
 ## Files, Text AI, and Image Generation
 
 Uploads go through Spot, so browsers never see storage credentials:
 
 ```js
 const stored = await spot.files.upload(file);
+const files = await spot.files.list();
+await spot.files.delete(stored);
 ```
 
 Images, PDFs, plain text, audio, and video render inline. HTML, SVG, and
@@ -375,6 +412,12 @@ SPOT_AI_IMAGE_MODEL=gemini-3.1-flash-image-preview
 
 ```js
 const chat = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+
+// Stream tokens as they arrive:
+await spot.ai.stream([{ role: 'user', content: 'Write a haiku' }], {
+  onToken: (delta, text) => render(text),
+});
+
 const art = await spot.ai.image('A tiny cyberpunk greenhouse at night');
 const img = new Image();
 img.src = art.images[0].data_url;

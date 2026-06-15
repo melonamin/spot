@@ -44,32 +44,24 @@ func TestRealtimeEndToEnd(t *testing.T) {
 	if err := wsjson.Write(ctx, conn, wsRequest{Type: "subscribe", Collection: "rt-posts"}); err != nil {
 		t.Fatalf("subscribe: %v", err)
 	}
+	var ack Event
+	if err := wsjson.Read(ctx, conn, &ack); err != nil {
+		t.Fatalf("subscription ack: %v", err)
+	}
+	if ack.Type != "subscribed" || ack.Collection != "rt-posts" {
+		t.Fatalf("subscription ack = %+v, want subscribed on rt-posts", ack)
+	}
 
-	// The websocket subscribe is asynchronous, so create repeatedly
-	// until the first event arrives.
-	var created Document
+	created, err := store.Create(ctx, "it-rt", "rt-posts", "", map[string]any{"n": float64(1)})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
 	var got Event
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		if time.Now().After(deadline) {
-			t.Fatal("no realtime event arrived within 15s")
-		}
-		doc, err := store.Create(ctx, "it-rt", "rt-posts", map[string]any{"n": float64(1)})
-		if err != nil {
-			t.Fatalf("Create: %v", err)
-		}
-		created = doc
-
-		// Fresh struct per read: unmarshal does not reset fields the
-		// JSON omits, so reuse would leak data across events.
-		var ev Event
-		readCtx, readCancel := context.WithTimeout(ctx, time.Second)
-		err = wsjson.Read(readCtx, conn, &ev)
-		readCancel()
-		if err == nil {
-			got = ev
-			break
-		}
+	readCtx, readCancel := context.WithTimeout(ctx, 5*time.Second)
+	err = wsjson.Read(readCtx, conn, &got)
+	readCancel()
+	if err != nil {
+		t.Fatalf("waiting for create event: %v", err)
 	}
 	if got.Type != "create" || got.Collection != "rt-posts" {
 		t.Fatalf("event = %+v, want create on rt-posts", got)

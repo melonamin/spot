@@ -46,6 +46,11 @@ check-generate:
 e2e:
     ./scripts/e2e.sh
 
+# Browser SDK smoke: starts a local Spot server with a fake AI gateway and
+# exercises sdk/spot.js through its public methods.
+sdk-smoke:
+    node scripts/sdk-smoke.mjs
+
 # Deploy the committed tree to production.
 deploy *args:
     ./scripts/deploy-prod.sh {{args}}
