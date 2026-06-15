@@ -1,5 +1,7 @@
 #!/bin/sh
 # spot — deploy static sites to the Spot platform.
+# Edit this source copy, then run `just generate` to refresh the served
+# sdk/spot copy and the Go-embedded server/static_assets/sdk/spot copy.
 #
 # Deploys go through the platform's deploy API (the same endpoint the
 # apex web deployer uses), so the only configuration is where the
@@ -31,7 +33,38 @@ case $SPOT_DOMAIN in
     *) SPOT_CURL_OPTS= ;;
 esac
 
+banner() {
+    if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+        esc=$(printf '\033')
+        pink="${esc}[38;5;205m"
+        violet="${esc}[38;5;99m"
+        mint="${esc}[38;5;48m"
+        reset="${esc}[0m"
+        printf '%s\n' \
+            "${pink}"'   _____             __'"${reset}" \
+            "${pink}"'  / ___/____  ____  / /_'"${reset}" \
+            "${violet}"'  \__ \/ __ \/ __ \/ __/'"${reset}" \
+            "${violet}"' ___/ / /_/ / /_/ / /_'"${reset}" \
+            "${mint}"'/____/ .___/\____/\__/'"${reset}" \
+            "${mint}"'    /_/'"${reset}" \
+            "${violet}"'  Drop a folder, get a spot.'"${reset}" \
+            ""
+    else
+        cat <<'EOF'
+   _____             __
+  / ___/____  ____  / /_
+  \__ \/ __ \/ __ \/ __/
+ ___/ / /_/ / /_/ / /_
+/____/ .___/\____/\__/
+    /_/
+  Drop a folder, get a spot.
+
+EOF
+    fi
+}
+
 usage() {
+    banner
     cat <<'EOF'
 usage: spot <command>
 
