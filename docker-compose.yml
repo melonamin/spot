@@ -15,7 +15,7 @@ services:
 
   spot-api:
     # Pulls the published image by default; `--build` (e.g. `just up`) builds
-    # from ./server instead. Pin a release with SPOT_API_IMAGE=...:vX.Y.Z.
+    # from ./server instead. Pin a release with SPOT_API_IMAGE=...:X.Y.Z.
     image: ${SPOT_API_IMAGE:-ghcr.io/melonamin/spot-api:latest}
     build: ./server
     environment:

@@ -89,7 +89,7 @@ the GitHub Container Registry:
 Available tags:
 
 - `latest` — the most recent tagged release.
-- `vX.Y.Z` and `X.Y` — a specific release.
+- `X.Y.Z` and `X.Y` — a specific release.
 - `edge` — the current `main` branch.
 - `sha-<commit>` — a specific commit.
 
@@ -100,7 +100,7 @@ code, build from source by adding `--build`. To pin a release, set
 `SPOT_API_IMAGE` (and `SPOT_CADDY_IMAGE` for the TLS overlay):
 
 ```sh
-SPOT_API_IMAGE=ghcr.io/melonamin/spot-api:v0.1.0 \
+SPOT_API_IMAGE=ghcr.io/melonamin/spot-api:0.1.0 \
   docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d
 ```
 
