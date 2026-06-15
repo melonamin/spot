@@ -169,8 +169,13 @@ func (s *PolicyStore) ForWithStoreStatus(site string) (*AccessPolicy, error, boo
 		return entry.policy, entry.err, entry.checkedStore
 	}
 	policy, err := s.load(site)
-	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now()}
-	return policy, err, false
+	// A non-empty dir means this store authoritatively read the site's
+	// _access.json (or confirmed its absence), so report the store as
+	// checked. An empty dir cannot read anything, so callers fall back to
+	// the site storage to resolve the policy.
+	checked := s.dir != ""
+	s.cache[site] = policyEntry{policy: policy, err: err, fetchedAt: time.Now(), checkedStore: checked}
+	return policy, err, checked
 }
 
 // Set records a known policy for a site. Deploys use it only for

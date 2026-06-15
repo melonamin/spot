@@ -376,3 +376,17 @@ func TestRestrictedFileDownloadsCheckSitePolicy(t *testing.T) {
 		t.Fatalf("allowed peer should pass policy and hit the unavailable store: got %d, want 500", rec.Code)
 	}
 }
+
+// TestSiteAccessFailsClosedWithoutStore pins the fail-closed behavior of
+// policyForSite: a server with neither a policy store nor a site store
+// cannot read any site's _access.json, so access is denied rather than
+// every site being treated as open.
+func TestSiteAccessFailsClosedWithoutStore(t *testing.T) {
+	srv := &Server{spotDomain: "spot.localhost"}
+	req := httptest.NewRequest(http.MethodGet, "http://demo.spot.localhost/api/authz", nil)
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("authz with no policy or site store = %d, want 503 (fail closed)", rec.Code)
+	}
+}

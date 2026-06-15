@@ -146,6 +146,7 @@ func TestRequestScheme(t *testing.T) {
 func TestWebSocketRequiresSameOrigin(t *testing.T) {
 	srv := &Server{
 		hub:        NewHub(),
+		sites:      newTestSiteStore(t),
 		spotDomain: "spot.localhost",
 	}
 	ts := httptest.NewServer(srv.routes())
