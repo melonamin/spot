@@ -605,7 +605,7 @@ const (
 		SET data = json_set(data, ?4, coalesce(json_extract(data, ?4), 0) + ?5),
 		    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
 		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?6 = '' OR owner = ?6)
-		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real'))
+		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real', 'null'))
 		RETURNING id, owner, data, created_at, updated_at`
 
 	// incrementReadSQL mirrors incrementDocumentSQL's WHERE (owner filter and
@@ -613,7 +613,7 @@ const (
 	// current document with the same 404/409 contract and without a write.
 	incrementReadSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?5 = '' OR owner = ?5)
-		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real'))`
+		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real', 'null'))`
 
 	getDocumentSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`

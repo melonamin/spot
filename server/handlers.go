@@ -996,6 +996,10 @@ func parseWhere(w http.ResponseWriter, r *http.Request) ([]Filter, bool) {
 		httpError(w, http.StatusBadRequest, "where must be a JSON object")
 		return nil, false
 	}
+	if obj == nil {
+		httpError(w, http.StatusBadRequest, "where must be a JSON object")
+		return nil, false
+	}
 	filters := make([]Filter, 0, len(obj))
 	for field, rawVal := range obj {
 		// A nested object is an operator map ({gte: 3}); anything else is an

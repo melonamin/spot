@@ -69,6 +69,24 @@ func TestWhereEmptyOperatorRejected(t *testing.T) {
 	}
 }
 
+// TestWhereNullRejected covers the parseWhere fix: top-level JSON null must
+// 400 rather than being treated as an omitted filter.
+func TestWhereNullRejected(t *testing.T) {
+	srv := newQueryTestServer(t)
+	if rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/tasks",
+		`{"status":"open"}`); rec.Code != http.StatusCreated {
+		t.Fatalf("seed create: %d %s", rec.Code, rec.Body)
+	}
+
+	const where = `?where=null`
+	if rec := doJSON(t, srv, http.MethodGet, "http://demo.spot.localhost/api/db/tasks"+where, ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("list with null where = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+	if rec := doJSON(t, srv, http.MethodGet, "http://demo.spot.localhost/api/db/tasks/count"+where, ""); rec.Code != http.StatusBadRequest {
+		t.Errorf("count with null where = %d, want 400 (body %s)", rec.Code, rec.Body)
+	}
+}
+
 // TestComparisonNullRejected covers the buildWhere fix: a null value for an
 // ordering operator must 400 rather than silently matching nothing.
 func TestComparisonNullRejected(t *testing.T) {
@@ -169,6 +187,47 @@ func TestIncrementByZeroIsNoOp(t *testing.T) {
 	if rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/counters/"+created.ID+"/increment",
 		`{"field":"title","by":0}`); rec.Code != http.StatusConflict {
 		t.Errorf("increment 0 non-numeric = %d, want 409", rec.Code)
+	}
+}
+
+// TestIncrementNullCounterTreatsAsZero covers JSON null counters: null is a
+// present JSON value in SQLite, but it should initialize the counter as zero.
+func TestIncrementNullCounterTreatsAsZero(t *testing.T) {
+	srv := newQueryTestServer(t)
+	rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/counters",
+		`{"views":null}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create: %d %s", rec.Code, rec.Body)
+	}
+	var created Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/counters/"+created.ID+"/increment",
+		`{"field":"views","by":0}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("increment null by 0: %d %s", rec.Code, rec.Body)
+	}
+	var unchanged Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &unchanged); err != nil {
+		t.Fatalf("decode unchanged: %v", err)
+	}
+	if unchanged.Data["views"] != nil {
+		t.Errorf("views after +0 = %v, want nil", unchanged.Data["views"])
+	}
+
+	rec = doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/counters/"+created.ID+"/increment",
+		`{"field":"views","by":2}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("increment null by 2: %d %s", rec.Code, rec.Body)
+	}
+	var got Document
+	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
+		t.Fatalf("decode got: %v", err)
+	}
+	if got.Data["views"] != float64(2) {
+		t.Errorf("views after +2 = %v, want 2", got.Data["views"])
 	}
 }
 
