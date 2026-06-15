@@ -72,6 +72,7 @@ commands:
   deploy [name] [path]  sync a directory or index.html (default .) to
                         the site <name> (default: current directory name)
   init [options]        write the Spot agent skill for Claude, Codex, or Pi
+  update                replace this CLI with the latest from SPOT_URL
 
 init options:
   --agent <list>        comma-separated agents: claude,codex,pi
@@ -147,6 +148,83 @@ EOF
         exit 1
     fi
     echo "live: $SPOT_SCHEME://$name.$SPOT_HOSTPORT/"
+}
+
+current_executable() {
+    case $0 in
+        */*) path=$0 ;;
+        *)
+            path=$(command -v "$0" 2>/dev/null || true)
+            ;;
+    esac
+    [ -n "$path" ] || { echo "error: could not resolve spot executable" >&2; exit 1; }
+    case $path in
+        /*) ;;
+        *) path=$(pwd -P)/$path ;;
+    esac
+
+    dir=$(dirname "$path")
+    base=$(basename "$path")
+    if ! dir=$(cd "$dir" && pwd -P); then
+        echo "error: could not resolve spot executable directory" >&2
+        exit 1
+    fi
+    printf '%s/%s\n' "$dir" "$base"
+}
+
+update_cli() {
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --help|-h)
+                cat <<EOF
+usage: spot update
+
+Downloads $SPOT_URL/spot and replaces this executable if it changed.
+EOF
+                exit 0
+                ;;
+            *)
+                echo "error: unknown update option '$1'" >&2
+                exit 1
+                ;;
+        esac
+    done
+
+    target=$(current_executable)
+    target_dir=${target%/*}
+    target_base=${target##*/}
+    tmp=$(mktemp "${TMPDIR:-/tmp}/spot-update.XXXXXX")
+    staged="$target_dir/.$target_base.update.$$"
+
+    cleanup_update() {
+        rm -f "$tmp" "$staged"
+    }
+    trap cleanup_update EXIT INT TERM
+
+    echo "checking $SPOT_URL/spot"
+    if ! curl -fsSL $SPOT_CURL_OPTS "$SPOT_URL/spot" -o "$tmp"; then
+        echo "error: could not download $SPOT_URL/spot" >&2
+        exit 1
+    fi
+    if ! sh -n "$tmp"; then
+        echo "error: downloaded CLI is not a valid shell script" >&2
+        exit 1
+    fi
+    if cmp -s "$tmp" "$target"; then
+        echo "spot is already up to date: $target"
+        exit 0
+    fi
+
+    if ! cp "$tmp" "$staged"; then
+        echo "error: could not stage update in $target_dir" >&2
+        exit 1
+    fi
+    chmod 755 "$staged"
+    if ! mv "$staged" "$target"; then
+        echo "error: could not replace $target" >&2
+        exit 1
+    fi
+    echo "updated spot -> $target"
 }
 
 agent_label() {
@@ -610,5 +688,6 @@ cmd=${1:-help}
 case $cmd in
     deploy) deploy "$@" ;;
     init)   init "$@" ;;
+    update) update_cli "$@" ;;
     *)      usage ;;
 esac
