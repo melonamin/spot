@@ -150,6 +150,24 @@ type aiImageAsset struct {
 	RevisedPrompt string `json:"revised_prompt,omitempty"`
 }
 
+// decodeChatRequest reads and validates a chat request body, writing the
+// matching 400 response and returning ok=false when the body is not a JSON
+// object or carries no messages. Shared by the buffered and streaming handlers
+// so both enforce the same 1 MB cap and validation.
+func decodeChatRequest(w http.ResponseWriter, r *http.Request) (aiChatRequest, bool) {
+	var req aiChatRequest
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
+	if err := dec.Decode(&req); err != nil {
+		httpError(w, http.StatusBadRequest, "request body must be a JSON object with a messages array")
+		return aiChatRequest{}, false
+	}
+	if len(req.Messages) == 0 {
+		httpError(w, http.StatusBadRequest, "messages must contain at least one entry")
+		return aiChatRequest{}, false
+	}
+	return req, true
+}
+
 func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 	if s.ai == nil || !s.ai.configured() {
 		httpError(w, http.StatusServiceUnavailable,
@@ -168,14 +186,8 @@ func (s *Server) handleAIChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req aiChatRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err := dec.Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "request body must be a JSON object with a messages array")
-		return
-	}
-	if len(req.Messages) == 0 {
-		httpError(w, http.StatusBadRequest, "messages must contain at least one entry")
+	req, ok := decodeChatRequest(w, r)
+	if !ok {
 		return
 	}
 
@@ -238,14 +250,8 @@ func (s *Server) handleAIChatStream(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	var req aiChatRequest
-	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<20))
-	if err := dec.Decode(&req); err != nil {
-		httpError(w, http.StatusBadRequest, "request body must be a JSON object with a messages array")
-		return
-	}
-	if len(req.Messages) == 0 {
-		httpError(w, http.StatusBadRequest, "messages must contain at least one entry")
+	req, ok := decodeChatRequest(w, r)
+	if !ok {
 		return
 	}
 

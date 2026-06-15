@@ -280,13 +280,22 @@ Sites load `/spot.js` from their own origin:
 All calls are same-origin:
 
 ```js
-const me = await spot.me();
+const me = await spot.me(); // { email, name, peer_name, peer_ip, groups, ai_allowed }
 const posts = spot.db.collection('posts');
 const doc = await posts.create({ title: 'Hello Spot DB' });
 const docs = await posts.list();
 const next = await posts.list({ limit: 25, after: docs.at(-1)?.id });
 const mine = await posts.list({ mine: true });
 await posts.updateMine(doc.id, { title: 'Only I can edit this path' });
+
+// Filter, sort, count, batch read, and iterate. where ops: eq ne gt gte lt lte in.
+const open = await posts.list({ where: { status: 'open' }, sort: 'priority', order: 'desc' });
+const total = await posts.count({ where: { status: 'open' } });
+const some = await posts.getMany([doc.id, next?.[0]?.id]);
+for await (const p of posts.iterate({ pageSize: 100 })) { /* every doc, paged */ }
+
+// Atomic counter — no read-modify-write, safe under concurrency:
+await posts.increment(doc.id, 'views');
 ```
 
 Collections are private to their site, except `shared-*` collections,
@@ -307,8 +316,13 @@ const unsubscribe = posts.subscribe({
   onCreate: (doc) => console.log(doc),
   onUpdate: (doc) => console.log(doc),
   onDelete: (id) => console.log(id),
-});
+}, { replay: true }); // replay current docs as onCreate first, then live changes
 ```
+
+Every call rejects with a `spot.SpotError` (`status`, `code`, and `retryAfter`
+on a 429). The SDK retries rate-limited and transient failures automatically
+with backoff; tune it with `spot.configure({ retry })` or a per-call
+`{ retry }` option.
 
 Ephemeral realtime rooms are also process-local and are not persisted:
 

@@ -148,9 +148,11 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
+	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCount)))
 	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
 	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
+	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.handleIncrement)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
@@ -504,12 +506,50 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// meResponse is the identity plus capabilities a page can use to gate its UI.
+// Identity is embedded so its fields (email, name, peer_name, peer_ip, groups)
+// stay at the top level.
+type meResponse struct {
+	Identity
+	AIAllowed bool `json:"ai_allowed"`
+}
+
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	id, ok := s.resolveIdentity(w, r, "identity")
 	if !ok {
 		return
 	}
-	writeJSON(w, http.StatusOK, id)
+	site := siteFromHost(s.requestHost(r), s.spotDomain)
+	writeJSON(w, http.StatusOK, meResponse{
+		Identity:  id,
+		AIAllowed: s.aiAllowedFor(r.Context(), site, id),
+	})
+}
+
+// aiAllowedFor reports whether the visitor may spend the deployment's
+// server-side AI key on this site, mirroring authorizeAIUse without writing a
+// response. It is a best-effort read for UI gating: any inability to determine
+// access (apex root, unreadable policy, unconfigured owner checks, lookup
+// error) reports false rather than failing the request.
+func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) bool {
+	if s.aiAccess == aiAccessVisitors {
+		return true
+	}
+	if site == "" {
+		return false
+	}
+	policy, err := s.policyForSite(ctx, site)
+	if err != nil {
+		return false
+	}
+	if policy.AllowsAIVisitors() {
+		return true
+	}
+	if s.siteManager == nil {
+		return false
+	}
+	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
+	return err == nil && allowed
 }
 
 const maxAccessSuggestions = 20
@@ -802,17 +842,173 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// A batch fetch by id short-circuits filters, sort, and paging.
+	if raw := r.URL.Query().Get("ids"); raw != "" {
+		ids := strings.Split(raw, ",")
+		if len(ids) > maxBatchIDs {
+			httpError(w, http.StatusBadRequest, fmt.Sprintf("ids accepts at most %d document UUIDs", maxBatchIDs))
+			return
+		}
+		for _, id := range ids {
+			if !idRe.MatchString(id) {
+				httpError(w, http.StatusBadRequest, "ids must be a comma-separated list of document UUIDs")
+				return
+			}
+		}
+		docs, err := s.store.GetMany(r.Context(), scope, collection, ids)
+		if err != nil {
+			s.storeError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"documents": docs})
+		return
+	}
+
 	after := r.URL.Query().Get("after")
 	if after != "" && !idRe.MatchString(after) {
 		httpError(w, http.StatusBadRequest, "after must be a document UUID")
 		return
 	}
-	docs, err := s.store.List(r.Context(), scope, collection, limit, owner, after)
+	where, ok := parseWhere(w, r)
+	if !ok {
+		return
+	}
+	sort := r.URL.Query().Get("sort")
+	if after != "" && sort != "" {
+		httpError(w, http.StatusBadRequest, "after cursor is only supported for the default order; drop sort or after")
+		return
+	}
+	docs, err := s.store.Query(r.Context(), scope, collection, ListQuery{
+		Limit: limit,
+		Owner: owner,
+		After: after,
+		Where: where,
+		Sort:  sort,
+		Order: r.URL.Query().Get("order"),
+	})
 	if err != nil {
 		s.storeError(w, err)
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"documents": docs})
+}
+
+// maxBatchIDs caps how many ids a single getMany request may fetch.
+const maxBatchIDs = 100
+
+func (s *Server) handleCount(w http.ResponseWriter, r *http.Request) {
+	scope, collection, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	where, ok := parseWhere(w, r)
+	if !ok {
+		return
+	}
+	n, err := s.store.Count(r.Context(), scope, collection, owner, where)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"count": n})
+}
+
+func (s *Server) handleIncrement(w http.ResponseWriter, r *http.Request) {
+	scope, collection, ok := s.scope(w, r)
+	if !ok {
+		return
+	}
+	id, ok := readID(w, r)
+	if !ok {
+		return
+	}
+	var body struct {
+		Field string   `json:"field"`
+		By    *float64 `json:"by"`
+	}
+	dec := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<10))
+	if err := dec.Decode(&body); err != nil {
+		httpError(w, http.StatusBadRequest, `request body must be {"field": string, "by"?: number}`)
+		return
+	}
+	if body.Field == "" {
+		httpError(w, http.StatusBadRequest, "field is required")
+		return
+	}
+	by := 1.0
+	if body.By != nil {
+		by = *body.By
+	}
+	owner, ok := s.mineOwner(w, r)
+	if !ok {
+		return
+	}
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	doc, err := s.store.IncrementOwned(r.Context(), scope, collection, id, owner, body.Field, by)
+	if err != nil {
+		s.storeError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, doc)
+}
+
+// parseWhere reads an optional `where` query parameter — a JSON object of
+// field -> value (equality) or field -> {op: value} — into filters. Field
+// names and operators are validated by the document store.
+func parseWhere(w http.ResponseWriter, r *http.Request) ([]Filter, bool) {
+	raw := r.URL.Query().Get("where")
+	if raw == "" {
+		return nil, true
+	}
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &obj); err != nil {
+		httpError(w, http.StatusBadRequest, "where must be a JSON object")
+		return nil, false
+	}
+	filters := make([]Filter, 0, len(obj))
+	for field, rawVal := range obj {
+		// A nested object is an operator map ({gte: 3}); anything else is an
+		// equality test against the value.
+		if trimmed := strings.TrimSpace(string(rawVal)); strings.HasPrefix(trimmed, "{") {
+			var ops map[string]json.RawMessage
+			if err := json.Unmarshal(rawVal, &ops); err != nil {
+				httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+				return nil, false
+			}
+			for op, rawOpVal := range ops {
+				f := Filter{Field: field, Op: op}
+				if op == "in" {
+					var arr []any
+					if err := json.Unmarshal(rawOpVal, &arr); err != nil {
+						httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q: in needs an array", field))
+						return nil, false
+					}
+					f.Value = arr
+				} else {
+					var v any
+					if err := json.Unmarshal(rawOpVal, &v); err != nil {
+						httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+						return nil, false
+					}
+					f.Value = v
+				}
+				filters = append(filters, f)
+			}
+			continue
+		}
+		var v any
+		if err := json.Unmarshal(rawVal, &v); err != nil {
+			httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
+			return nil, false
+		}
+		filters = append(filters, Filter{Field: field, Op: "eq", Value: v})
+	}
+	return filters, true
 }
 
 func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
@@ -866,13 +1062,9 @@ func (s *Server) handleUpdate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var doc Document
-	var err error
-	if owner != "" {
-		doc, err = s.store.UpdateOwned(r.Context(), scope, collection, id, owner, data)
-	} else {
-		doc, err = s.store.Update(r.Context(), scope, collection, id, data)
-	}
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	doc, err := s.store.UpdateOwned(r.Context(), scope, collection, id, owner, data)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -893,13 +1085,9 @@ func (s *Server) handleDelete(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	var err error
-	if owner != "" {
-		err = s.store.DeleteOwned(r.Context(), scope, collection, id, owner)
-	} else {
-		err = s.store.Delete(r.Context(), scope, collection, id)
-	}
-	if err != nil {
+	// The store treats an empty owner as "no ownership filter", so the owned
+	// call covers both the mine and non-mine cases.
+	if err := s.store.DeleteOwned(r.Context(), scope, collection, id, owner); err != nil {
 		s.storeError(w, err)
 		return
 	}
@@ -920,12 +1108,18 @@ func (s *Server) mineOwner(w http.ResponseWriter, r *http.Request) (string, bool
 }
 
 func (s *Server) storeError(w http.ResponseWriter, err error) {
-	if errors.Is(err, ErrNotFound) {
+	switch {
+	case errors.Is(err, ErrNotFound):
 		httpError(w, http.StatusNotFound, "document not found")
-		return
+	case errors.Is(err, ErrBadQuery):
+		// ErrBadQuery messages are built from validated tokens only.
+		httpError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, ErrFieldNotNumeric):
+		httpError(w, http.StatusConflict, "cannot increment a non-numeric field")
+	default:
+		log.Printf("docstore: %v", err)
+		httpError(w, http.StatusInternalServerError, "database error")
 	}
-	log.Printf("docstore: %v", err)
-	httpError(w, http.StatusInternalServerError, "database error")
 }
 
 func readID(w http.ResponseWriter, r *http.Request) (string, bool) {

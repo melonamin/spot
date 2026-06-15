@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -12,6 +13,60 @@ import (
 
 	"github.com/coder/websocket"
 )
+
+func TestMeReportsAIAllowedAndGroups(t *testing.T) {
+	get := func(srv *Server) meResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://demo.spot.localhost/api/me", nil)
+		rec := httptest.NewRecorder()
+		srv.handleMe(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("me: status %d body %s, want 200", rec.Code, rec.Body)
+		}
+		var out meResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode me: %v", err)
+		}
+		return out
+	}
+
+	// Global visitor AI access grants everyone.
+	visitors := &Server{
+		aiAccess:   aiAccessVisitors,
+		resolver:   NewStaticResolver("v@example.com", "V", []string{"team-a"}),
+		spotDomain: "spot.localhost",
+	}
+	me := get(visitors)
+	if !me.AIAllowed {
+		t.Error("aiAccess=visitors: ai_allowed = false, want true")
+	}
+	if len(me.Groups) != 1 || me.Groups[0] != "team-a" {
+		t.Errorf("groups = %v, want [team-a]", me.Groups)
+	}
+
+	// Owners-only: the owner is allowed, a stranger is not.
+	owner := &Server{
+		aiAccess:    aiAccessOwners,
+		siteManager: fakeSiteManager{allowed: true},
+		sites:       newTestSiteStore(t),
+		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if !get(owner).AIAllowed {
+		t.Error("owner on owners-only site: ai_allowed = false, want true")
+	}
+
+	stranger := &Server{
+		aiAccess:    aiAccessOwners,
+		siteManager: fakeSiteManager{allowed: false},
+		sites:       newTestSiteStore(t),
+		resolver:    NewStaticResolver("stranger@example.com", "Stranger", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if get(stranger).AIAllowed {
+		t.Error("stranger on owners-only site: ai_allowed = true, want false")
+	}
+}
 
 func TestSameOriginOnly(t *testing.T) {
 	srv := &Server{spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t)}

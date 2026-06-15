@@ -5,18 +5,113 @@
 // All calls are same-origin: Spot routes /api/* on every site host, so
 // there is no CORS and no configuration.
 (() => {
-  const api = async (path, opts = {}) => {
-    const res = await fetch(path, {
-      headers: { 'Content-Type': 'application/json' },
-      ...opts,
-    });
-    if (res.status === 204) return null;
-    const body = await res.json().catch(() => null);
-    if (!res.ok) {
-      throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
-    }
-    return body;
+  // Tunable request behavior. spot.configure({ retry }) sets the default for
+  // every call; any call also takes a per-call { retry } override (false to
+  // disable, a number to cap the retries).
+  const config = { retry: true, maxRetries: 4, retryBaseMs: 200, retryCapMs: 10000 };
+
+  const configure = (opts = {}) => {
+    Object.assign(config, opts);
+    return { ...config };
   };
+
+  // SpotError carries the HTTP status, a coarse machine-readable code, and (on
+  // a 429) the server's Retry-After hint in seconds. Sites can branch on
+  // err.code or `err instanceof spot.SpotError`.
+  class SpotError extends Error {
+    constructor(message, { status = 0, code = 'error', retryAfter } = {}) {
+      super(message);
+      this.name = 'SpotError';
+      this.status = status;
+      this.code = code;
+      if (retryAfter !== undefined) this.retryAfter = retryAfter;
+    }
+  }
+
+  const codeForStatus = (status) => {
+    if (status === 429) return 'rate_limited';
+    if (status === 401) return 'unauthorized';
+    if (status === 403) return 'forbidden';
+    if (status === 404) return 'not_found';
+    if (status === 409) return 'conflict';
+    if (status >= 400 && status < 500) return 'bad_request';
+    if (status >= 500) return 'server';
+    return 'error';
+  };
+
+  // Methods safe to replay after a network or 5xx failure that may have been
+  // applied server-side. A 429 is always safe to retry regardless of method:
+  // the rate limiter rejects before the handler runs, so the request never
+  // took effect.
+  const idempotent = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']);
+
+  const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  const retriesFor = (retry) => {
+    const setting = retry === undefined ? config.retry : retry;
+    if (setting === false) return 0;
+    if (setting === true) return config.maxRetries;
+    if (typeof setting === 'number' && setting >= 0) return Math.floor(setting);
+    return config.maxRetries;
+  };
+
+  const retryAfterSeconds = (res) => {
+    const header = res.headers.get('Retry-After');
+    if (!header) return undefined;
+    const seconds = Number(header);
+    return Number.isFinite(seconds) ? seconds : undefined;
+  };
+
+  // Full jitter for backoff. For an explicit Retry-After, wait at least the
+  // hinted seconds (plus a little jitter) so we don't retry into the same
+  // still-closed bucket.
+  const backoffDelay = (attempt, retryAfter) => {
+    if (retryAfter !== undefined) return retryAfter * 1000 + Math.random() * 250;
+    const ceiling = Math.min(config.retryBaseMs * 2 ** attempt, config.retryCapMs);
+    return Math.random() * ceiling;
+  };
+
+  // Single fetch path for every JSON and upload call: builds SpotError
+  // consistently and applies the retry policy. Streaming (ai.stream) does not
+  // go through here — a streamed body cannot be safely replayed.
+  const request = async (path, opts = {}) => {
+    const { retry, ...init } = opts;
+    const method = (init.method || 'GET').toUpperCase();
+    const maxRetries = retriesFor(retry);
+    const headers =
+      init.headers ||
+      (typeof init.body === 'string' ? { 'Content-Type': 'application/json' } : undefined);
+    for (let attempt = 0; ; attempt++) {
+      let res;
+      try {
+        res = await fetch(path, { ...init, headers });
+      } catch (err) {
+        if (err && err.name === 'AbortError') throw err;
+        if (attempt < maxRetries && idempotent.has(method)) {
+          await sleep(backoffDelay(attempt));
+          continue;
+        }
+        throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+      }
+      if (res.status === 204) return null;
+      const body = await res.json().catch(() => null);
+      if (res.ok) return body;
+      const retryAfter = retryAfterSeconds(res);
+      const retryable =
+        res.status === 429 ? true : res.status === 503 ? idempotent.has(method) : false;
+      if (retryable && attempt < maxRetries) {
+        await sleep(backoffDelay(attempt, retryAfter));
+        continue;
+      }
+      throw new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
+        status: res.status,
+        code: codeForStatus(res.status),
+        retryAfter,
+      });
+    }
+  };
+
+  const api = (path, opts) => request(path, opts);
 
   const query = (params) => {
     const qs = new URLSearchParams();
@@ -31,8 +126,41 @@
     // list({ limit, mine }). Each document carries an `owner` (the mesh
     // identity that created it). Pass mine:true to return only documents
     // owned by the current visitor. Pass after:<doc id> for cursor paging.
-    list: async ({ limit = 100, mine = false, after } = {}) => {
-      return (await api(`/api/db/${name}${query({ limit, mine, after })}`)).documents;
+    // list({ limit, mine, after, where, sort, order }). `where` is an object
+    // of field -> value (equality) or field -> { op: value } where op is one
+    // of eq, ne, gt, gte, lt, lte, in (in takes an array). `sort` names a
+    // field; `order` is 'asc' or 'desc'. The `after` cursor only applies to
+    // the default newest-first order.
+    list: async ({ limit = 100, mine = false, after, where, sort, order } = {}) => {
+      const params = { limit, mine, after, sort, order };
+      if (where) params.where = JSON.stringify(where);
+      return (await api(`/api/db/${name}${query(params)}`)).documents;
+    },
+    // count({ where, mine }) -> number of matching documents.
+    count: async ({ where, mine = false } = {}) => {
+      const params = { mine };
+      if (where) params.where = JSON.stringify(where);
+      return (await api(`/api/db/${name}/count${query(params)}`)).count;
+    },
+    // getMany([id, ...]) -> the documents that exist, newest first. Missing
+    // ids are omitted.
+    getMany: async (ids = []) => {
+      if (!ids.length) return [];
+      return (await api(`/api/db/${name}${query({ ids: ids.join(',') })}`)).documents;
+    },
+    // Async iterator over the whole collection, newest first, paging through
+    // the `after` cursor so a site never has to manage it by hand:
+    //   for await (const doc of posts.iterate({ pageSize })) { … }
+    iterate: async function* ({ pageSize = 100, mine = false, where } = {}) {
+      let after;
+      for (;;) {
+        const params = { limit: pageSize, mine, after };
+        if (where) params.where = JSON.stringify(where);
+        const page = (await api(`/api/db/${name}${query(params)}`)).documents;
+        for (const doc of page) yield doc;
+        if (page.length < pageSize) return;
+        after = page[page.length - 1].id;
+      }
     },
     create: (data) =>
       api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data) }),
@@ -44,18 +172,96 @@
     delete: (id, { mine = false } = {}) =>
       api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE' }),
     deleteMine: (id) => api(`/api/db/${name}/${id}?mine=true`, { method: 'DELETE' }),
+    // Atomically add `by` (default 1) to a numeric field, server-side, so
+    // concurrent counters never lose updates. Resolves with the updated doc.
+    increment: (id, field, by = 1, { mine = false } = {}) =>
+      api(`/api/db/${name}/${id}/increment${query({ mine })}`, {
+        method: 'POST',
+        body: JSON.stringify({ field, by }),
+      }),
+    incrementMine: (id, field, by = 1) =>
+      api(`/api/db/${name}/${id}/increment?mine=true`, {
+        method: 'POST',
+        body: JSON.stringify({ field, by }),
+      }),
     // Live changes from all visitors. Returns an unsubscribe function;
-    // reconnects automatically until unsubscribed.
-    subscribe: (handlers = {}) => {
+    // reconnects automatically until unsubscribed. With { replay: true } the
+    // current documents are emitted as onCreate first (in creation order),
+    // then live changes — closing the gap between an initial list() and the
+    // subscription, with no missed or duplicated events.
+    subscribe: (handlers = {}, { replay = false } = {}) => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       let ws;
       let closed = false;
       let reconnectTimer;
+      let replaying = false;
+      let replayed = false;
+      const known = new Set();
+      const pending = [];
+
+      const emit = (type, doc, id) => {
+        if (type === 'create') handlers.onCreate?.(doc);
+        else if (type === 'update') handlers.onUpdate?.(doc);
+        else if (type === 'delete') handlers.onDelete?.(id);
+      };
+
+      // In replay mode, normalize against the set of documents already seen so
+      // each one surfaces as a single onCreate; outside replay mode events pass
+      // through unchanged.
+      const dispatch = (type, doc, id) => {
+        if (!replay) {
+          emit(type, doc, id);
+          return;
+        }
+        if (type === 'delete') {
+          known.delete(id);
+          emit('delete', null, id);
+          return;
+        }
+        if (known.has(doc.id)) {
+          emit('update', doc);
+          return;
+        }
+        known.add(doc.id);
+        emit('create', doc);
+      };
+
+      const handleEvent = (type, doc, id) => {
+        if (replaying) {
+          pending.push({ type, doc, id });
+          return;
+        }
+        dispatch(type, doc, id);
+      };
+
+      const runReplay = async () => {
+        replaying = true;
+        try {
+          const docs = (await api(`/api/db/${name}${query({ limit: 1000 })}`)).documents;
+          // list() is newest first; replay oldest first so consumers build
+          // state in creation order.
+          for (let i = docs.length - 1; i >= 0; i--) dispatch('create', docs[i]);
+        } catch (err) {
+          if (handlers.onError) handlers.onError(err);
+          else console.error('spot:', err.message || err);
+        } finally {
+          replaying = false;
+          replayed = true;
+          while (pending.length) {
+            const ev = pending.shift();
+            dispatch(ev.type, ev.doc, ev.id);
+          }
+        }
+      };
+
       const connect = () => {
         if (closed) return;
         ws = new WebSocket(`${proto}//${location.host}/api/ws`);
         ws.addEventListener('open', () => {
           ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
+          // Subscribe is registered before the snapshot is read, so any change
+          // after the snapshot arrives over the socket and is buffered.
+          if (replay && !replayed) runReplay();
         });
         ws.addEventListener('message', (e) => {
           let msg;
@@ -71,9 +277,9 @@
             return;
           }
           if (msg.collection !== name) return;
-          if (msg.type === 'create') handlers.onCreate?.(msg.doc);
-          if (msg.type === 'update') handlers.onUpdate?.(msg.doc);
-          if (msg.type === 'delete') handlers.onDelete?.(msg.id);
+          if (msg.type === 'create') handleEvent('create', msg.doc);
+          if (msg.type === 'update') handleEvent('update', msg.doc);
+          if (msg.type === 'delete') handleEvent('delete', null, msg.id);
         });
         ws.addEventListener('close', () => {
           if (!closed) reconnectTimer = setTimeout(connect, 1000);
@@ -230,7 +436,18 @@
   };
 
   window.spot = {
-    // Who is visiting, according to the mesh.
+    // Typed error thrown by every call: err.status, err.code
+    // ('rate_limited' | 'forbidden' | 'unauthorized' | 'not_found' |
+    // 'conflict' | 'bad_request' | 'server' | 'network' | 'stream'), and
+    // err.retryAfter (seconds) on a 429.
+    SpotError,
+    // configure({ retry }) sets the default retry behavior. retry is true
+    // (smart auto-retry, the default), false (never), or a max-retry count.
+    configure,
+    // Who is visiting, according to the mesh, plus per-site capabilities:
+    // { email, name, peer_name, peer_ip, groups, ai_allowed }. ai_allowed
+    // reports whether this visitor may call spot.ai on this site, so a page
+    // can show or hide AI features without provoking a 403.
     me: () => api('/api/me'),
     db: { collection },
     realtime: {
@@ -259,7 +476,11 @@
         });
         if (!res.ok || !res.body) {
           const body = await res.json().catch(() => null);
-          throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
+          throw new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
+            status: res.status,
+            code: codeForStatus(res.status),
+            retryAfter: retryAfterSeconds(res),
+          });
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -273,9 +494,8 @@
           while ((sep = buffer.indexOf('\n\n')) >= 0) {
             const frame = buffer.slice(0, sep);
             buffer = buffer.slice(sep + 2);
-            const line = frame.split('\n').find((l) => l.startsWith('data:'));
-            if (!line) continue;
-            const payload = line.slice(5).trim();
+            if (!frame.startsWith('data:')) continue;
+            const payload = frame.slice(5).trim();
             if (!payload) continue;
             let msg;
             try {
@@ -283,7 +503,7 @@
             } catch {
               continue;
             }
-            if (msg.error) throw new Error(msg.error);
+            if (msg.error) throw new SpotError(msg.error, { code: 'stream' });
             if (msg.delta) {
               result.text += msg.delta;
               onToken?.(msg.delta, result.text);
@@ -307,15 +527,10 @@
     },
     files: {
       // upload(File|Blob) -> { id, name, size, content_type, url }
-      upload: async (file, { name } = {}) => {
+      upload: (file, { name } = {}) => {
         const form = new FormData();
         form.append('file', file, name || file.name || 'file');
-        const res = await fetch('/api/files', { method: 'POST', body: form });
-        const body = await res.json().catch(() => null);
-        if (!res.ok) {
-          throw new Error((body && body.error) || `spot: HTTP ${res.status}`);
-        }
-        return body;
+        return request('/api/files', { method: 'POST', body: form });
       },
       // list() -> [{ id, name, size, url }, ...]
       list: async () => (await api('/api/files')).files,

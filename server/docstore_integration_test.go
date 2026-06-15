@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -169,6 +170,199 @@ func TestDocStoreOwnership(t *testing.T) {
 	}
 	if updated.Owner != "alice@example.com" {
 		t.Errorf("Update owner = %q, want preserved alice@example.com", updated.Owner)
+	}
+}
+
+func TestDocStoreQuery(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	const scope, coll = "it-query", "tasks"
+
+	mk := func(status string, priority float64) {
+		if _, err := store.Create(ctx, scope, coll, "", map[string]any{"status": status, "priority": priority}); err != nil {
+			t.Fatalf("Create: %v", err)
+		}
+	}
+	mk("open", 3)
+	mk("open", 1)
+	mk("done", 5)
+	mk("open", 2)
+
+	open, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "status", Op: "eq", Value: "open"}},
+	})
+	if err != nil {
+		t.Fatalf("Query eq: %v", err)
+	}
+	if len(open) != 3 {
+		t.Errorf("eq status=open returned %d, want 3", len(open))
+	}
+
+	hi, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "priority", Op: "gt", Value: float64(2)}},
+	})
+	if err != nil {
+		t.Fatalf("Query gt: %v", err)
+	}
+	if len(hi) != 2 {
+		t.Errorf("priority>2 returned %d, want 2", len(hi))
+	}
+
+	inSet, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "status", Op: "in", Value: []any{"done", "archived"}}},
+	})
+	if err != nil {
+		t.Fatalf("Query in: %v", err)
+	}
+	if len(inSet) != 1 {
+		t.Errorf("status in (done,archived) returned %d, want 1", len(inSet))
+	}
+
+	sorted, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "status", Op: "eq", Value: "open"}},
+		Sort:  "priority",
+		Order: "asc",
+	})
+	if err != nil {
+		t.Fatalf("Query sort: %v", err)
+	}
+	if len(sorted) != 3 {
+		t.Fatalf("sorted returned %d, want 3", len(sorted))
+	}
+	if sorted[0].Data["priority"] != float64(1) || sorted[2].Data["priority"] != float64(3) {
+		t.Errorf("ascending sort wrong: got %v..%v", sorted[0].Data["priority"], sorted[2].Data["priority"])
+	}
+
+	n, err := store.Count(ctx, scope, coll, "", []Filter{{Field: "status", Op: "eq", Value: "open"}})
+	if err != nil {
+		t.Fatalf("Count: %v", err)
+	}
+	if n != 3 {
+		t.Errorf("Count open = %d, want 3", n)
+	}
+
+	if _, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "bad field!", Op: "eq", Value: 1}},
+	}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("bad field err = %v, want ErrBadQuery", err)
+	}
+	if _, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "priority", Op: "between", Value: 1}},
+	}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("unknown op err = %v, want ErrBadQuery", err)
+	}
+}
+
+func TestDocStoreGetMany(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	const scope, coll = "it-getmany", "items"
+
+	a, err := store.Create(ctx, scope, coll, "", map[string]any{"n": float64(1)})
+	if err != nil {
+		t.Fatalf("Create a: %v", err)
+	}
+	b, err := store.Create(ctx, scope, coll, "", map[string]any{"n": float64(2)})
+	if err != nil {
+		t.Fatalf("Create b: %v", err)
+	}
+	if _, err := store.Create(ctx, scope, coll, "", map[string]any{"n": float64(3)}); err != nil {
+		t.Fatalf("Create c: %v", err)
+	}
+
+	const missing = "00000000-0000-4000-8000-000000000000"
+	docs, err := store.GetMany(ctx, scope, coll, []string{a.ID, b.ID, missing})
+	if err != nil {
+		t.Fatalf("GetMany: %v", err)
+	}
+	if len(docs) != 2 {
+		t.Errorf("GetMany returned %d, want 2 (missing id omitted)", len(docs))
+	}
+
+	empty, err := store.GetMany(ctx, scope, coll, nil)
+	if err != nil {
+		t.Fatalf("GetMany empty: %v", err)
+	}
+	if len(empty) != 0 {
+		t.Errorf("GetMany(nil) returned %d, want 0", len(empty))
+	}
+}
+
+func TestDocStoreIncrement(t *testing.T) {
+	store := newTestStore(t)
+	ctx := context.Background()
+	const scope, coll = "it-incr", "counters"
+
+	doc, err := store.Create(ctx, scope, coll, "", map[string]any{"title": "post"})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+
+	// A missing field starts at 0.
+	got, err := store.Increment(ctx, scope, coll, doc.ID, "views", 1)
+	if err != nil {
+		t.Fatalf("Increment new field: %v", err)
+	}
+	if got.Data["views"] != float64(1) {
+		t.Errorf("views = %v, want 1", got.Data["views"])
+	}
+
+	got, err = store.Increment(ctx, scope, coll, doc.ID, "views", 4)
+	if err != nil {
+		t.Fatalf("Increment: %v", err)
+	}
+	if got.Data["views"] != float64(5) {
+		t.Errorf("views = %v, want 5", got.Data["views"])
+	}
+
+	// A non-numeric field is rejected and left untouched.
+	if _, err := store.Increment(ctx, scope, coll, doc.ID, "title", 1); !errors.Is(err, ErrFieldNotNumeric) {
+		t.Errorf("increment string field err = %v, want ErrFieldNotNumeric", err)
+	}
+
+	const missing = "00000000-0000-4000-8000-000000000000"
+	if _, err := store.Increment(ctx, scope, coll, missing, "views", 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("increment missing doc err = %v, want ErrNotFound", err)
+	}
+
+	// Ownership is enforced for the owned variant.
+	owned, err := store.Create(ctx, scope, coll, "alice@example.com", map[string]any{"n": float64(0)})
+	if err != nil {
+		t.Fatalf("Create owned: %v", err)
+	}
+	if _, err := store.IncrementOwned(ctx, scope, coll, owned.ID, "bob@example.com", "n", 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("IncrementOwned wrong owner err = %v, want ErrNotFound", err)
+	}
+	if mine, err := store.IncrementOwned(ctx, scope, coll, owned.ID, "alice@example.com", "n", 2); err != nil {
+		t.Fatalf("IncrementOwned: %v", err)
+	} else if mine.Data["n"] != float64(2) {
+		t.Errorf("owned n = %v, want 2", mine.Data["n"])
+	}
+
+	// Concurrent increments must not lose updates.
+	const workers = 20
+	var wg sync.WaitGroup
+	errs := make(chan error, workers)
+	for i := 0; i < workers; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := store.Increment(ctx, scope, coll, doc.ID, "hits", 1); err != nil {
+				errs <- err
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent Increment: %v", err)
+	}
+	final, err := store.Get(ctx, scope, coll, doc.ID)
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	if final.Data["hits"] != float64(workers) {
+		t.Errorf("hits = %v, want %d", final.Data["hits"], workers)
 	}
 }
 

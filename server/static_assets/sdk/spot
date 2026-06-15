@@ -463,7 +463,9 @@ same-origin and zero-config — no API keys, no auth code.
 
 \`\`\`js
 const me = await spot.me();
-// { email, name, peer_name, peer_ip } — resolved from the mesh
+// { email, name, peer_name, peer_ip, groups, ai_allowed } — from the mesh.
+// ai_allowed reports whether this visitor may call spot.ai on this site, so a
+// page can show or hide AI features without provoking a 403.
 \`\`\`
 
 ### Database (schemaless document collections, private to this site)
@@ -479,6 +481,17 @@ await posts.update(doc.id, { title: 'Bye' });       // replaces data
 await posts.updateMine(doc.id, { title: 'Mine' });  // only if this visitor owns it
 await posts.delete(doc.id);
 await posts.deleteMine(doc.id);
+
+// Filter, sort, count, and batch reads. where ops: eq ne gt gte lt lte in.
+const open = await posts.list({ where: { status: 'open' }, sort: 'priority', order: 'desc' });
+const hot = await posts.list({ where: { score: { gte: 10 } } });
+const n = await posts.count({ where: { status: 'open' } });
+const some = await posts.getMany([id1, id2]);       // missing ids omitted
+for await (const doc of posts.iterate({ pageSize: 100 })) { /* every doc, paged */ }
+
+// Atomic counter — no read-modify-write, safe under concurrency:
+await posts.increment(doc.id, 'views');             // +1
+await posts.increment(doc.id, 'score', 5);
 \`\`\`
 
 Collection names must match [a-z0-9_-]{1,64}. Documents are JSON objects
@@ -486,8 +499,13 @@ up to 1 MB. Each document records an \`owner\` — the mesh identity that
 created it — so multiple visitors can keep private data in one shared
 site; \`list({ mine: true })\` returns only the caller's documents. Writes
 are not restricted to the owner by default, so use \`updateMine\`,
-\`deleteMine\`, or \`{ mine: true }\` on mutations when only the creator
-should be able to change a document.
+\`deleteMine\`, \`incrementMine\`, or \`{ mine: true }\` on mutations when
+only the creator should be able to change a document.
+
+\`where\` and \`sort\` address top-level JSON fields. \`update\` replaces a
+document; \`increment\` adds to a numeric field in one atomic step, so it is
+the right tool for vote/view/like counters. The \`after\` cursor applies
+only to the default newest-first order, not to a custom \`sort\`.
 
 Collections are private to this site, except collections named
 \`shared-*\`: those are global and readable/writable by every Spot site.
@@ -501,14 +519,16 @@ this is how to build collaborative and multiplayer sites:
 
 \`\`\`js
 const unsubscribe = posts.subscribe({
-  onCreate: (doc) => { /* doc = { id, data, created_at, updated_at } */ },
+  onCreate: (doc) => { /* doc = { id, owner, data, created_at, updated_at } */ },
   onUpdate: (doc) => {},
   onDelete: (id) => {},
-});
+}, { replay: true }); // replay emits the current documents as onCreate first,
+                      // then live changes, with no missed or duplicated events
 \`\`\`
 
 Prefer rendering from subscription events over polling or re-fetching
-after writes.
+after writes. With \`{ replay: true }\` you can render purely from
+\`onCreate\`/\`onUpdate\`/\`onDelete\` without a separate initial \`list()\`.
 
 For transient multiplayer/control-panel traffic, use ephemeral realtime
 rooms. Room messages are not stored; they go to the other subscribers in
@@ -582,11 +602,19 @@ await spot.sites.delete('old-demo');
 
 These platform APIs work from the Spot root, not from site subdomains.
 
-### Rate limits
+### Errors and rate limits
 
 Per-visitor: database 25 req/s, realtime room sends 30 req/s, uploads
 2 req/s, AI 1 request per 2s (burst 10). A 429 means slow down — do
 not hammer APIs in loops.
+
+Every call rejects with a \`spot.SpotError\` carrying \`status\`, a coarse
+\`code\` (\`rate_limited\`, \`forbidden\`, \`unauthorized\`, \`not_found\`,
+\`conflict\`, \`bad_request\`, \`server\`, \`network\`, \`stream\`), and
+\`retryAfter\` (seconds) on a 429. The SDK retries rate-limited and transient
+failures automatically with backoff, so a brief 429 usually resolves without
+code; tune or disable it with \`spot.configure({ retry })\` (true, false, or a
+max-retry count) or a per-call \`{ retry }\` option.
 
 When rendering stored documents, set text via textContent / DOM APIs —
 never interpolate document data into innerHTML.

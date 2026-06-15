@@ -86,6 +86,43 @@ echo "==> database API: list"
 $CURL http://demo.spot.localhost:8080/api/db/entries | grep -q "e2e was here" \
     || fail "created document missing from list"
 
+echo "==> database API: query, sort, count, getMany"
+qa=$($CURL -X POST -H 'Content-Type: application/json' -d '{"status":"open","priority":3}' \
+    http://demo.spot.localhost:8080/api/db/tasks)
+qa_id=$(echo "$qa" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+qb=$($CURL -X POST -H 'Content-Type: application/json' -d '{"status":"open","priority":1}' \
+    http://demo.spot.localhost:8080/api/db/tasks)
+qb_id=$(echo "$qb" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+$CURL -X POST -H 'Content-Type: application/json' -d '{"status":"done","priority":5}' \
+    http://demo.spot.localhost:8080/api/db/tasks >/dev/null
+# where filter as URL-encoded JSON: {"status":"open"}
+cnt=$($CURL "http://demo.spot.localhost:8080/api/db/tasks/count?where=%7B%22status%22%3A%22open%22%7D")
+echo "$cnt" | grep -q '"count":2' || fail "count(where status=open) != 2: $cnt"
+# Filtered + sorted query returns 200 and excludes the done task.
+q=$($CURL "http://demo.spot.localhost:8080/api/db/tasks?where=%7B%22status%22%3A%22open%22%7D&sort=priority&order=asc")
+echo "$q" | grep -q '"priority":5' && fail "query where status=open leaked the done task: $q"
+echo "$q" | grep -q '"priority":1' || fail "query returned no open tasks: $q"
+# getMany returns exactly the requested ids.
+gm=$($CURL "http://demo.spot.localhost:8080/api/db/tasks?ids=$qa_id,$qb_id")
+echo "$gm" | grep -q "$qa_id" || fail "getMany missing id $qa_id: $gm"
+echo "$gm" | grep -q "$qb_id" || fail "getMany missing id $qb_id: $gm"
+
+echo "==> database API: increment is atomic and persists"
+ic=$($CURL -X POST -H 'Content-Type: application/json' -d '{"label":"counter"}' \
+    http://demo.spot.localhost:8080/api/db/counters)
+ic_id=$(echo "$ic" | sed -n 's/.*"id":"\([0-9a-f-]*\)".*/\1/p')
+[ -n "$ic_id" ] || fail "increment setup create failed: $ic"
+$CURL -X POST -H 'Content-Type: application/json' -d '{"field":"views"}' \
+    "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment" | grep -q '"views":1' \
+    || fail "increment did not set views to 1"
+$CURL -X POST -H 'Content-Type: application/json' -d '{"field":"views","by":4}' \
+    "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment" | grep -q '"views":5' \
+    || fail "increment by 4 did not reach 5"
+# A non-numeric field cannot be incremented.
+code=$($CURL -o /dev/null -w '%{http_code}' -X POST -H 'Content-Type: application/json' \
+    -d '{"field":"label"}' "http://demo.spot.localhost:8080/api/db/counters/$ic_id/increment")
+[ "$code" = "409" ] || fail "incrementing a string field returned $code, want 409"
+
 echo "==> database API: scope isolation (other site must not see it)"
 other=$(curl -s --resolve other.spot.localhost:8080:127.0.0.1 \
     http://other.spot.localhost:8080/api/db/entries)
@@ -258,13 +295,16 @@ echo "==> rate limiting: upload endpoint throttles a parallel burst"
 printf 'x' > /tmp/spot-e2e-rl.txt
 # Sequential requests refill the bucket between calls; only a parallel
 # burst reliably exceeds it (uploads: 2/s, burst 10).
-limited=$(seq 1 15 | xargs -P 15 -I{} curl -s \
+limited=$(seq 1 15 | xargs -P 15 -I{} curl -s -D "/tmp/spot-e2e-rl-hdr-{}.txt" \
     --resolve demo.spot.localhost:8080:127.0.0.1 \
     -o /dev/null -w '%{http_code}\n' -F "file=@/tmp/spot-e2e-rl.txt" \
     http://demo.spot.localhost:8080/api/files | grep -c '^429$' || true)
-rm -f /tmp/spot-e2e-rl.txt
 [ "${limited:-0}" -ge 1 ] || fail "no 429 across 15 parallel uploads"
 echo "    $limited of 15 burst requests were throttled"
+# Only the 429 responses carry Retry-After; the SDK honors it when backing off.
+grep -qi 'retry-after' /tmp/spot-e2e-rl-hdr-*.txt \
+    || fail "throttled (429) responses carried no Retry-After header"
+rm -f /tmp/spot-e2e-rl.txt /tmp/spot-e2e-rl-hdr-*.txt
 
 echo "==> identity API"
 me_file=$(mktemp)
@@ -274,6 +314,8 @@ rm -f "$me_file"
 if [ "$code" = "200" ]; then
     echo "$me" | grep -q "\"email\":\"$SPOT_DEV_IDENTITY_EMAIL\"" \
         || fail "/api/me returned unexpected dev identity: $me"
+    echo "$me" | grep -q '"ai_allowed":' || fail "/api/me missing ai_allowed: $me"
+    echo "$me" | grep -q '"groups":' || fail "/api/me missing groups: $me"
 else
     case "$code:$me" in
         503:*"identity resolver not configured"*|404:*"no identity matches"*) ;;
