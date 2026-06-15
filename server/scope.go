@@ -14,19 +14,43 @@ var collectionRe = regexp.MustCompile(`^[a-z0-9_-]{1,64}$`)
 // returns "mysite". It returns "" for the apex domain, for hosts outside
 // spotDomain, and for nested subdomains (a.b.spot.example.com).
 func siteFromHost(host, spotDomain string) string {
-	if h, _, err := net.SplitHostPort(host); err == nil {
-		host = h
-	}
-	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	spotDomain = strings.ToLower(spotDomain)
+	host = cleanHost(host)
+	spotDomain = strings.ToLower(strings.TrimSuffix(spotDomain, "."))
 	if host == spotDomain {
 		return ""
 	}
 	sub, found := strings.CutSuffix(host, "."+spotDomain)
-	if !found || strings.Contains(sub, ".") || sub == "" {
+	if !found || strings.Contains(sub, ".") || sub == "" || !siteNameRe.MatchString(sub) {
 		return ""
 	}
 	return sub
+}
+
+func validSpotHost(host, spotDomain string) bool {
+	// An empty spotDomain accepts any host. This branch exists only for
+	// tests that construct a Server without a domain; production rejects an
+	// empty SPOT_DOMAIN at startup (see main.go), so it is never reached
+	// with real traffic.
+	if spotDomain == "" {
+		return true
+	}
+	host = cleanHost(host)
+	spotDomain = strings.ToLower(strings.TrimSuffix(spotDomain, "."))
+	if host == "" || spotDomain == "" {
+		return false
+	}
+	if host == spotDomain {
+		return true
+	}
+	sub, found := strings.CutSuffix(host, "."+spotDomain)
+	return found && !strings.Contains(sub, ".") && siteNameRe.MatchString(sub)
+}
+
+func cleanHost(host string) string {
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	return strings.ToLower(strings.TrimSuffix(host, "."))
 }
 
 // sharedScope holds all "shared-*" collections. The underscore makes it

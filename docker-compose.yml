@@ -11,91 +11,21 @@ services:
       - "127.0.0.1:9001:9001"
     volumes:
       - rustfs-data:/data
-
-  rclone-init:
-    image: ${RCLONE_IMAGE:-rclone/rclone:1.70.3}
-    environment: &rclone-env
-      RCLONE_CONFIG_RUSTFS_TYPE: s3
-      RCLONE_CONFIG_RUSTFS_PROVIDER: Minio
-      RCLONE_CONFIG_RUSTFS_ENDPOINT: http://rustfs:9000
-      RCLONE_CONFIG_RUSTFS_ACCESS_KEY_ID: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
-      RCLONE_CONFIG_RUSTFS_SECRET_ACCESS_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      RCLONE_CONFIG_RUSTFS_FORCE_PATH_STYLE: "true"
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        until rclone lsd rustfs: >/dev/null 2>&1; do sleep 1; done
-        rclone mkdir rustfs:spot-sites
-        rclone mkdir rustfs:spot-uploads
-    depends_on:
-      - rustfs
-    restart: "no"
-
-  rclone-mount:
-    image: ${RCLONE_IMAGE:-rclone/rclone:1.70.3}
-    environment: *rclone-env
-    # The bind target is itself a mount point, so rclone needs
-    # --allow-non-empty to stack the FUSE mount on top of it (stacking on
-    # the rshared bind is what propagates the mount to the host and into
-    # the caddy container). The conditional fusermount only clears a
-    # dangling FUSE mount left by an unclean stop — it must never touch
-    # the bind itself, or the mount ends up private to this container.
-    entrypoint: ["/bin/sh", "-c"]
-    command:
-      - |
-        if grep -q ' /mnt/sites .* fuse\.rclone ' /proc/self/mountinfo; then
-            fusermount3 -uz /mnt/sites
-        fi
-        exec rclone mount rustfs:spot-sites /mnt/sites \
-          --allow-other --allow-non-empty --read-only \
-          --dir-cache-time=5s --attr-timeout=5s
-    cap_add:
-      - SYS_ADMIN
-    cap_drop:
-      - ALL
-    devices:
-      - /dev/fuse
-    security_opt:
-      - apparmor:unconfined
-      - no-new-privileges:true
-    volumes:
-      - type: bind
-        source: ./data/sites
-        target: /mnt/sites
-        bind:
-          propagation: rshared
-    depends_on:
-      rclone-init:
-        condition: service_completed_successfully
     restart: unless-stopped
-
-  postgres:
-    image: postgres:17-alpine
-    environment:
-      POSTGRES_USER: spot
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-spot}
-      POSTGRES_DB: spot
-    ports:
-      - "127.0.0.1:5433:5432"
-    volumes:
-      - pg-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U spot -d spot"]
-      interval: 2s
-      timeout: 3s
-      retries: 30
 
   spot-api:
     build: ./server
     environment:
-      DATABASE_URL: postgres://spot:${POSTGRES_PASSWORD:-spot}@postgres:5432/spot?sslmode=disable
+      SPOT_STORAGE_MODE: ${SPOT_STORAGE_MODE:-s3}
+      SPOT_DATA_DIR: /data
+      SPOT_SQLITE_PATH: ${SPOT_SQLITE_PATH:-/data/spot.db}
       SPOT_DOMAIN: ${SPOT_DOMAIN:-spot.localhost}
-      SPOT_SITES_DIR: /srv/sites
-      SPOT_S3_ENDPOINT: rustfs:9000
+      SPOT_AUTH_MODE: ${SPOT_AUTH_MODE:-}
+      SPOT_S3_ENDPOINT: ${SPOT_S3_ENDPOINT:-rustfs:9000}
       SPOT_S3_ACCESS_KEY: ${RUSTFS_ACCESS_KEY:-rustfsadmin}
       SPOT_S3_SECRET_KEY: ${RUSTFS_SECRET_KEY:-rustfsadmin}
-      SPOT_UPLOADS_BUCKET: spot-uploads
-      SPOT_SITES_BUCKET: spot-sites
+      SPOT_UPLOADS_BUCKET: ${SPOT_UPLOADS_BUCKET:-spot-uploads}
+      SPOT_SITES_BUCKET: ${SPOT_SITES_BUCKET:-spot-sites}
       NETBIRD_API_URL: ${NETBIRD_API_URL:-}
       NETBIRD_API_TOKEN: ${NETBIRD_API_TOKEN:-}
       TAILSCALE_API_URL: ${TAILSCALE_API_URL:-}
@@ -108,51 +38,23 @@ services:
       SPOT_AI_MODEL: ${SPOT_AI_MODEL:-}
       SPOT_AI_ALLOWED_MODELS: ${SPOT_AI_ALLOWED_MODELS:-}
       SPOT_AI_ACCESS: ${SPOT_AI_ACCESS:-owners}
-      SPOT_TRUSTED_PROXIES: ${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128,172.28.0.0/24}
+      SPOT_TRUSTED_PROXIES: ${SPOT_TRUSTED_PROXIES:-127.0.0.1/32,::1/128}
       SPOT_ADMIN_EMAILS: ${SPOT_ADMIN_EMAILS:-}
       SPOT_ADMIN_GROUPS: ${SPOT_ADMIN_GROUPS:-}
-      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-}
+      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-dev@spot.local}
       SPOT_DEV_IDENTITY_NAME: ${SPOT_DEV_IDENTITY_NAME:-Spot Dev}
       SPOT_DEV_IDENTITY_GROUPS: ${SPOT_DEV_IDENTITY_GROUPS:-}
-    volumes:
-      # Same FUSE-propagated view as Caddy; _access.json policies are
-      # read from here.
-      - type: bind
-        source: ./data/sites
-        target: /srv/sites
-        bind:
-          propagation: rslave
-    depends_on:
-      postgres:
-        condition: service_healthy
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2-alpine
+      SPOT_SINGLE_USER_EMAIL: ${SPOT_SINGLE_USER_EMAIL:-owner@spot.local}
+      SPOT_SINGLE_USER_NAME: ${SPOT_SINGLE_USER_NAME:-Spot Owner}
+      SPOT_SINGLE_USER_GROUPS: ${SPOT_SINGLE_USER_GROUPS:-}
     ports:
-      - "8443:443"
+      - "127.0.0.1:8080:8080"
     volumes:
-      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./sdk:/srv/sdk:ro
-      - caddy-data:/data
-      - type: bind
-        source: ./data/sites
-        target: /srv/sites
-        bind:
-          propagation: rslave
+      - spot-data:/data
     depends_on:
-      - spot-api
-      - rclone-mount
+      - rustfs
     restart: unless-stopped
 
 volumes:
   rustfs-data:
-  pg-data:
-  caddy-data:
-
-networks:
-  default:
-    ipam:
-      config:
-        - subnet: 172.28.0.0/24
-          gateway: 172.28.0.1
+  spot-data:

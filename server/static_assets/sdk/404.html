@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#5a4bf0">
+  <title>Spot — 404</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --field: #5a4bf0;
+      --grid: rgba(255, 255, 255, .09);
+      --ink: #15121e;
+      --card: #fffefb;
+      --mutedink: #8d879b;
+      --accent: #5a4bf0;
+      --go: #23b14d;
+      --bad: #d92d2d;
+      --paper: #fff7d6;
+      --pin: #ff5d5d;
+      --font-logo: 'Pacifico', 'Brush Script MT', cursive;
+      --font-mono: 'Space Mono', ui-monospace, 'SF Mono', monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(var(--grid) 1.5px, transparent 1.5px),
+        linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px),
+        var(--field);
+      background-size: 44px 44px, 44px 44px, auto;
+    }
+
+    /* A dotted route meanders across the field — the trail that led
+       the visitor here. */
+    .route {
+      position: fixed;
+      inset: 0;
+      width: 100%;
+      height: 100%;
+      pointer-events: none;
+    }
+    .route path {
+      fill: none;
+      stroke: rgba(255, 255, 255, .2);
+      stroke-width: 3.5;
+      stroke-linecap: round;
+      stroke-dasharray: 1 16;
+      animation: wander 60s linear infinite;
+    }
+    @keyframes wander { to { stroke-dashoffset: -680; } }
+
+    .stage {
+      position: relative;
+      min-height: 100svh;
+      max-width: 820px;
+      margin: 0 auto;
+      padding: 48px 24px 110px;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      text-align: center;
+    }
+
+    /* ─── the big 4·pin·4 ─────────────────────────────────────── */
+    .hero {
+      display: flex;
+      align-items: center;
+      gap: clamp(10px, 3vw, 26px);
+      margin-bottom: clamp(20px, 4vw, 36px);
+      user-select: none;
+    }
+    .digit {
+      position: relative;
+      z-index: 0;
+      font: 400 clamp(110px, 24vw, 190px)/1 var(--font-logo);
+      color: #fff;
+    }
+    .digit::before,
+    .digit::after {
+      content: attr(data-text);
+      position: absolute;
+      left: 0; top: 0;
+      width: 100%; height: 100%;
+      color: var(--ink);
+      -webkit-text-stroke: .13em var(--ink);
+    }
+    .digit::after { transform: translate(.05em, .06em); z-index: -2; }
+    .digit::before { z-index: -1; }
+    .digit:first-child { transform: rotate(-5deg); }
+    .digit:last-child { transform: rotate(4deg) translateY(.04em); }
+
+    .pin {
+      width: clamp(86px, 17vw, 148px);
+      height: auto;
+      animation: float 2.6s ease-in-out infinite;
+    }
+    @keyframes float { 50% { transform: translateY(-9px); } }
+
+    /* ─── words ───────────────────────────────────────────────── */
+    .shout {
+      margin: 0;
+      font: 700 clamp(17px, 3.6vw, 25px)/1.5 var(--font-mono);
+      letter-spacing: .18em;
+      text-transform: uppercase;
+      color: #fff;
+      text-shadow: 2px 3px 0 rgba(21, 18, 30, .45);
+    }
+    .hint {
+      margin: 16px 0 0;
+      font: 700 13px/1.9 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, .82);
+      overflow-wrap: anywhere;
+    }
+    .hint code {
+      background: rgba(0, 0, 0, .28);
+      padding: 2px 7px;
+      border-radius: 6px;
+    }
+
+    /* ─── actions ─────────────────────────────────────────────── */
+    .cta {
+      display: flex;
+      align-items: stretch;
+      justify-content: center;
+      flex-wrap: wrap;
+      gap: 16px;
+      margin-top: 36px;
+    }
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 5px 6px 0 var(--ink);
+      padding: 16px 22px;
+      font: 700 13px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      text-decoration: none;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .btn:hover { transform: translate(-2px, -2px); box-shadow: 7px 8px 0 var(--ink); }
+    .btn:active { transform: translate(2px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+    .btn-go { background: var(--go); color: #fff; }
+
+    .claim-cmd {
+      display: none;
+      align-items: stretch;
+      gap: 12px;
+      margin-top: 22px;
+    }
+    .claim-cmd.show { display: flex; }
+    .command {
+      display: flex;
+      align-items: center;
+      overflow-x: auto;
+      margin: 0;
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      background: var(--ink);
+      color: #fff;
+      padding: 0 18px;
+      font: 700 14px/1.6 var(--font-mono);
+      white-space: nowrap;
+    }
+    .copy {
+      border: 3px solid var(--ink);
+      border-radius: 14px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 5px 6px 0 var(--ink);
+      padding: 16px 18px;
+      font: 700 12px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease;
+    }
+    .copy:hover { transform: translate(-2px, -2px); box-shadow: 7px 8px 0 var(--ink); }
+
+    .btn:focus-visible, .copy:focus-visible, footer a:focus-visible {
+      outline: 3px solid var(--paper);
+      outline-offset: 3px;
+    }
+
+    footer {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      padding: 0 24px 34px;
+      font: 400 12px/2 var(--font-mono);
+      color: rgba(255, 255, 255, .82);
+      text-align: center;
+    }
+    footer a {
+      color: #fff;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { animation: none !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <svg class="route" viewBox="0 0 1440 900" preserveAspectRatio="xMidYMid slice" aria-hidden="true">
+    <path d="M -60 820 C 240 780 180 560 430 580 S 760 760 950 640 S 1090 380 1290 430 S 1480 560 1560 480"/>
+    <path d="M -80 240 C 160 300 340 140 560 200 S 820 120 1040 190" opacity=".55"/>
+  </svg>
+
+  <main class="stage">
+    <div class="hero" role="img" aria-label="404">
+      <span class="digit" data-text="4" aria-hidden="true">4</span>
+      <svg class="pin" viewBox="0 0 100 118" aria-hidden="true">
+        <!-- hard offset shadow, then the pin, in the brand's sticker style -->
+        <path d="M50 14 C29 14 14 29 14 50 c0 16 13 30 36 54 23-24 36-38 36-54 C86 29 71 14 50 14 z"
+              transform="translate(5 7)" fill="#15121e"/>
+        <path d="M50 14 C29 14 14 29 14 50 c0 16 13 30 36 54 23-24 36-38 36-54 C86 29 71 14 50 14 z"
+              fill="#ff5d5d" stroke="#15121e" stroke-width="6"/>
+        <circle cx="50" cy="49" r="13" fill="#fffefb" stroke="#15121e" stroke-width="6"/>
+      </svg>
+      <span class="digit" data-text="4" aria-hidden="true">4</span>
+    </div>
+
+    <h1 class="shout" id="headline">This page wandered off the map</h1>
+    <p class="hint" id="detail">There is nothing pinned at this address.</p>
+
+    <div class="cta" id="cta">
+      <a class="btn btn-go" id="primary" href="/">Take me home</a>
+    </div>
+    <div class="claim-cmd" id="claim-cmd">
+      <pre class="command"><code id="deploy-cmd"></code></pre>
+      <button type="button" class="copy" id="copy">Copy</button>
+    </div>
+  </main>
+
+  <footer>
+    <a id="apex-link" href="/">spot</a> &nbsp;·&nbsp; drop a folder, get a spot
+  </footer>
+
+  <script>
+    (() => {
+      'use strict';
+      const $ = (id) => document.getElementById(id);
+
+      const head = async (path) => {
+        try {
+          return (await fetch(path, { method: 'HEAD' })).status;
+        } catch {
+          return 0;
+        }
+      };
+
+      const link = (label, href, primary) => {
+        const a = document.createElement('a');
+        a.className = primary ? 'btn btn-go' : 'btn';
+        a.href = href;
+        a.textContent = label;
+        return a;
+      };
+
+      // Three flavors of lost, told apart with two same-origin probes:
+      //   /      404 → this whole site is unclaimed (subdomains only —
+      //                 the apex always serves the deploy page there)
+      //   /spots 200 → we are on the apex, a path went nowhere
+      //   else       → a missing file on a live site
+      const decorate = async () => {
+        const site = location.hostname.split('.')[0];
+        const apex = location.host.replace(/^[^.]+\./, '');
+        const [root, spots] = await Promise.all([head('/'), head('/spots')]);
+
+        if (root === 404) {
+          document.title = 'Spot — up for grabs';
+          $('headline').textContent = 'Nobody has claimed this spot';
+          $('detail').replaceChildren();
+          const name = document.createElement('code');
+          name.textContent = site;
+          $('detail').append(name, ' is up for grabs — one deploy and it’s yours.');
+          const cta = $('cta');
+          cta.replaceChildren(link('Claim it on Spot', location.protocol + '//' + apex + '/', true));
+          $('deploy-cmd').textContent = 'spot deploy ' + site;
+          $('claim-cmd').classList.add('show');
+          $('apex-link').href = location.protocol + '//' + apex + '/';
+          return;
+        }
+
+        if (spots === 200) {
+          // The apex: offer the platform pages.
+          const cta = $('cta');
+          cta.replaceChildren(
+            link('Take me home', '/', true),
+            link('My spots', '/spots', false),
+            link('Gallery', '/gallery', false),
+          );
+          return;
+        }
+
+        // A live site, a dead path.
+        $('detail').replaceChildren();
+        const name = document.createElement('code');
+        name.textContent = site;
+        $('detail').append('No such page on ', name, '.');
+        const apexURL = location.protocol + '//' + apex + '/';
+        $('cta').replaceChildren(
+          link('Back to ' + site, '/', true),
+          link('Spot home', apexURL, false),
+        );
+        $('apex-link').href = apexURL;
+      };
+
+      $('copy').addEventListener('click', async () => {
+        const text = $('deploy-cmd').textContent;
+        if (navigator.clipboard && window.isSecureContext) {
+          await navigator.clipboard.writeText(text);
+        } else {
+          const field = document.createElement('textarea');
+          field.value = text;
+          field.setAttribute('readonly', '');
+          field.style.position = 'fixed';
+          field.style.left = '-9999px';
+          document.body.appendChild(field);
+          field.select();
+          document.execCommand('copy');
+          field.remove();
+        }
+        $('copy').textContent = 'Copied';
+        setTimeout(() => { $('copy').textContent = 'Copy'; }, 1400);
+      });
+
+      decorate();
+    })();
+  </script>
+</body>
+</html>

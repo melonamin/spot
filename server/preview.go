@@ -1,11 +1,13 @@
 package main
 
 import (
+	"bytes"
+	"context"
+	"errors"
 	"io"
 	"net/http"
-	"os"
-	"path/filepath"
 	"strings"
+	"time"
 )
 
 // previewFileNames are the gallery-thumbnail filenames a site may ship at
@@ -18,31 +20,85 @@ var previewFileNames = []string{
 	"_screenshot.webp",
 }
 
-// openSitePreview opens the site's screenshot from the mounted sites
-// directory, trying each accepted name. The caller closes the file.
-func (s *Server) openSitePreview(site string) (*os.File, bool) {
-	if s.sitesDir == "" || !siteNameRe.MatchString(site) {
-		return nil, false
+type sitePreview struct {
+	body        io.ReadCloser
+	seeker      io.ReadSeeker
+	contentType string
+	modTime     time.Time
+}
+
+type readerCloser struct {
+	io.Reader
+	io.Closer
+}
+
+// openSitePreview opens the site's screenshot through the configured
+// site store, trying each accepted name.
+func (s *Server) openSitePreview(ctx context.Context, site string) (sitePreview, bool) {
+	if s.sites == nil || !siteNameRe.MatchString(site) {
+		return sitePreview{}, false
 	}
 	for _, name := range previewFileNames {
-		// OpenInRoot contains the lookup inside the sites directory, so a
-		// crafted site name can never escape it — same guard PolicyStore
-		// uses to read _access.json.
-		file, err := os.OpenInRoot(s.sitesDir, filepath.Join(site, name))
-		if err == nil {
-			return file, true
+		rc, info, err := s.sites.Open(ctx, site, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) || siteObjectNotFound(err) {
+				continue
+			}
+			return sitePreview{}, false
 		}
+		sniff := make([]byte, 512)
+		n, err := io.ReadFull(rc, sniff)
+		if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+			rc.Close()
+			return sitePreview{}, false
+		}
+		contentType := http.DetectContentType(sniff[:n])
+		if seeker, ok := rc.(interface {
+			io.ReadCloser
+			io.Seeker
+		}); ok {
+			if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+				rc.Close()
+				return sitePreview{}, false
+			}
+			return sitePreview{body: rc, seeker: seeker, contentType: contentType, modTime: info.LastModified}, true
+		}
+		body := readerCloser{
+			Reader: io.MultiReader(bytes.NewReader(sniff[:n]), rc),
+			Closer: rc,
+		}
+		return sitePreview{body: body, contentType: contentType, modTime: info.LastModified}, true
 	}
-	return nil, false
+	return sitePreview{}, false
 }
 
 // hasSitePreview reports whether the site ships a screenshot.
-func (s *Server) hasSitePreview(site string) bool {
-	file, ok := s.openSitePreview(site)
-	if ok {
-		file.Close()
+func (s *Server) hasSitePreview(ctx context.Context, site string) bool {
+	if s.sites == nil || !siteNameRe.MatchString(site) {
+		return false
 	}
-	return ok
+	for _, name := range previewFileNames {
+		rc, _, err := s.sites.Open(ctx, site, name)
+		if err != nil {
+			if errors.Is(err, ErrNotFound) || siteObjectNotFound(err) {
+				continue
+			}
+			return false
+		}
+		sniff := make([]byte, 512)
+		n, readErr := io.ReadFull(rc, sniff)
+		closeErr := rc.Close()
+		if readErr != nil && !errors.Is(readErr, io.EOF) && !errors.Is(readErr, io.ErrUnexpectedEOF) {
+			return false
+		}
+		if closeErr != nil {
+			return false
+		}
+		if isPreviewImage(http.DetectContentType(sniff[:n])) {
+			return true
+		}
+	}
+	return false
 }
 
 // handleSitePreview serves a site's gallery thumbnail — the optional
@@ -60,44 +116,38 @@ func (s *Server) handleSitePreview(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid site name")
 		return
 	}
-	if restricted, _ := s.sitePolicySummary(site); restricted {
+	if restricted, _, _ := s.policySummaryForSite(r.Context(), site); restricted {
 		http.NotFound(w, r)
 		return
 	}
-	file, ok := s.openSitePreview(site)
+	preview, ok := s.openSitePreview(r.Context(), site)
 	if !ok {
 		http.NotFound(w, r)
 		return
 	}
-	defer file.Close()
+	defer preview.body.Close()
 
 	// Sniff the real type rather than trust the extension: an HTML or SVG
 	// file named _screenshot.jpg would run script in the apex origin if we
 	// served it as anything renderable, so anything that is not a raster
 	// image is refused.
-	sniff := make([]byte, 512)
-	n, _ := io.ReadFull(file, sniff)
-	contentType := http.DetectContentType(sniff[:n])
-	if !isPreviewImage(contentType) {
+	if !isPreviewImage(preview.contentType) {
 		http.NotFound(w, r)
 		return
 	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		httpError(w, http.StatusInternalServerError, "could not read the preview")
-		return
-	}
-	info, err := file.Stat()
-	if err != nil {
-		httpError(w, http.StatusInternalServerError, "could not read the preview")
-		return
-	}
 
-	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("Content-Type", preview.contentType)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
 	// A screenshot can become private on the next redeploy if the owner
 	// adds _access.json, so shared caches must not retain old previews.
 	w.Header().Set("Cache-Control", "no-store")
-	http.ServeContent(w, r, "", info.ModTime(), file)
+	if preview.seeker != nil {
+		http.ServeContent(w, r, "", preview.modTime, preview.seeker)
+		return
+	}
+	if _, err := io.Copy(w, preview.body); err != nil {
+		return
+	}
 }
 
 func isPreviewImage(contentType string) bool {

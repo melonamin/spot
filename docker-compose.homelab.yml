@@ -1,0 +1,27 @@
+# Single-user homelab overlay.
+#
+# Usage:
+#
+#   docker compose -f docker-compose.yml -f docker-compose.homelab.yml up -d --build
+#
+# Publish SPOT_HOMELAB_DOMAIN and *.SPOT_HOMELAB_DOMAIN to this host's
+# LAN or VPN IP. Everyone who can reach Spot acts as the same owner.
+
+services:
+  spot-api:
+    ports: !override
+      - "8080:8080"
+    environment:
+      SPOT_DOMAIN: "${SPOT_HOMELAB_DOMAIN:-spot.home.arpa}"
+      SPOT_AUTH_MODE: single-user
+      SPOT_SINGLE_USER_EMAIL: "${SPOT_SINGLE_USER_EMAIL:-owner@spot.local}"
+      SPOT_SINGLE_USER_NAME: "${SPOT_SINGLE_USER_NAME:-Spot Owner}"
+      SPOT_SINGLE_USER_GROUPS: "${SPOT_SINGLE_USER_GROUPS:-}"
+      SPOT_DEV_IDENTITY_EMAIL: ""
+      NETBIRD_API_URL: ""
+      NETBIRD_API_TOKEN: ""
+      TAILSCALE_API_URL: ""
+      TAILSCALE_API_TOKEN: ""
+      TAILSCALE_TAILNET: ""
+      TAILSCALE_OAUTH_CLIENT_ID: ""
+      TAILSCALE_OAUTH_CLIENT_SECRET: ""

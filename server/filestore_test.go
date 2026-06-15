@@ -1,6 +1,11 @@
 package main
 
-import "testing"
+import (
+	"context"
+	"errors"
+	"strings"
+	"testing"
+)
 
 func TestInlineSafe(t *testing.T) {
 	tests := []struct {
@@ -43,5 +48,35 @@ func TestSanitizeFilename(t *testing.T) {
 		if got := sanitizeFilename(tt.in); got != tt.want {
 			t.Errorf("sanitizeFilename(%q) = %q, want %q", tt.in, got, tt.want)
 		}
+	}
+}
+
+// TestFileStoreGetRejectsMalformedKeys checks that Get fails closed on a
+// malformed site, id, or name before reaching the object store. A nil
+// client is safe here precisely because the rejection short-circuits the
+// S3 call; a regression that dropped the check would nil-panic instead.
+func TestFileStoreGetRejectsMalformedKeys(t *testing.T) {
+	store := &FileStore{}
+	validID := strings.Repeat("a", 32)
+	cases := []struct {
+		name           string
+		site, id, file string
+	}{
+		{"bad site", "Bad Site", validID, "report.pdf"},
+		{"bad id length", "demo", "abc", "report.pdf"},
+		{"bad id chars", "demo", strings.Repeat("g", 32), "report.pdf"},
+		{"path traversal name", "demo", validID, "../../etc/passwd"},
+		{"slash in name", "demo", validID, "sub/report.pdf"},
+	}
+	for _, tt := range cases {
+		t.Run(tt.name, func(t *testing.T) {
+			rc, _, err := store.Get(context.Background(), tt.site, tt.id, tt.file)
+			if rc != nil {
+				rc.Close()
+			}
+			if !errors.Is(err, ErrNotFound) {
+				t.Fatalf("Get(%q,%q,%q) err = %v, want ErrNotFound", tt.site, tt.id, tt.file, err)
+			}
+		})
 	}
 }

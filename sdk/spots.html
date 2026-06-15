@@ -340,6 +340,11 @@
     }
     .tile:hover { transform: translate(-3px, -4px); box-shadow: 11px 13px 0 var(--ink); }
     .tile:active { transform: translate(2px, 3px); box-shadow: 2px 2px 0 var(--ink); }
+    .tile-link {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }
 
     .preview {
       position: relative;
@@ -391,7 +396,7 @@
       transform: translateY(-4px);
       transition: opacity .15s ease, transform .15s ease;
     }
-    .tile:hover .visit, .tile:focus-visible .visit { opacity: 1; transform: none; }
+    .tile:hover .visit, .tile:focus-within .visit { opacity: 1; transform: none; }
 
     .tinfo { padding: 15px 17px 17px; }
     .tname {
@@ -419,6 +424,24 @@
       text-transform: uppercase;
       color: var(--mutedink);
     }
+    .tactions {
+      display: flex;
+      gap: 10px;
+      border-top: 3px solid var(--ink);
+      padding: 13px 17px 15px;
+    }
+    .tbtn {
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 8px 11px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+    .tbtn:hover { background: var(--ink); color: #fff; }
 
     .tally {
       margin: 36px 0 0;
@@ -528,7 +551,7 @@
     (() => {
       'use strict';
 
-      // One file, two pages: Caddy serves /spots and /gallery from here
+      // One file, two pages: Spot serves /spots and /gallery from here
       // and the path picks the view. Data comes from the apex sites API.
       const VIEW = location.pathname.replace(/\/+$/, '') === '/gallery' ? 'gallery' : 'deploys';
       const $ = (id) => document.getElementById(id);
@@ -553,6 +576,7 @@
         if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
         return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       };
+      const downloadURL = (site) => site.url.replace(/\/$/, '') + '/api/download';
 
       const toastEl = $('toast');
       let toastTimer = null;
@@ -742,6 +766,12 @@
             toast('URL copied');
           });
 
+          const download = document.createElement('a');
+          download.className = 'btn';
+          download.href = downloadURL(site);
+          download.textContent = 'Download ZIP';
+          download.setAttribute('download', site.name + '.zip');
+
           const del = document.createElement('button');
           del.type = 'button';
           del.className = 'btn btn-delete';
@@ -760,7 +790,9 @@
             armed = { button: del, timer: setTimeout(disarm, 4000) };
           });
 
-          actions.append(open, copy, del);
+          actions.append(open, copy);
+          if (site.download_allowed !== false) actions.append(download);
+          actions.append(del);
           row.append(info, actions);
           siteList.appendChild(row);
         }
@@ -817,11 +849,13 @@
         $('gallery-note').hidden = true;
 
         for (const site of shown) {
-          const tile = document.createElement('a');
+          const tile = document.createElement('article');
           tile.className = 'tile';
-          tile.href = site.url;
-          tile.target = '_blank';
-          tile.rel = 'noopener';
+          const link = document.createElement('a');
+          link.className = 'tile-link';
+          link.href = site.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
 
           const preview = document.createElement('div');
           preview.className = 'preview';
@@ -868,7 +902,19 @@
           meta.textContent = 'by ' + site.owner + ' · ' + rel(site.updated_at);
           info.append(name, meta);
 
-          tile.append(preview, info);
+          link.append(preview, info);
+          tile.appendChild(link);
+          if (site.download_allowed !== false) {
+            const actions = document.createElement('div');
+            actions.className = 'tactions';
+            const download = document.createElement('a');
+            download.className = 'tbtn';
+            download.href = downloadURL(site);
+            download.textContent = 'Download ZIP';
+            download.setAttribute('download', site.name + '.zip');
+            actions.appendChild(download);
+            tile.appendChild(actions);
+          }
           grid.appendChild(tile);
         }
 

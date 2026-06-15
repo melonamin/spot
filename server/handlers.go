@@ -13,6 +13,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/coder/websocket"
 	"github.com/coder/websocket/wsjson"
@@ -27,8 +28,8 @@ type Server struct {
 	policies       *PolicyStore
 	hub            *Hub
 	roomHub        *RoomHub
-	files          *FileStore
-	sites          *SiteStore
+	files          FileStorage
+	sites          SiteStorage
 	deployAuth     DeployAuthorizer
 	siteAdmin      SiteAdmin
 	siteManager    SiteManager
@@ -36,8 +37,10 @@ type Server struct {
 	aiAccess       string
 	maxUpload      int64
 	spotDomain     string
-	sitesDir       string
 	trustedProxies *TrustedProxies
+	serveStatic    bool
+	siteLocksMu    sync.Mutex
+	siteLocks      map[string]*sync.Mutex
 
 	dbLimit       *RateLimiter
 	fileLimit     *RateLimiter
@@ -51,11 +54,36 @@ type Server struct {
 // the socket peer is one of the configured front proxies.
 func (s *Server) requestHost(r *http.Request) string {
 	if s.trustsRemote(r) {
-		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
-			return host
+		if vals := r.Header.Values("X-Forwarded-Host"); len(vals) > 0 {
+			if host := strings.TrimSpace(vals[len(vals)-1]); host != "" {
+				return host
+			}
 		}
 	}
 	return r.Host
+}
+
+func (s *Server) requestScheme(r *http.Request) string {
+	if s.trustsRemote(r) {
+		if vals := r.Header.Values("X-Forwarded-Proto"); len(vals) > 0 {
+			if proto := lastForwardedProto(vals[len(vals)-1]); proto != "" {
+				return proto
+			}
+		}
+	}
+	if r.TLS != nil {
+		return "https"
+	}
+	return "http"
+}
+
+func lastForwardedProto(raw string) string {
+	entries := strings.Split(raw, ",")
+	proto := strings.ToLower(strings.TrimSpace(entries[len(entries)-1]))
+	if proto == "http" || proto == "https" {
+		return proto
+	}
+	return ""
 }
 
 func (s *Server) trustsRemote(r *http.Request) bool {
@@ -77,7 +105,7 @@ func (s *Server) rejectUntrustedForwardedHeaders(next http.Handler) http.Handler
 }
 
 func hasForwardedHeaders(r *http.Request) bool {
-	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host"} {
+	for _, header := range []string{"Forwarded", "X-Forwarded-For", "X-Forwarded-Host", "X-Forwarded-Proto"} {
 		if r.Header.Get(header) != "" {
 			return true
 		}
@@ -118,13 +146,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
 	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
-	mux.HandleFunc("GET /api/ws", s.handleWS)
+	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
 	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
 	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
+	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
@@ -132,7 +161,36 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
 	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
-	return s.rejectUntrustedForwardedHeaders(mux)
+	mux.HandleFunc("/api/", http.NotFound)
+	mux.HandleFunc("/api", http.NotFound)
+	if s.serveStatic {
+		mux.HandleFunc("/", s.handleStatic)
+	}
+	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(mux))
+}
+
+func (s *Server) rejectUnknownHosts(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/health" || validSpotHost(s.requestHost(r), s.spotDomain) {
+			next.ServeHTTP(w, r)
+			return
+		}
+		httpError(w, http.StatusBadRequest, "request host is not part of this Spot domain")
+	})
+}
+
+func (s *Server) siteMutationLock(site string) *sync.Mutex {
+	s.siteLocksMu.Lock()
+	defer s.siteLocksMu.Unlock()
+	if s.siteLocks == nil {
+		s.siteLocks = make(map[string]*sync.Mutex)
+	}
+	lock := s.siteLocks[site]
+	if lock == nil {
+		lock = &sync.Mutex{}
+		s.siteLocks[site] = lock
+	}
+	return lock
 }
 
 // sameOriginOnly rejects browser-originated cross-site API calls. Spot
@@ -158,6 +216,9 @@ func (s *Server) originMatchesHost(r *http.Request) bool {
 	if err != nil || u.Host == "" {
 		return false
 	}
+	if !strings.EqualFold(u.Scheme, s.requestScheme(r)) {
+		return false
+	}
 	return sameHost(u.Host, s.requestHost(r))
 }
 
@@ -175,7 +236,7 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
 	if s.resolver == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)
@@ -196,17 +257,17 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
-	if site == "" || s.policies == nil {
+	if site == "" {
 		return true
 	}
-	policy, err := s.policies.For(site)
+	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
 		log.Printf("authz: %v", err)
 		httpError(w, http.StatusServiceUnavailable,
 			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
 		return false
 	}
-	if policy == nil {
+	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
 	if s.resolver == nil {
@@ -594,7 +655,7 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
 	if s.resolver == nil {
 		writeWSError(ctx, conn,
-			"identity resolver not configured: set NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)

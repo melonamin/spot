@@ -233,8 +233,8 @@ func (r *NetbirdResolver) get(ctx context.Context, path string, out any) error {
 	return nil
 }
 
-// StaticResolver is an explicit local-development identity provider. It
-// is only enabled when configured; production should use a mesh resolver.
+// StaticResolver is an explicit fixed identity provider. In local dev and
+// single-user deployments, every request resolves to this one actor.
 type StaticResolver struct {
 	identity Identity
 }

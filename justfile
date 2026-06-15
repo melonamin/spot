@@ -3,9 +3,8 @@
 default:
     @just --list
 
-# Bring the whole stack up (Caddy on https://*.spot.localhost:8443).
+# Bring the local stack up (spot-api on http://*.spot.localhost:8080).
 up:
-    mkdir -p data/sites
     docker compose up -d --build
 
 down:
@@ -21,13 +20,27 @@ logs *args:
 build:
     cd server && go build ./...
 
+build-binary:
+    cd server && go build -o spot-api .
+
 # Unit tests (no external services needed).
 test:
     cd server && go vet ./... && go test ./...
 
-# Integration tests against the compose PostgreSQL (run `just up` first).
+# Integration tests need SQLite and (for the filestore tests) a running
+# S3/RustFS endpoint.
 test-integration:
     cd server && go test -tags integration ./...
+
+# Sync the embedded SDK copy under server/static_assets/sdk.
+generate:
+    cd server && go generate ./...
+
+# Fail if the embedded SDK copy is stale (drift between sdk/ and
+# server/static_assets/sdk/).
+check-generate:
+    cd server && go generate ./...
+    git diff --exit-code -- server/static_assets/sdk
 
 # Full end-to-end: stack up, deploy demo site, exercise serving + DB API.
 e2e:

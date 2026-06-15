@@ -4,10 +4,9 @@
 #
 # This keeps the stack a self-contained *.localhost dev box: visitor
 # identity comes from a fixed dev user instead of a mesh provider, so the
-# safety gate that makes shared deployments replace the default
-# RustFS/Postgres credentials does not apply. Your real .env — provider
-# tokens and all — is left untouched; these values win for the local
-# stack only.
+# safety gate that makes shared deployments replace the default RustFS
+# credentials does not apply. Your real .env — provider tokens and all —
+# is left untouched; these values win for the local stack only.
 #
 # Production is unaffected: scripts/deploy-prod.sh brings the stack up with
 # explicit -f files, and Compose does not auto-load an override then.
@@ -22,5 +21,5 @@ services:
       TAILSCALE_API_TOKEN: ""
       TAILSCALE_OAUTH_CLIENT_ID: ""
       TAILSCALE_OAUTH_CLIENT_SECRET: ""
-      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-dev@spot.localhost}
+      SPOT_DEV_IDENTITY_EMAIL: ${SPOT_DEV_IDENTITY_EMAIL:-dev@spot.local}
       SPOT_DEV_IDENTITY_NAME: ${SPOT_DEV_IDENTITY_NAME:-Spot Dev}

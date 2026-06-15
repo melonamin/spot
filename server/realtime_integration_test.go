@@ -14,17 +14,14 @@ import (
 	"github.com/coder/websocket/wsjson"
 )
 
-// TestRealtimeEndToEnd exercises the whole realtime path against the
-// real database: websocket subscribe -> store write -> pg_notify ->
-// listener -> hub -> websocket event.
+// TestRealtimeEndToEnd exercises the whole realtime path:
+// websocket subscribe -> store write -> hub -> websocket event.
 func TestRealtimeEndToEnd(t *testing.T) {
-	store := newTestStore(t)
 	hub := NewHub()
+	store := newTestStore(t)
+	store.hub = hub
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-
-	listener := &Listener{dsn: testDSN(), store: store, hub: hub}
-	go listener.Run(ctx)
 
 	srv := &Server{
 		store:      store,
@@ -48,8 +45,8 @@ func TestRealtimeEndToEnd(t *testing.T) {
 		t.Fatalf("subscribe: %v", err)
 	}
 
-	// Both the LISTEN setup and the subscribe are asynchronous, so
-	// create repeatedly until the first event arrives.
+	// The websocket subscribe is asynchronous, so create repeatedly
+	// until the first event arrives.
 	var created Document
 	var got Event
 	deadline := time.Now().Add(15 * time.Second)

@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -22,24 +24,26 @@ type SiteManager interface {
 }
 
 type ownedSiteJSON struct {
-	Name       string    `json:"name"`
-	URL        string    `json:"url"`
-	CreatedAt  time.Time `json:"created_at"`
-	UpdatedAt  time.Time `json:"updated_at"`
-	FileCount  int       `json:"file_count"`
-	TotalBytes int64     `json:"total_bytes"`
-	Restricted bool      `json:"restricted"`
-	AllowCount int       `json:"allow_count"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	DownloadAllowed bool      `json:"download_allowed"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	FileCount       int       `json:"file_count"`
+	TotalBytes      int64     `json:"total_bytes"`
+	Restricted      bool      `json:"restricted"`
+	AllowCount      int       `json:"allow_count"`
 }
 
 type publicSiteJSON struct {
-	Name      string    `json:"name"`
-	URL       string    `json:"url"`
-	Owner     string    `json:"owner"`
-	Yours     bool      `json:"yours"`
-	Preview   string    `json:"preview,omitempty"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	DownloadAllowed bool      `json:"download_allowed"`
+	Owner           string    `json:"owner"`
+	Yours           bool      `json:"yours"`
+	Preview         string    `json:"preview,omitempty"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
 }
 
 // requireSitesAPI gates the sites endpoints the same way as /api/deploy:
@@ -74,16 +78,17 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ownedSiteJSON, 0, len(owned))
 	for _, site := range owned {
-		restricted, allowCount := s.sitePolicySummary(site.Name)
+		restricted, allowCount, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
 		out = append(out, ownedSiteJSON{
-			Name:       site.Name,
-			URL:        "https://" + site.Name + "." + s.spotDomain + "/",
-			CreatedAt:  site.CreatedAt,
-			UpdatedAt:  site.UpdatedAt,
-			FileCount:  site.FileCount,
-			TotalBytes: site.TotalBytes,
-			Restricted: restricted,
-			AllowCount: allowCount,
+			Name:            site.Name,
+			URL:             s.siteURL(r, site.Name),
+			DownloadAllowed: downloadAllowed,
+			CreatedAt:       site.CreatedAt,
+			UpdatedAt:       site.UpdatedAt,
+			FileCount:       site.FileCount,
+			TotalBytes:      site.TotalBytes,
+			Restricted:      restricted,
+			AllowCount:      allowCount,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
@@ -109,24 +114,48 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]publicSiteJSON, 0, len(all))
 	for _, site := range all {
-		if restricted, _ := s.sitePolicySummary(site.Name); restricted {
+		restricted, _, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
+		if restricted {
 			continue
 		}
 		preview := ""
-		if s.hasSitePreview(site.Name) {
+		if s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
 		out = append(out, publicSiteJSON{
-			Name:      site.Name,
-			URL:       "https://" + site.Name + "." + s.spotDomain + "/",
-			Owner:     ownerDisplay(site),
-			Yours:     site.OwnedBy(viewer),
-			Preview:   preview,
-			CreatedAt: site.CreatedAt,
-			UpdatedAt: site.UpdatedAt,
+			Name:            site.Name,
+			URL:             s.siteURL(r, site.Name),
+			DownloadAllowed: downloadAllowed,
+			Owner:           ownerDisplay(site),
+			Yours:           site.OwnedBy(viewer),
+			Preview:         preview,
+			CreatedAt:       site.CreatedAt,
+			UpdatedAt:       site.UpdatedAt,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+}
+
+func (s *Server) siteURL(r *http.Request, site string) string {
+	return s.requestScheme(r) + "://" + siteHostForRequest(s.requestHost(r), s.spotDomain, site) + "/"
+}
+
+func siteHostForRequest(requestHost, spotDomain, site string) string {
+	host := requestHost
+	port := ""
+	if h, p, err := net.SplitHostPort(requestHost); err == nil {
+		host = h
+		port = p
+	}
+	host = strings.TrimSuffix(host, ".")
+	if !sameHost(host, spotDomain) {
+		host = strings.TrimSuffix(spotDomain, ".")
+	}
+	siteHost := site + "." + host
+	if port != "" {
+		return net.JoinHostPort(siteHost, port)
+	}
+	return siteHost
 }
 
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
@@ -148,10 +177,13 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// The purge runs while the registry holds the site's row lock, so a
-	// concurrent redeploy cannot interleave with it. Everything scoped to
-	// the site goes: served files, uploads, and private collections —
-	// otherwise the next claimant of the name would inherit them.
+	siteLock := s.siteMutationLock(site)
+	siteLock.Lock()
+	defer siteLock.Unlock()
+
+	// Everything scoped to the site goes: served files, uploads, and
+	// private collections. If purge fails, the registry row stays claimed
+	// so the owner can retry instead of freeing a partially purged name.
 	removedFiles := 0
 	purge := func(ctx context.Context) error {
 		paths, err := s.sites.List(ctx, site)
@@ -204,23 +236,6 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 		})
 		writeJSON(w, http.StatusOK, map[string]any{"site": site, "files": removedFiles})
 	}
-}
-
-// sitePolicySummary reports whether a site is restricted and by how many
-// allow entries. An unreadable policy counts as restricted with zero
-// entries — authz fails closed on those sites, so nobody can view them.
-func (s *Server) sitePolicySummary(site string) (bool, int) {
-	if s.policies == nil {
-		return false, 0
-	}
-	policy, err := s.policies.For(site)
-	if err != nil {
-		return true, 0
-	}
-	if policy == nil {
-		return false, 0
-	}
-	return true, len(policy.Allow)
 }
 
 // ownerDisplay is the name the gallery shows for a site's owner.

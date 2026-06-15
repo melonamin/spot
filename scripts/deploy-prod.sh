@@ -4,7 +4,7 @@ set -eu
 
 host=${SPOT_DEPLOY_HOST:-ubuntu@spot.t1a.dev}
 dir=${SPOT_DEPLOY_DIR:-/home/ubuntu/spot}
-compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.mesh.yml}
+compose=${SPOT_DEPLOY_COMPOSE:-docker compose -f docker-compose.yml -f docker-compose.mesh.yml -f docker-compose.tls.yml}
 dry_run=0
 
 usage() {
@@ -71,12 +71,15 @@ cat > "$tmp"
 mkdir -p "$SPOT_DEPLOY_DIR"
 cd "$SPOT_DEPLOY_DIR"
 tar -tf "$tmp" >/dev/null
+
 tar -tf "$tmp" | sed '\''s#/.*##'\'' | sort -u | while IFS= read -r entry; do
     [ -n "$entry" ] || continue
     rm -rf -- "$entry"
 done
 tar -xpf "$tmp"
-eval "$SPOT_DEPLOY_COMPOSE up -d --build"
+
+eval "$SPOT_DEPLOY_COMPOSE down --remove-orphans"
+eval "$SPOT_DEPLOY_COMPOSE up -d --build --remove-orphans"
 eval "$SPOT_DEPLOY_COMPOSE ps"
 '
 

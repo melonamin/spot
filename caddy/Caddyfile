@@ -1,15 +1,8 @@
-# Spot: wildcard host -> site folder, /api -> shared backend.
+# Optional TLS reverse proxy for Spot.
 #
-# Dev runs on spot.localhost with Caddy's internal CA. Production picks
-# TLS and domain depth via environment:
-#
-#   SPOT_TLS_MODE    tls-internal (default: Caddy's own CA) or
-#                    tls-cloudflare (publicly trusted wildcard via the
-#                    DNS-01 challenge; needs CF_API_TOKEN scoped
-#                    Zone:DNS:Edit and the image from caddy/Dockerfile).
-#   SPOT_SITE_LABEL  which host label (counted from the right) is the
-#                    site name — the number of labels in SPOT_DOMAIN:
-#                    spot.localhost -> 2, spot.corp.example.com -> 4.
+# Spot serves the platform UI, deployed sites, /spot.js, /api/*, authz,
+# and 404 pages itself. This proxy only terminates TLS and preserves the
+# original host, scheme, and peer IP for Spot.
 
 (tls-internal) {
 	tls internal
@@ -18,88 +11,16 @@
 (tls-cloudflare) {
 	tls {
 		dns cloudflare {env.CF_API_TOKEN}
-		# Check TXT propagation against public DNS: the host's mesh
-		# resolver handles the zone and would confuse the ACME check.
 		resolvers 1.1.1.1
 	}
 }
 
-# Branded 404s, for the apex and for every site. Only file-server 404s
-# land here; responses passed through from spot-api (API errors,
-# forward_auth denials) are not errors and keep their JSON bodies.
-(error-pages) {
-	handle_errors {
-		@404 expression {err.status_code} == 404
-		handle @404 {
-			root * /srv/sdk
-			rewrite * /404.html
-			file_server
-		}
-	}
-}
-
-{$SPOT_DOMAIN:spot.localhost} {
+{$SPOT_DOMAIN:spot.localhost}, *.{$SPOT_DOMAIN:spot.localhost} {
 	import {$SPOT_TLS_MODE:tls-internal}
-	import error-pages
 
-	handle /api/* {
-		# Overwrite (not append) the X-Forwarded-* headers: identity and
-		# scoping depend on them, and clients can set them in fetch().
-		# {hostport} (not {host}): the backend compares this against the
-		# browser's Origin header, which keeps a non-default port — with
-		# {host} every browser POST on a dev port would look cross-site.
-		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
-			header_up X-Forwarded-For {client_ip}
-			header_up X-Forwarded-Host {hostport}
-		}
-	}
-
-	# Platform pages: one file serves both paths, the page picks its
-	# view from the URL.
-	@pages path /spots /spots/ /gallery /gallery/
-	handle @pages {
-		root * /srv/sdk
-		rewrite * /spots.html
-		file_server
-	}
-
-	handle {
-		root * /srv/sdk
-		file_server
-	}
-}
-
-*.{$SPOT_DOMAIN:spot.localhost} {
-	import {$SPOT_TLS_MODE:tls-internal}
-	import error-pages
-
-	# Per-site allowlists: a site ships _access.json, spot-api enforces
-	# it. Runs before every handler so files and the DB API are gated
-	# alike. No policy file means open — the platform default.
-	forward_auth {$SPOT_API_UPSTREAM:spot-api:8080} {
-		uri /api/authz
+	reverse_proxy {$SPOT_API_UPSTREAM:127.0.0.1:8080} {
 		header_up X-Forwarded-For {client_ip}
 		header_up X-Forwarded-Host {hostport}
-	}
-
-	handle /api/* {
-		# Overwrite (not append) the X-Forwarded-* headers: identity and
-		# scoping depend on them, and clients can set them in fetch().
-		reverse_proxy {$SPOT_API_UPSTREAM:spot-api:8080} {
-			header_up X-Forwarded-For {client_ip}
-			header_up X-Forwarded-Host {hostport}
-		}
-	}
-
-	# Every site gets the SDK at a stable same-origin path.
-	handle /spot.js {
-		root * /srv/sdk
-		rewrite * /spot.js
-		file_server
-	}
-
-	handle {
-		root * /srv/sites/{labels.{$SPOT_SITE_LABEL:2}}
-		file_server
+		header_up X-Forwarded-Proto {scheme}
 	}
 }

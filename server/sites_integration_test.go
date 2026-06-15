@@ -17,12 +17,12 @@ import (
 )
 
 // TestSiteRegistryListsAndDeletes exercises the registry's list and
-// delete paths against the compose PostgreSQL (`just up` first).
+// delete paths against SQLite.
 func TestSiteRegistryListsAndDeletes(t *testing.T) {
 	ctx := context.Background()
-	db, err := openDB(ctx, testDSN())
+	db, err := openSQLiteDB(ctx, testSQLitePath(t))
 	if err != nil {
-		t.Fatalf("connect registry database (is `just up` running?): %v", err)
+		t.Fatalf("open registry database: %v", err)
 	}
 	defer db.Close()
 	registry := NewSiteRegistry(db, nil)
@@ -32,8 +32,8 @@ func TestSiteRegistryListsAndDeletes(t *testing.T) {
 	siteNames := []string{"it-reg-one", "it-reg-two"}
 	cleanup := func() {
 		for _, site := range siteNames {
-			db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = $1`, site)
-			db.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site)
+			db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = ?`, site)
+			db.ExecContext(ctx, `DELETE FROM sites WHERE name = ?`, site)
 		}
 	}
 	cleanup()
@@ -145,6 +145,7 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 	if endpoint == "" {
 		endpoint = "localhost:9000"
 	}
+	requireTestS3Endpoint(t, endpoint)
 	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
 	if err != nil {
 		t.Fatalf("site store: %v", err)
@@ -154,9 +155,9 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 		t.Fatalf("file store: %v", err)
 	}
 	ctx := context.Background()
-	db, err := openDB(ctx, testDSN())
+	db, err := openSQLiteDB(ctx, testSQLitePath(t))
 	if err != nil {
-		t.Fatalf("connect registry database (is `just up` running?): %v", err)
+		t.Fatalf("open registry database: %v", err)
 	}
 	defer db.Close()
 
@@ -176,9 +177,9 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 
 	const site = "it-delete"
 	cleanup := func() {
-		db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = $1`, site)
-		db.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site)
-		db.ExecContext(ctx, `DELETE FROM documents WHERE scope = $1`, site)
+		db.ExecContext(ctx, `DELETE FROM site_deploy_audit WHERE site = ?`, site)
+		db.ExecContext(ctx, `DELETE FROM sites WHERE name = ?`, site)
+		db.ExecContext(ctx, `DELETE FROM documents WHERE scope = ?`, site)
 		if paths, err := sites.List(ctx, site); err == nil {
 			for _, p := range paths {
 				sites.Remove(ctx, site, p)
@@ -258,7 +259,7 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 		t.Errorf("uploads after delete = %v, want none", uploads)
 	}
 	var count int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sites WHERE name = $1`, site).Scan(&count); err != nil {
+	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sites WHERE name = ?`, site).Scan(&count); err != nil {
 		t.Fatalf("count sites: %v", err)
 	}
 	if count != 0 {

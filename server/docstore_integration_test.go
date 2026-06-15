@@ -6,25 +6,27 @@ import (
 	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"testing"
+	"time"
 )
 
-// Integration tests run against a real PostgreSQL, e.g. the compose one:
+// Integration tests run against SQLite, using a temp database by default:
 //
-//	just up
 //	just test-integration
-func testDSN() string {
-	if dsn := os.Getenv("SPOT_TEST_DATABASE_URL"); dsn != "" {
-		return dsn
+func testSQLitePath(t *testing.T) string {
+	t.Helper()
+	if path := os.Getenv("SPOT_TEST_SQLITE_PATH"); path != "" {
+		return path
 	}
-	return "postgres://spot:spot@localhost:5433/spot?sslmode=disable"
+	return filepath.Join(t.TempDir(), "spot.db")
 }
 
 func newTestStore(t *testing.T) *DocStore {
 	t.Helper()
-	db, err := openDB(context.Background(), testDSN())
+	db, err := openSQLiteDB(context.Background(), testSQLitePath(t))
 	if err != nil {
-		t.Fatalf("connect to test database (is `just up` running?): %v", err)
+		t.Fatalf("open test database: %v", err)
 	}
 	t.Cleanup(func() {
 		db.ExecContext(context.Background(), `DELETE FROM documents WHERE scope LIKE 'it-%'`)
@@ -54,6 +56,7 @@ func TestDocStoreCRUD(t *testing.T) {
 		t.Errorf("Get returned data %+v", got.Data)
 	}
 
+	time.Sleep(20 * time.Millisecond)
 	updated, err := store.Update(ctx, scope, coll, created.ID, map[string]any{"title": "bye"})
 	if err != nil {
 		t.Fatalf("Update: %v", err)
@@ -62,7 +65,7 @@ func TestDocStoreCRUD(t *testing.T) {
 		t.Errorf("Update returned data %+v", updated.Data)
 	}
 	if !updated.UpdatedAt.After(created.UpdatedAt) {
-		t.Errorf("Update did not advance updated_at: %v -> %v", created.UpdatedAt, updated.UpdatedAt)
+		t.Errorf("Update timestamp did not advance: %v -> %v", created.UpdatedAt, updated.UpdatedAt)
 	}
 
 	docs, err := store.List(ctx, scope, coll, 10)

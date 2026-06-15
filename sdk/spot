@@ -6,19 +6,26 @@
 # platform lives. Via environment (or $XDG_CONFIG_HOME/spot/env,
 # default ~/.config/spot/env, sourced if present):
 #   SPOT_URL   apex URL of the Spot deployment
-#              (default https://spot.localhost:8443)
+#              (default http://spot.localhost:8080)
 set -eu
 
+# Read SPOT_URL from the config without executing the file: parse it as
+# KEY=VALUE and accept only the SPOT_URL key, so a hostile value cannot
+# run as shell. An env-provided SPOT_URL takes precedence.
 spot_config="${XDG_CONFIG_HOME:-$HOME/.config}/spot/env"
-[ -f "$spot_config" ] && . "$spot_config"
+if [ -z "${SPOT_URL:-}" ] && [ -f "$spot_config" ]; then
+    while IFS='=' read -r key value; do
+        [ "$key" = SPOT_URL ] && SPOT_URL=$value
+    done < "$spot_config"
+fi
 
-SPOT_URL=${SPOT_URL:-https://spot.localhost:8443}
+SPOT_URL=${SPOT_URL:-http://spot.localhost:8080}
 SPOT_URL=${SPOT_URL%/}
 SPOT_SCHEME=${SPOT_URL%%://*}
 SPOT_HOSTPORT=${SPOT_URL#*://}
 SPOT_DOMAIN=${SPOT_HOSTPORT%%:*}
 
-# Dev serves on Caddy's internal CA; localhost is trusted implicitly.
+# Local HTTPS dev may use a private CA; localhost is trusted implicitly.
 case $SPOT_DOMAIN in
     localhost|*.localhost) SPOT_CURL_OPTS=-k ;;
     *) SPOT_CURL_OPTS= ;;
@@ -77,21 +84,29 @@ deploy() {
     # — the shape /api/deploy expects. The server syncs: files absent
     # from the upload are removed from the live site. Dot directories
     # (.git and friends) stay home; the server drops them anyway.
+    #
+    # Quote the path and filename= values so curl does not treat ';' ','
+    # or '@' in a filename as -F metacharacters.
     set -- -F "site=$name"
     if [ -f "$src" ]; then
-        set -- "$@" -F "files=@$file;filename=index.html"
+        set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
     else
         while IFS= read -r f; do
             [ -n "$f" ] || continue
             f=${f#./}
-            set -- "$@" -F "files=@$f;filename=$f"
+            set -- "$@" -F "files=@\"$f\";filename=\"$f\""
         done <<EOF
 $(cd "$dir" && find . -name '.?*' -prune -o -type f -print)
 EOF
     fi
 
-    out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
-        "$@" "$SPOT_URL/api/deploy")
+    # Capture curl's exit without tripping set -e, so a network/HTTP
+    # failure reaches the friendly message below instead of aborting.
+    if ! out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
+        "$@" "$SPOT_URL/api/deploy"); then
+        echo "error: could not reach $SPOT_URL/api/deploy" >&2
+        exit 1
+    fi
     status=$(printf '%s' "$out" | tail -n 1)
     body=$(printf '%s' "$out" | sed '$d')
     if [ "$status" != "200" ]; then
@@ -316,6 +331,18 @@ work) at the site root and the gallery uses it; without one the site
 falls back to a generated placeholder. After building a site, capture it
 at a desktop size (about 1280x800) and include the image in the deploy.
 
+## Source downloads
+
+Every site exposes its deployed source as a ZIP at \`/api/download\` on
+the site origin, for example
+\`$SPOT_SCHEME://<name>.$SPOT_HOSTPORT/api/download\`. When you build a
+site, assume other authorized visitors can download the exact deployed
+HTML/CSS/JS and assets from there.
+
+If the site should be viewable but not downloadable, ship
+\`{ "download": false }\` in \`_access.json\`. This does not restrict
+normal page access unless an \`allow\` list is also present.
+
 ## Backend SDK
 
 Load the SDK with \`<script src="/spot.js"></script>\`. Everything is
@@ -426,6 +453,8 @@ group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
 Add \`"ai":"visitors"\` only when those permitted visitors should be
 allowed to spend the deployment's server-side AI key.
+Add \`"download":false\` to opt out of source ZIP downloads while keeping
+normal page access unchanged.
 
 The first deploy of a site claims it. Later deploys, including changes
 to \`_access.json\`, require the same owner identity or a platform admin.

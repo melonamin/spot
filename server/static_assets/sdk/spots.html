@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="color-scheme" content="light">
   <meta name="theme-color" content="#5a4bf0">
-  <title>Spot — my spots &amp; gallery (mockup)</title>
+  <title>Spot — my spots</title>
   <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -41,8 +41,6 @@
     .topbar {
       display: flex;
       align-items: center;
-      flex-wrap: wrap;
-      gap: 16px 26px;
       max-width: 1100px;
       margin: 0 auto;
       padding: 26px 24px 8px;
@@ -108,7 +106,6 @@
       margin: 0;
       font: 400 clamp(42px, 7vw, 62px)/1.4 var(--font-logo);
       color: #fff;
-      outline: none;
     }
     .title::before,
     .title::after {
@@ -225,9 +222,10 @@
     }
     .btn:hover { transform: translate(-2px, -2px); box-shadow: 6px 7px 0 var(--ink); }
     .btn:active { transform: translate(2px, 3px); box-shadow: 1px 1px 0 var(--ink); }
+    .btn:disabled { opacity: .75; cursor: wait; }
     .btn-open { background: var(--go); color: #fff; }
     .btn-delete { color: var(--bad); }
-    .btn-delete:hover { background: var(--bad); color: #fff; }
+    .btn-delete:hover:not(:disabled) { background: var(--bad); color: #fff; }
 
     /* Armed delete: the button turns into a burning fuse — confirm
        with a second click before the bar runs out, or it disarms. */
@@ -257,6 +255,7 @@
       letter-spacing: .18em;
       text-transform: uppercase;
     }
+    .empty.error h2 { color: var(--bad); }
     .empty p {
       margin: 14px 0 0;
       font: 700 13px/1.7 var(--font-mono);
@@ -341,6 +340,11 @@
     }
     .tile:hover { transform: translate(-3px, -4px); box-shadow: 11px 13px 0 var(--ink); }
     .tile:active { transform: translate(2px, 3px); box-shadow: 2px 2px 0 var(--ink); }
+    .tile-link {
+      display: block;
+      color: inherit;
+      text-decoration: none;
+    }
 
     .preview {
       position: relative;
@@ -355,27 +359,31 @@
       font: 400 64px/1 var(--font-logo);
       color: #fff;
       -webkit-text-stroke: 3px var(--ink);
-      transition: transform .2s ease;
+      transition: transform .2s ease, opacity .35s ease;
       user-select: none;
     }
     .tile:hover .glyph { transform: translateY(-5px) rotate(-4deg) scale(1.08); }
 
-    /* Production path: a real screenshot of the site, faked with a
-       scaled-down iframe of the live page. The generative art behind
-       it doubles as the loading state. */
-    .preview iframe {
+    /* Gallery thumbnail: the site's _screenshot, served same-origin from
+       the apex. It reveals over the generative pattern once it loads; the
+       pattern + glyph stay as the look for sites that ship no screenshot. */
+    .shot {
       position: absolute;
-      left: 0; top: 0;
-      width: 1280px;
-      height: 800px;
-      border: 0;
-      transform-origin: 0 0;
-      pointer-events: none;
-      background: #fff;
+      inset: 0;
+      z-index: 1;
+      width: 100%;
+      height: 100%;
+      object-fit: cover;
+      object-position: top center;
+      opacity: 0;
+      transition: opacity .45s ease;
     }
+    .preview.ready .shot { opacity: 1; }
+    .preview.ready .glyph { opacity: 0; }
 
     .visit {
       position: absolute;
+      z-index: 2;
       top: 11px; right: 11px;
       border: 2px solid var(--ink);
       border-radius: 999px;
@@ -388,7 +396,7 @@
       transform: translateY(-4px);
       transition: opacity .15s ease, transform .15s ease;
     }
-    .tile:hover .visit, .tile:focus-visible .visit { opacity: 1; transform: none; }
+    .tile:hover .visit, .tile:focus-within .visit { opacity: 1; transform: none; }
 
     .tinfo { padding: 15px 17px 17px; }
     .tname {
@@ -416,6 +424,24 @@
       text-transform: uppercase;
       color: var(--mutedink);
     }
+    .tactions {
+      display: flex;
+      gap: 10px;
+      border-top: 3px solid var(--ink);
+      padding: 13px 17px 15px;
+    }
+    .tbtn {
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 8px 11px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+      text-decoration: none;
+    }
+    .tbtn:hover { background: var(--ink); color: #fff; }
 
     .tally {
       margin: 36px 0 0;
@@ -426,7 +452,7 @@
       color: rgba(255, 255, 255, .85);
     }
 
-    /* ─── toast + mockup sticker ──────────────────────────────── */
+    /* ─── toast ───────────────────────────────────────────────── */
     #toast {
       position: fixed;
       left: 50%;
@@ -448,23 +474,6 @@
     }
     #toast.show { transform: translate(-50%, 0); opacity: 1; }
 
-    .sticker {
-      position: fixed;
-      right: 18px;
-      bottom: 18px;
-      z-index: 40;
-      transform: rotate(-4deg);
-      border: 3px solid var(--ink);
-      border-radius: 12px;
-      background: var(--paper);
-      box-shadow: 5px 6px 0 var(--ink);
-      padding: 11px 15px;
-      font: 700 11px/1.4 var(--font-mono);
-      letter-spacing: .14em;
-      text-transform: uppercase;
-      pointer-events: none;
-    }
-
     /* ─── responsive ──────────────────────────────────────────── */
     @media (max-width: 720px) {
       .topbar { padding-top: 22px; }
@@ -483,21 +492,21 @@
   </header>
 
   <main>
-    <section id="view-deploys" aria-labelledby="deploys-title">
+    <section id="view-deploys" aria-labelledby="deploys-title" hidden>
       <div class="pagehead">
-        <h1 class="title" id="deploys-title" data-text="My spots" tabindex="-1">My spots</h1>
-        <p class="sub" id="deploys-sub"></p>
+        <h1 class="title" id="deploys-title" data-text="My spots">My spots</h1>
+        <p class="sub" id="deploys-sub">Loading…</p>
       </div>
       <div id="sitelist"></div>
-      <div class="empty" id="empty" hidden>
-        <h2>No spots yet</h2>
-        <p><a href="/">Drop a folder on the home page</a> to claim your first one.</p>
+      <div class="empty" id="deploys-note" hidden>
+        <h2></h2>
+        <p></p>
       </div>
     </section>
 
     <section id="view-gallery" aria-labelledby="gallery-title" hidden>
       <div class="pagehead">
-        <h1 class="title" id="gallery-title" data-text="Gallery" tabindex="-1">Gallery</h1>
+        <h1 class="title" id="gallery-title" data-text="Gallery">Gallery</h1>
         <p class="sub">Every public spot on the mesh</p>
       </div>
       <div class="toolbar">
@@ -519,6 +528,10 @@
         </div>
       </div>
       <div class="grid" id="grid"></div>
+      <div class="empty" id="gallery-note" hidden>
+        <h2></h2>
+        <p></p>
+      </div>
       <p class="tally" id="tally"></p>
     </section>
   </main>
@@ -526,70 +539,44 @@
   <footer>
     <nav aria-label="Spot pages">
       <a href="/">deploy</a> &nbsp;·&nbsp;
-      <a href="#deploys" data-view="deploys">my spots</a> &nbsp;·&nbsp;
-      <a href="#gallery" data-view="gallery">gallery</a>
+      <a href="/spots" data-view="deploys">my spots</a> &nbsp;·&nbsp;
+      <a href="/gallery" data-view="gallery">gallery</a>
     </nav>
-    signed in as <code id="footer-id"></code>
+    <span id="footer-id"></span>
   </footer>
 
   <div id="toast" role="status" aria-live="polite"></div>
-  <span class="sticker" aria-hidden="true">Mockup · sample data</span>
 
   <script>
     (() => {
       'use strict';
 
-      // Mockup wiring notes — the real pages replace the sample data
-      // below with these (to-be-built) apex endpoints:
-      //   GET    /api/sites/mine      → sites owned by the caller, with
-      //                                 last-deploy file_count/total_bytes
-      //                                 from site_deploy_audit and a
-      //                                 restricted flag from _access.json
-      //   DELETE /api/sites/{name}    → owner or platform admin only
-      //   GET    /api/sites/public    → unrestricted sites for the gallery
-      // HOST below becomes location.host on the real apex page.
-      const HOST = 'spot.t1a.dev';
-      const ME = { email: 'alex@melonamin.com', name: 'Sasha' };
-      const NOW = Date.now();
-
-      const MY_SITES = [
-        { name: 'otter-cam',   files: 3,  bytes: 19306496, createdDays: 0, updatedMins: 35,      restricted: false },
-        { name: 'quick-lunch', files: 7,  bytes: 188416,   createdDays: 1, updatedMins: 130,     restricted: false },
-        { name: 'retro-board', files: 12, bytes: 93184,    createdDays: 1, updatedMins: 60 * 26, restricted: true, allowCount: 3 },
-        { name: 'demo',        files: 5,  bytes: 9216,     createdDays: 1, updatedMins: 60 * 30, restricted: false },
-      ];
-
-      const GALLERY = [
-        { name: 'standup-spinner', owner: 'Marta Vidal',  ownerEmail: 'marta@melonamin.com', createdDays: 4,  updatedMins: 12 },
-        { name: 'otter-cam',       owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 0,  updatedMins: 35 },
-        { name: 'pepper-status',   owner: 'Marta Vidal',  ownerEmail: 'marta@melonamin.com', createdDays: 9,  updatedMins: 45 },
-        { name: 'quick-lunch',     owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 1,  updatedMins: 130 },
-        { name: 't1a-links',       owner: 'Deniz Aksoy',  ownerEmail: 'deniz@melonamin.com', createdDays: 21, updatedMins: 60 * 4 },
-        { name: 'cosmic-comet',    owner: 'Priya Nair',   ownerEmail: 'priya@melonamin.com', createdDays: 2,  updatedMins: 60 * 26 },
-        { name: 'demo',            owner: 'Sasha',        ownerEmail: ME.email,              createdDays: 1,  updatedMins: 60 * 30 },
-        { name: 'mesh-map',        owner: 'Deniz Aksoy',  ownerEmail: 'deniz@melonamin.com', createdDays: 14, updatedMins: 60 * 49 },
-        { name: 'golden-waffle',   owner: 'Jonas Brandt', ownerEmail: 'jonas@melonamin.com', createdDays: 6,  updatedMins: 60 * 24 * 3 },
-        { name: 'zesty-rocket',    owner: 'Tomás Rocha',  ownerEmail: 'tomas@melonamin.com', createdDays: 11, updatedMins: 60 * 24 * 5 },
-        { name: 'meadow-notes',    owner: 'Priya Nair',   ownerEmail: 'priya@melonamin.com', createdDays: 30, updatedMins: 60 * 24 * 8 },
-        { name: 'peppy-spark',     owner: 'Jonas Brandt', ownerEmail: 'jonas@melonamin.com', createdDays: 45, updatedMins: 60 * 24 * 30 },
-      ];
-
+      // One file, two pages: Spot serves /spots and /gallery from here
+      // and the path picks the view. Data comes from the apex sites API.
+      const VIEW = location.pathname.replace(/\/+$/, '') === '/gallery' ? 'gallery' : 'deploys';
       const $ = (id) => document.getElementById(id);
-      const siteUrl = (name) => 'https://' + name + '.' + HOST + '/';
 
-      const rel = (mins) => {
+      document.title = VIEW === 'gallery' ? 'Spot — gallery' : 'Spot — my spots';
+      $('view-' + VIEW).hidden = false;
+      for (const link of document.querySelectorAll('footer a[data-view]')) {
+        if (link.dataset.view === VIEW) link.setAttribute('aria-current', 'page');
+      }
+
+      const rel = (iso) => {
+        const mins = Math.max(0, (Date.now() - Date.parse(iso)) / 60000);
         if (mins < 2) return 'just now';
         if (mins < 60) return Math.round(mins) + 'm ago';
         if (mins < 60 * 48) return Math.round(mins / 60) + 'h ago';
         return Math.round(mins / 60 / 24) + 'd ago';
       };
-      const dateLabel = (daysAgo) =>
-        new Date(NOW - daysAgo * 864e5).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
+      const dateLabel = (iso) =>
+        new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
       const fmtSize = (bytes) => {
         if (bytes < 1024) return bytes + ' B';
         if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
         return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       };
+      const downloadURL = (site) => site.url.replace(/\/$/, '') + '/api/download';
 
       const toastEl = $('toast');
       let toastTimer = null;
@@ -597,7 +584,7 @@
         toastEl.textContent = message;
         toastEl.classList.add('show');
         clearTimeout(toastTimer);
-        toastTimer = setTimeout(() => toastEl.classList.remove('show'), 2600);
+        toastTimer = setTimeout(() => toastEl.classList.remove('show'), 3200);
       };
 
       const copyText = async (text) => {
@@ -616,10 +603,30 @@
         field.remove();
       };
 
+      // api returns the parsed body or throws the server's error message.
+      const api = async (path, options) => {
+        let res;
+        try {
+          res = await fetch(path, options);
+        } catch {
+          throw new Error('could not reach the Spot API');
+        }
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'request failed (HTTP ' + res.status + ')');
+        return body;
+      };
+
+      const showNote = (id, heading, detail, isError) => {
+        const note = $(id);
+        note.hidden = false;
+        note.classList.toggle('error', !!isError);
+        note.querySelector('h2').textContent = heading;
+        note.querySelector('p').textContent = detail || '';
+      };
+
       // ─── generative previews ──────────────────────────────────
       // Every site gets a deterministic pattern from its name, in the
-      // confetti palette. It is the gallery placeholder today and the
-      // loading/fallback state once previews are live iframes.
+      // confetti palette — the gallery's stand-in for screenshots.
       const hash = (text) => {
         let h = 5381;
         for (const ch of text) h = ((h << 5) + h + ch.codePointAt(0)) >>> 0;
@@ -645,7 +652,22 @@
         el.style.backgroundSize = pattern.size + ', auto';
       };
 
+      // ─── identity (footer) ────────────────────────────────────
+      const loadIdentity = async () => {
+        try {
+          const me = await api('/api/me');
+          const id = document.createElement('code');
+          id.textContent = me.email || me.peer_ip;
+          $('footer-id').append('signed in as ', id);
+          return me;
+        } catch {
+          $('footer-id').textContent = '';
+          return null;
+        }
+      };
+
       // ─── my spots ─────────────────────────────────────────────
+      let mySites = [];
       const siteList = $('sitelist');
       let armed = null; // { button, timer } for the pending delete
 
@@ -657,29 +679,42 @@
         armed = null;
       };
 
-      const removeSite = (name, row) => {
+      const deleteSite = async (site, row, button) => {
         disarm();
+        button.disabled = true;
+        button.textContent = 'Deleting…';
+        try {
+          await api('/api/sites/' + encodeURIComponent(site.name), { method: 'DELETE' });
+        } catch (err) {
+          button.disabled = false;
+          button.textContent = 'Delete';
+          toast(err.message);
+          return;
+        }
         row.style.maxHeight = row.offsetHeight + 'px';
         requestAnimationFrame(() => row.classList.add('vanish'));
         setTimeout(() => {
-          MY_SITES.splice(MY_SITES.findIndex((s) => s.name === name), 1);
-          const inGallery = GALLERY.findIndex((s) => s.name === name);
-          if (inGallery !== -1) GALLERY.splice(inGallery, 1);
+          mySites = mySites.filter((s) => s.name !== site.name);
           renderDeploys();
-          renderGallery();
-          toast(name + ' is gone');
+          toast(site.name + ' is gone');
         }, 380);
-        // Real page: DELETE /api/sites/{name}, then re-render from the
-        // response — only the server knows the delete actually landed.
       };
 
       const renderDeploys = () => {
-        $('deploys-sub').textContent =
-          MY_SITES.length + ' live · ' + ME.email;
-        $('empty').hidden = MY_SITES.length > 0;
+        $('deploys-sub').textContent = mySites.length + ' live' + (whoami ? ' · ' + whoami : '');
         siteList.replaceChildren();
+        if (!mySites.length) {
+          showNote('deploys-note', 'No spots yet', '');
+          const note = $('deploys-note').querySelector('p');
+          const link = document.createElement('a');
+          link.href = '/';
+          link.textContent = 'Drop a folder on the home page';
+          note.replaceChildren(link, ' to claim your first one.');
+          return;
+        }
+        $('deploys-note').hidden = true;
 
-        for (const site of MY_SITES) {
+        for (const site of mySites) {
           const row = document.createElement('article');
           row.className = 'site';
 
@@ -691,24 +726,24 @@
           name.textContent = site.name;
           const badge = document.createElement('span');
           badge.className = 'badge ' + (site.restricted ? 'locked' : 'public');
-          badge.textContent = site.restricted ? '🔒 locked · ' + site.allowCount : 'public';
+          badge.textContent = site.restricted ? '🔒 locked · ' + site.allow_count : 'public';
           head.append(name, badge);
 
           const url = document.createElement('a');
           url.className = 'siteurl';
-          url.href = siteUrl(site.name);
+          url.href = site.url;
           url.target = '_blank';
           url.rel = 'noopener';
-          url.textContent = site.name + '.' + HOST;
+          url.textContent = site.url.replace(/^https:\/\//, '').replace(/\/$/, '');
 
           const meta = document.createElement('p');
           meta.className = 'sitemeta';
           meta.innerHTML = '<b></b> files · <b></b> · claimed <b></b> · updated <b></b>';
           const slots = meta.querySelectorAll('b');
-          slots[0].textContent = site.files;
-          slots[1].textContent = fmtSize(site.bytes);
-          slots[2].textContent = dateLabel(site.createdDays);
-          slots[3].textContent = rel(site.updatedMins);
+          slots[0].textContent = site.file_count;
+          slots[1].textContent = fmtSize(site.total_bytes);
+          slots[2].textContent = dateLabel(site.created_at);
+          slots[3].textContent = rel(site.updated_at);
 
           info.append(head, url, meta);
 
@@ -717,7 +752,7 @@
 
           const open = document.createElement('a');
           open.className = 'btn btn-open';
-          open.href = siteUrl(site.name);
+          open.href = site.url;
           open.target = '_blank';
           open.rel = 'noopener';
           open.textContent = 'Open ↗';
@@ -727,9 +762,15 @@
           copy.className = 'btn';
           copy.textContent = 'Copy URL';
           copy.addEventListener('click', async () => {
-            await copyText(siteUrl(site.name));
+            await copyText(site.url);
             toast('URL copied');
           });
+
+          const download = document.createElement('a');
+          download.className = 'btn';
+          download.href = downloadURL(site);
+          download.textContent = 'Download ZIP';
+          download.setAttribute('download', site.name + '.zip');
 
           const del = document.createElement('button');
           del.type = 'button';
@@ -738,8 +779,9 @@
           del.setAttribute('aria-label', 'Delete ' + site.name);
           del.addEventListener('click', (e) => {
             e.stopPropagation();
+            if (del.disabled) return;
             if (armed && armed.button === del) {
-              removeSite(site.name, row);
+              deleteSite(site, row, del);
               return;
             }
             disarm();
@@ -748,7 +790,9 @@
             armed = { button: del, timer: setTimeout(disarm, 4000) };
           });
 
-          actions.append(open, copy, del);
+          actions.append(open, copy);
+          if (site.download_allowed !== false) actions.append(download);
+          actions.append(del);
           row.append(info, actions);
           siteList.appendChild(row);
         }
@@ -762,7 +806,19 @@
         if (e.key === 'Escape') disarm();
       });
 
+      const loadMine = async () => {
+        try {
+          const body = await api('/api/sites/mine');
+          mySites = body.sites || [];
+          renderDeploys();
+        } catch (err) {
+          $('deploys-sub').textContent = 'Something went wrong';
+          showNote('deploys-note', 'Could not load your spots', err.message, true);
+        }
+      };
+
       // ─── gallery ──────────────────────────────────────────────
+      let gallery = [];
       const grid = $('grid');
 
       // Ordering is the gallery's editorial voice: strict recency
@@ -772,46 +828,59 @@
       const rankGallery = (sites, mode) => {
         const ranked = [...sites];
         if (mode === 'name') ranked.sort((a, b) => a.name.localeCompare(b.name));
-        else if (mode === 'created') ranked.sort((a, b) => a.createdDays - b.createdDays);
-        else ranked.sort((a, b) => a.updatedMins - b.updatedMins);
+        else if (mode === 'created') ranked.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
+        else ranked.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
         return ranked;
       };
 
       const renderGallery = () => {
         const query = $('search').value.trim().toLowerCase();
         const mode = $('sort').value;
-        const shown = rankGallery(GALLERY, mode).filter((site) =>
+        const shown = rankGallery(gallery, mode).filter((site) =>
           !query || site.name.includes(query) || site.owner.toLowerCase().includes(query)
         );
 
         grid.replaceChildren();
+        if (!gallery.length) {
+          showNote('gallery-note', 'Nothing public yet', 'Deploy something and it shows up here.');
+          $('tally').textContent = '';
+          return;
+        }
+        $('gallery-note').hidden = true;
+
         for (const site of shown) {
-          const tile = document.createElement('a');
+          const tile = document.createElement('article');
           tile.className = 'tile';
-          tile.href = siteUrl(site.name);
-          tile.target = '_blank';
-          tile.rel = 'noopener';
+          const link = document.createElement('a');
+          link.className = 'tile-link';
+          link.href = site.url;
+          link.target = '_blank';
+          link.rel = 'noopener';
 
           const preview = document.createElement('div');
           preview.className = 'preview';
           paintPreview(preview, site.name);
-          if (site.previewUrl) {
-            // Live preview: the real site scaled down to thumbnail size.
-            const frame = document.createElement('iframe');
-            frame.src = site.previewUrl;
-            frame.loading = 'lazy';
-            frame.setAttribute('sandbox', '');
-            frame.setAttribute('scrolling', 'no');
-            frame.setAttribute('aria-hidden', 'true');
-            frame.tabIndex = -1;
-            preview.appendChild(frame);
-            fitFrame(preview, frame);
-          } else {
-            const glyph = document.createElement('span');
-            glyph.className = 'glyph';
-            glyph.textContent = site.name[0].toUpperCase();
-            preview.appendChild(glyph);
+          const glyph = document.createElement('span');
+          glyph.className = 'glyph';
+          glyph.textContent = site.name[0].toUpperCase();
+          preview.appendChild(glyph);
+
+          // A real screenshot the site shipped (_screenshot.*), served from
+          // the apex so it always loads. It reveals over the generative
+          // pattern once decoded; if it errors it removes itself and the
+          // pattern + glyph remain. Sites without one never get an <img>.
+          if (site.preview) {
+            const shot = document.createElement('img');
+            shot.className = 'shot';
+            shot.src = site.preview;
+            shot.loading = 'lazy';
+            shot.alt = '';
+            shot.setAttribute('aria-hidden', 'true');
+            shot.addEventListener('load', () => preview.classList.add('ready'));
+            shot.addEventListener('error', () => shot.remove());
+            preview.appendChild(shot);
           }
+
           const visit = document.createElement('span');
           visit.className = 'visit';
           visit.textContent = 'Visit ↗';
@@ -822,7 +891,7 @@
           const name = document.createElement('h2');
           name.className = 'tname';
           name.textContent = site.name;
-          if (site.ownerEmail === ME.email) {
+          if (site.yours) {
             const chip = document.createElement('span');
             chip.className = 'yours';
             chip.textContent = 'yours';
@@ -830,44 +899,51 @@
           }
           const meta = document.createElement('p');
           meta.className = 'tmeta';
-          meta.textContent = 'by ' + site.owner + ' · ' + rel(site.updatedMins);
+          meta.textContent = 'by ' + site.owner + ' · ' + rel(site.updated_at);
           info.append(name, meta);
 
-          tile.append(preview, info);
+          link.append(preview, info);
+          tile.appendChild(link);
+          if (site.download_allowed !== false) {
+            const actions = document.createElement('div');
+            actions.className = 'tactions';
+            const download = document.createElement('a');
+            download.className = 'tbtn';
+            download.href = downloadURL(site);
+            download.textContent = 'Download ZIP';
+            download.setAttribute('download', site.name + '.zip');
+            actions.appendChild(download);
+            tile.appendChild(actions);
+          }
           grid.appendChild(tile);
         }
 
-        $('tally').textContent = shown.length === GALLERY.length
-          ? GALLERY.length + ' public spots on the mesh'
-          : shown.length + ' of ' + GALLERY.length + ' public spots';
-      };
-
-      const fitFrame = (container, frame) => {
-        const fit = () => { frame.style.transform = 'scale(' + container.clientWidth / 1280 + ')'; };
-        new ResizeObserver(fit).observe(container);
-        fit();
+        $('tally').textContent = shown.length === gallery.length
+          ? gallery.length + ' public spot' + (gallery.length === 1 ? '' : 's') + ' on the mesh'
+          : shown.length + ' of ' + gallery.length + ' public spots';
       };
 
       $('search').addEventListener('input', renderGallery);
       $('sort').addEventListener('change', renderGallery);
 
-      // ─── view switching ───────────────────────────────────────
-      const VIEWS = { deploys: $('view-deploys'), gallery: $('view-gallery') };
-      const showView = (view) => {
-        for (const [key, section] of Object.entries(VIEWS)) section.hidden = key !== view;
-        for (const link of document.querySelectorAll('footer a[data-view]')) {
-          if (link.dataset.view === view) link.setAttribute('aria-current', 'page');
-          else link.removeAttribute('aria-current');
+      const loadGallery = async () => {
+        try {
+          const body = await api('/api/sites/public');
+          gallery = body.sites || [];
+          renderGallery();
+        } catch (err) {
+          showNote('gallery-note', 'Could not load the gallery', err.message, true);
         }
       };
-      const fromHash = () => showView(location.hash === '#gallery' ? 'gallery' : 'deploys');
-      window.addEventListener('hashchange', fromHash);
 
-      $('footer-id').textContent = ME.email;
-
-      renderDeploys();
-      renderGallery();
-      fromHash();
+      // ─── boot ─────────────────────────────────────────────────
+      let whoami = '';
+      loadIdentity().then((me) => {
+        whoami = me && me.email ? me.email : '';
+        if (VIEW === 'deploys' && mySites.length) renderDeploys();
+      });
+      if (VIEW === 'deploys') loadMine();
+      else loadGallery();
     })();
   </script>
 </body>

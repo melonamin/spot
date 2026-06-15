@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"sort"
 	"strconv"
@@ -70,8 +71,13 @@ type oauthTailscaleTokenSource struct {
 	expiresAt    time.Time
 }
 
+// tailscaleTokenRefreshSkew is the buffer before actual token expiry at
+// which a fresh token is minted, so requests never carry a token that
+// expires in flight.
+const tailscaleTokenRefreshSkew = 60 * time.Second
+
 func (s *oauthTailscaleTokenSource) token(ctx context.Context, client *http.Client, apiURL string) (string, error) {
-	if s.accessToken != "" && time.Now().Before(s.expiresAt.Add(-60*time.Second)) {
+	if s.accessToken != "" && time.Now().Before(s.expiresAt) {
 		return s.accessToken, nil
 	}
 	form := url.Values{}
@@ -105,8 +111,15 @@ func (s *oauthTailscaleTokenSource) token(ctx context.Context, client *http.Clie
 	if out.ExpiresIn <= 0 {
 		return "", fmt.Errorf("tailscale oauth token response: invalid expires_in %s", strconv.Itoa(out.ExpiresIn))
 	}
+	lifetime := time.Duration(out.ExpiresIn) * time.Second
+	skew := tailscaleTokenRefreshSkew
+	if skew >= lifetime {
+		// Short-lived tokens would be treated as instantly expired if the
+		// full skew were applied; refresh just before actual expiry instead.
+		skew = lifetime / 2
+	}
 	s.accessToken = out.AccessToken
-	s.expiresAt = time.Now().Add(time.Duration(out.ExpiresIn) * time.Second)
+	s.expiresAt = time.Now().Add(lifetime - skew)
 	return s.accessToken, nil
 }
 
@@ -116,7 +129,7 @@ func (r *TailscaleResolver) Resolve(ctx context.Context, ip string) (Identity, b
 	if err := r.ensureFresh(ctx); err != nil {
 		return Identity{}, false, err
 	}
-	id, ok := r.byIP[ip]
+	id, ok := r.byIP[normalizeTailscaleIP(ip)]
 	return id, ok, nil
 }
 
@@ -206,13 +219,25 @@ func (r *TailscaleResolver) fetch(ctx context.Context) (map[string]Identity, []A
 			}
 		}
 		for _, addr := range d.Addresses {
-			if addr != "" {
-				byIP[addr] = id
+			if key := normalizeTailscaleIP(addr); key != "" {
+				byIP[key] = id
 			}
 		}
 	}
 
 	return byIP, buildTailscaleDirectory(users.Users, groupNames), nil
+}
+
+// normalizeTailscaleIP canonicalizes an address string so semantically
+// equal forms (notably differing IPv6 textual representations) compare
+// equal as map keys. Addresses that fail to parse are dropped by
+// returning the empty string. IPv4 addresses round-trip unchanged.
+func normalizeTailscaleIP(addr string) string {
+	parsed, err := netip.ParseAddr(addr)
+	if err != nil {
+		return ""
+	}
+	return parsed.Unmap().String()
 }
 
 func tailscaleCanonicalAddress(addresses []string) string {

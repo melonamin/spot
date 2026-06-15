@@ -64,7 +64,7 @@ func TestFileUploadRoundtrip(t *testing.T) {
 		t.Errorf("stored = %+v", stored)
 	}
 
-	got, err := http.Get(ts.URL + stored.URL)
+	got, err := getWithForwardedHost(ts.URL+stored.URL, "it-files.spot.localhost")
 	if err != nil {
 		t.Fatalf("download: %v", err)
 	}
@@ -80,7 +80,8 @@ func TestFileUploadRoundtrip(t *testing.T) {
 		t.Errorf("downloaded %d bytes do not match the %d uploaded", len(roundtripped), len(content))
 	}
 
-	missing, err := http.Get(ts.URL + "/api/files/it-files/00000000000000000000000000000000/nope.bin")
+	missing, err := getWithForwardedHost(ts.URL+"/api/files/it-files/00000000000000000000000000000000/nope.bin",
+		"it-files.spot.localhost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -137,7 +138,7 @@ func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
 		t.Errorf("stored content type = %q, want sniffed text/html", stored.ContentType)
 	}
 
-	got, err := http.Get(ts.URL + stored.URL)
+	got, err := getWithForwardedHost(ts.URL+stored.URL, "it-files.spot.localhost")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,4 +152,13 @@ func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
 	if !strings.Contains(got.Header.Get("Content-Security-Policy"), "sandbox") {
 		t.Errorf("CSP = %q, want sandbox", got.Header.Get("Content-Security-Policy"))
 	}
+}
+
+func getWithForwardedHost(url, host string) (*http.Response, error) {
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Forwarded-Host", host)
+	return http.DefaultClient.Do(req)
 }

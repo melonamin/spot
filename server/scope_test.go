@@ -26,6 +26,41 @@ func TestSiteFromHost(t *testing.T) {
 	}
 }
 
+func TestValidSpotHost(t *testing.T) {
+	const domain = "spot.localhost"
+	tests := []struct {
+		host string
+		want bool
+	}{
+		{"spot.localhost", true},
+		{"spot.localhost:8080", true},
+		{"demo.spot.localhost", true},
+		{"demo.spot.localhost.", true},
+		{"a.b.spot.localhost", false},
+		{"bad_site.spot.localhost", false},
+		{"evil.example.com", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := validSpotHost(tt.host, domain); got != tt.want {
+			t.Errorf("validSpotHost(%q, %q) = %v, want %v", tt.host, domain, got, tt.want)
+		}
+	}
+}
+
+// TestValidSpotHostEmptyDomain pins the test-only behavior of an empty
+// spotDomain accepting any host. Production rejects an empty SPOT_DOMAIN at
+// startup, so this branch is unreachable with real traffic; the test guards
+// against it silently changing and breaking the many tests that build a
+// Server without a domain.
+func TestValidSpotHostEmptyDomain(t *testing.T) {
+	for _, host := range []string{"anything.example.com", "spot.localhost", ""} {
+		if !validSpotHost(host, "") {
+			t.Errorf("validSpotHost(%q, \"\") = false, want true", host)
+		}
+	}
+}
+
 func TestScopeFor(t *testing.T) {
 	scope, err := scopeFor("mysite", "posts")
 	if err != nil {

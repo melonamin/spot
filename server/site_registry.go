@@ -65,11 +65,10 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 	}
 	defer tx.Rollback()
 
-	record, err := readSiteForUpdate(ctx, tx, site)
+	record, err := r.readSiteForUpdate(ctx, tx, site)
 	if errors.Is(err, sql.ErrNoRows) {
 		if _, err := tx.ExecContext(ctx,
-			`INSERT INTO sites (name, owner_email, owner_peer_ip, owner_name)
-			 VALUES ($1, $2, $3, $4)`,
+			insertSiteSQL,
 			site, strings.ToLower(actor.Email), actor.PeerIP, actor.Name,
 		); err != nil {
 			return DeployAuthorization{}, fmt.Errorf("claim site %s: %w", site, err)
@@ -87,7 +86,7 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		return DeployAuthorization{}, ErrDeployForbidden
 	}
 	if _, err := tx.ExecContext(ctx,
-		`UPDATE sites SET updated_at = now() WHERE name = $1`, site,
+		touchSiteSQL, site,
 	); err != nil {
 		return DeployAuthorization{}, fmt.Errorf("touch site %s: %w", site, err)
 	}
@@ -97,15 +96,21 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 	return DeployAuthorization{Action: "update"}, nil
 }
 
-func readSiteForUpdate(ctx context.Context, tx *sql.Tx, site string) (SiteRecord, error) {
+// DeleteClaim removes a site's registry row. handleDeploy calls it when a
+// site's first deploy claims the name but its storage write then fails,
+// so a failed create does not permanently claim the name. It never runs
+// for a redeploy, so an existing site's claim is left intact.
+func (r *SiteRegistry) DeleteClaim(ctx context.Context, site string) error {
+	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
+		return fmt.Errorf("delete site claim %s: %w", site, err)
+	}
+	return nil
+}
+
+func (r *SiteRegistry) readSiteForUpdate(ctx context.Context, tx *sql.Tx, site string) (SiteRecord, error) {
 	var record SiteRecord
-	err := tx.QueryRowContext(ctx,
-		`SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
-		 FROM sites
-		 WHERE name = $1
-		 FOR UPDATE`,
-		site,
-	).Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	err := tx.QueryRowContext(ctx, readSiteSQL, site).
+		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	return record, err
 }
 
@@ -115,10 +120,7 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 		return fmt.Errorf("encode deploy audit groups: %w", err)
 	}
 	_, err = r.db.ExecContext(ctx,
-		`INSERT INTO site_deploy_audit
-		   (site, actor_email, actor_peer_ip, actor_name, actor_groups,
-		    action, status, file_count, total_bytes, message)
-		 VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10)`,
+		insertDeployAuditSQL,
 		event.Site,
 		strings.ToLower(event.Actor.Email),
 		event.Actor.PeerIP,
@@ -149,20 +151,7 @@ type OwnedSite struct {
 // site has one, the claiming peer IP otherwise.
 func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]OwnedSite, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
-		        s.created_at, s.updated_at,
-		        COALESCE(a.file_count, 0), COALESCE(a.total_bytes, 0)
-		 FROM sites s
-		 LEFT JOIN LATERAL (
-		     SELECT file_count, total_bytes
-		     FROM site_deploy_audit
-		     WHERE site = s.name AND status = 'success'
-		     ORDER BY created_at DESC
-		     LIMIT 1
-		 ) a ON true
-		 WHERE (s.owner_email <> '' AND s.owner_email = $1)
-		    OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = $2)
-		 ORDER BY s.updated_at DESC`,
+		sitesOwnedBySQL,
 		strings.ToLower(actor.Email), actor.PeerIP)
 	if err != nil {
 		return nil, fmt.Errorf("list owned sites: %w", err)
@@ -213,12 +202,8 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 
 func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Identity) (bool, error) {
 	var record SiteRecord
-	err := r.db.QueryRowContext(ctx,
-		`SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
-		 FROM sites
-		 WHERE name = $1`,
-		site,
-	).Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
+		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrSiteNotFound
 	}
@@ -228,25 +213,17 @@ func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Ide
 	return record.OwnedBy(actor) || allowsAdmin(r.admins, actor), nil
 }
 
-// DeleteSite removes a site's registry row after running purge while
-// holding the row lock. Holding the lock serializes deletion against
-// concurrent deploys of the same name: a deploy waits on
-// AuthorizeDeploy's FOR UPDATE and then either sees the row gone (fresh
-// claim) or finishes before the purge starts. A failed purge rolls back,
-// leaving the site claimed so its owner can retry.
+// DeleteSite removes a site's registry row after purge succeeds. A
+// failed purge leaves the site claimed so its owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) error {
-	tx, err := r.db.BeginTx(ctx, nil)
-	if err != nil {
-		return fmt.Errorf("begin site delete: %w", err)
-	}
-	defer tx.Rollback()
-
-	record, err := readSiteForUpdate(ctx, tx, site)
+	var record SiteRecord
+	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
+		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrSiteNotFound
 	}
 	if err != nil {
-		return err
+		return fmt.Errorf("read site %s: %w", site, err)
 	}
 	if !record.OwnedBy(actor) && !allowsAdmin(r.admins, actor) {
 		return ErrDeployForbidden
@@ -256,14 +233,42 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 			return fmt.Errorf("purge site %s: %w", site, err)
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `DELETE FROM sites WHERE name = $1`, site); err != nil {
+	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
 		return fmt.Errorf("delete site %s: %w", site, err)
-	}
-	if err := tx.Commit(); err != nil {
-		return fmt.Errorf("commit site delete: %w", err)
 	}
 	return nil
 }
+
+const (
+	insertSiteSQL = `INSERT INTO sites (name, owner_email, owner_peer_ip, owner_name)
+		VALUES (?, ?, ?, ?)`
+
+	touchSiteSQL = `UPDATE sites SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE name = ?`
+
+	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+		FROM sites
+		WHERE name = ?`
+
+	insertDeployAuditSQL = `INSERT INTO site_deploy_audit
+		(site, actor_email, actor_peer_ip, actor_name, actor_groups,
+		 action, status, file_count, total_bytes, message)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+
+	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
+			s.created_at, s.updated_at,
+			COALESCE((SELECT file_count FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
+			COALESCE((SELECT total_bytes FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0)
+		FROM sites s
+		WHERE (s.owner_email <> '' AND s.owner_email = ?)
+		   OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = ?)
+		ORDER BY s.updated_at DESC`
+
+	deleteSiteSQL = `DELETE FROM sites WHERE name = ?`
+)
 
 func (r SiteRecord) OwnedBy(actor Identity) bool {
 	if r.OwnerEmail != "" {

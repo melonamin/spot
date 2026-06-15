@@ -4,179 +4,276 @@ Drop a folder, get a spot.
 
 ![Spot deploy UI](docs/assets/spot-home.png)
 
-Spot is a self-hosted internal hosting platform for small web things
-that should be easy to ship and private by default. Put it on a VM
-inside your WireGuard mesh, drop a folder of HTML from the browser or
-CLI, and get a private URL like `https://demo.spot.example.com`.
+Spot is a self-hosted internal hosting platform for small web things that
+should be easy to ship and private by default. Put it on a VM inside your
+NetBird or Tailscale mesh, drop a folder of HTML from the browser or CLI,
+and get a private URL like `http://demo.spot.example.com`.
 
-It is inspired by [Shopify's Quick](https://shopify.engineering/quick):
-no frameworks, no pipelines, no per-site config. A site can be a single
-`index.html`, a folder of HTML/CSS/JS, or a small app that uses Spot's
-built-in document DB, realtime rooms, files, and AI proxy.
-
-## Use Cases
-
-- **Corporate internal apps**: ship dashboards, demos, status pages,
-  design prototypes, team tools, and one-off workflows without opening
-  them to the internet. Identity comes from NetBird or Tailscale, so the
-  same mesh that decides who can reach Spot also powers per-site access
-  rules.
-- **Homelabs and family networks**: host household tools, experiments,
-  notes, dashboards, and a low-friction playground where kids can publish
-  HTML/CSS/JS projects to the family Tailnet without learning deploy
-  keys, DNS, or cloud accounts first.
+For trusted homelabs, Spot can also run in `single-user` mode: no provider
+API, no per-person identity, just one fixed owner for everyone who can
+reach the box.
 
 ## How It Works
 
-```
-employee device (mesh peer: NetBird or Tailscale)
-        │  WireGuard mesh — provider policy decides who reaches the VM
-        ▼
-spot VM (mesh peer)
-  ├─ Caddy        wildcard *.spot.<domain>: site files + /api + /spot.js
-  ├─ spot-api    Go: document DB, identity from mesh peer IPs
-  ├─ Postgres     JSONB document store
-  ├─ RustFS       S3 buckets spot-sites / spot-uploads
-  └─ rclone       FUSE-mounts spot-sites read-only for Caddy
+```text
+mesh peer
+   |
+   | WireGuard mesh decides who can reach the VM
+   v
+spot VM
+  |- spot-api   Go binary: platform UI, deployed sites, APIs, realtime
+  |- SQLite     metadata, documents, deploy registry, audit log
+  `- S3/RustFS  deployed site files and uploads
 ```
 
-Authentication is the mesh itself: only mesh peers can reach the VM,
-and WireGuard source IPs are cryptographically bound to peers. Identity
-(`/api/me`) is resolved by mapping the request's peer IP to its owner via
-the configured provider's management API — no cookies, no OIDC redirects.
+Authentication is the mesh itself. NetBird or Tailscale decides who can
+reach the VM, and Spot maps the request's mesh source IP to an identity
+through the provider API. There are no cookies, sessions, OIDC redirects,
+or per-site deploy keys.
 
-## Run it
+S3-compatible storage stays in the architecture because deployed sites
+and uploads can be large and are the easiest part to keep in blob storage.
+SQLite is the only metadata database.
+
+## Quick Start
 
 ```sh
-just up        # full stack on https://*.spot.localhost:8443
-just e2e       # end-to-end: deploy demo site, exercise serving + DB API
-```
-
-Deploys require a resolved identity. In production that identity comes
-from NetBird or Tailscale; for local-only development without a mesh API, set
-`SPOT_DEV_IDENTITY_EMAIL=you@localhost` before `just up`.
-
-Deploy any folder with an `index.html`, or a single `index.html` file:
-
-```sh
-cli/spot deploy mysite     # -> https://mysite.spot.localhost:8443/
-cli/spot deploy mysite index.html
-```
-
-The CLI targets `SPOT_URL` (default `https://spot.localhost:8443`); set
-it to a deployment's apex — e.g. `https://spot.corp.example.com` — or
-persist it in `~/.config/spot/env`.
-
-Or skip the terminal: the apex page (`https://spot.localhost:8443/`) is
-a deployer — drop a folder or `index.html` on it, pick a name, hit
-Launch. CLI and page both post the files to `POST /api/deploy` on the
-apex, which syncs them into the `spot-sites` bucket (stale files are
-removed, like `rclone sync`). Going through the server means deployers
-never hold storage credentials, and the endpoint only answers on the
-apex host, so a deployed site's JavaScript can never redeploy other sites
-with a visitor's browser.
-
-`cli/spot init` writes an agent skill for Claude Code, Codex, or Pi,
-either into the current project or the user's global agent skills
-directory, so coding agents know the SDK without reading docs.
-
-## Deploy with Docker Compose
-
-Spot is meant to run on a small VM that is already joined to your
-NetBird or Tailscale network. The mesh decides who can reach the VM;
-Spot uses the provider API to turn the visitor's mesh IP into an
-identity.
-
-On the VM:
-
-```sh
-git clone https://github.com/melonamin/spot.git
-cd spot
 cp .env.example .env
+just up
 ```
 
-Edit `.env`:
+The local compose stack runs:
 
-- Set `SPOT_MESH_DOMAIN` to the apex you want, for example
-  `spot.corp.example.com` or `spot.home.arpa`.
-- Set `SPOT_SITE_LABEL` to the number of labels in that domain:
-  `spot.test` is `2`, `spot.t1a.dev` is `3`,
-  `spot.corp.example.com` is `4`.
-- Replace `POSTGRES_PASSWORD`, `RUSTFS_ACCESS_KEY`, and
-  `RUSTFS_SECRET_KEY`; shared deployments refuse the local defaults.
-- Configure exactly one identity provider:
-  `NETBIRD_API_URL`/`NETBIRD_API_TOKEN`, or Tailscale OAuth
-  `TAILSCALE_OAUTH_CLIENT_ID`/`TAILSCALE_OAUTH_CLIENT_SECRET`.
-- Optional: set `SPOT_ADMIN_EMAILS` or `SPOT_ADMIN_GROUPS` for people
-  who can redeploy/delete any site.
+- `spot-api` on `http://spot.localhost:8080`
+- RustFS on loopback for S3-compatible blob storage
+- SQLite in the `spot-data` volume
 
-Point DNS at the VM's mesh IP:
+Local development uses `SPOT_DEV_IDENTITY_EMAIL=dev@spot.local` by
+default so deploys work without a mesh API. Shared deployments must use a
+real mesh provider or `SPOT_AUTH_MODE=single-user`.
+
+Deploy a folder with an `index.html`:
+
+```sh
+cli/spot deploy demo examples/demo
+```
+
+Then open:
 
 ```text
-spot.example.com      A/AAAA  <vm mesh ip>
-*.spot.example.com    A/AAAA  <vm mesh ip>
+http://demo.spot.localhost:8080/
 ```
 
-Then start the mesh deployment:
+The CLI targets `SPOT_URL` and defaults to
+`http://spot.localhost:8080`. Persist another deployment with:
 
 ```sh
-docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
-docker compose -f docker-compose.yml -f docker-compose.mesh.yml ps
+mkdir -p ~/.config/spot
+printf 'SPOT_URL=https://spot.example.com\n' > ~/.config/spot/env
 ```
 
-The mesh overlay runs Caddy on the host network so it can preserve the
-real peer source IP for identity. It serves HTTPS on `:443`; with the
-default `SPOT_TLS_MODE=tls-internal`, clients need to trust Caddy's local
-CA or accept the certificate warning. For public certificates, set
-`SPOT_TLS_MODE=tls-cloudflare` and `CF_API_TOKEN` for DNS-01 wildcard
-certificates.
+The apex page is also a deployer: open `http://spot.localhost:8080/`,
+drop a folder or `index.html`, pick a name, and launch.
 
-For redeploying this repository to a VM over SSH, `scripts/deploy-prod.sh`
-archives the committed tree and runs the same compose command remotely.
+## Deployment Modes
 
-## Tests
+### Mesh Identity
+
+Use this for the normal shared deployment model.
+
+1. Point the apex and wildcard DNS at the VM's mesh IP:
+
+   ```text
+   spot.example.com      A/AAAA  <vm mesh ip>
+   *.spot.example.com    A/AAAA  <vm mesh ip>
+   ```
+
+2. Set a non-local domain and replace default RustFS credentials:
+
+   ```env
+   SPOT_MESH_DOMAIN=spot.example.com
+   RUSTFS_ACCESS_KEY=...
+   RUSTFS_SECRET_KEY=...
+   ```
+
+3. Configure exactly one provider:
+
+   ```env
+   NETBIRD_API_URL=https://netbird.example.com
+   NETBIRD_API_TOKEN=...
+   ```
+
+   or:
+
+   ```env
+   TAILSCALE_OAUTH_CLIENT_ID=...
+   TAILSCALE_OAUTH_CLIENT_SECRET=...
+   TAILSCALE_TAILNET=-
+   ```
+
+4. Start with host networking for `spot-api`, so it sees the real mesh
+   peer source IP:
+
+   ```sh
+   docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d --build
+   ```
+
+To let Spot serve HTTPS directly, add the TLS overlay:
 
 ```sh
-just test               # unit
-just test-integration   # against the compose PostgreSQL (needs `just up`)
-just e2e                # full stack through Caddy
+docker compose \
+  -f docker-compose.yml \
+  -f docker-compose.mesh.yml \
+  -f docker-compose.tls.yml \
+  up -d --build
+```
+
+`SPOT_TLS_MODE=tls-internal` uses Caddy's internal CA.
+`SPOT_TLS_MODE=tls-cloudflare` uses DNS-01 wildcard certificates and
+requires `CF_API_TOKEN` with Zone:Zone:Read and Zone:DNS:Edit.
+
+If you put another TLS proxy in front, preserve the real source IP and
+add only that proxy to `SPOT_TRUSTED_PROXIES` so Spot can trust
+`X-Forwarded-Proto` and `X-Forwarded-For`.
+
+### Single-User Homelab
+
+Use this when LAN/VPN/firewall access is the boundary and everyone who
+can reach Spot should act as the same owner:
+
+```sh
+docker compose -f docker-compose.yml -f docker-compose.homelab.yml up -d --build
+```
+
+Set `SPOT_HOMELAB_DOMAIN` if you do not want the default
+`spot.home.arpa`, and publish the apex plus wildcard to the host's LAN or
+VPN IP.
+
+Keep `SPOT_SINGLE_USER_EMAIL` stable. It is the owner key used for deploy
+authorization.
+
+### Single Binary, Local Storage
+
+This is the smallest install. It uses SQLite plus filesystem storage, no
+RustFS/S3:
+
+```sh
+cd server
+go build -o spot-api .
+
+./spot-api serve \
+  --storage local \
+  --auth single-user \
+  --domain spot.home.arpa \
+  --data-dir /var/lib/spot \
+  --listen :8080
+```
+
+Data lands under:
+
+```text
+/var/lib/spot/
+  spot.db
+  sites/<site>/...
+  uploads/<site>/<id>/<name>
+```
+
+Point both DNS records at the machine:
+
+```text
+spot.home.arpa      A/AAAA  <vm lan or vpn ip>
+*.spot.home.arpa    A/AAAA  <vm lan or vpn ip>
+```
+
+Open `http://spot.home.arpa:8080/` unless you put TLS in front.
+
+### Single Binary, S3 Storage
+
+This keeps the one-process Spot runtime while storing large files in
+S3-compatible blob storage:
+
+```sh
+./spot-api serve \
+  --storage s3 \
+  --auth single-user \
+  --domain spot.home.arpa \
+  --data-dir /var/lib/spot \
+  --listen :8080
+```
+
+Required environment:
+
+```env
+SPOT_S3_ENDPOINT=127.0.0.1:9000
+SPOT_S3_ACCESS_KEY=...
+SPOT_S3_SECRET_KEY=...
+SPOT_UPLOADS_BUCKET=spot-uploads
+SPOT_SITES_BUCKET=spot-sites
+```
+
+The server creates the buckets if they are missing.
+
+## Configuration
+
+Environment variables and CLI flags overlap for the install-critical
+settings:
+
+```text
+--storage   SPOT_STORAGE_MODE      s3 or local
+--auth      SPOT_AUTH_MODE         auto or single-user
+--domain    SPOT_DOMAIN
+--data-dir  SPOT_DATA_DIR
+--sqlite    SPOT_SQLITE_PATH
+--listen    PORT
+```
+
+`SPOT_STORAGE_MODE` defaults to `s3`. `SPOT_SQLITE_PATH` defaults to
+`$SPOT_DATA_DIR/spot.db`.
+
+Spot derives generated URLs from the request. Direct HTTP returns
+`http://`, direct TLS returns `https://`, and trusted proxies may send
+`X-Forwarded-Proto`. There is no configured public scheme.
+
+## Production Deploy
+
+Deploy the committed tree with the TLS overlay and orphan cleanup:
+
+```sh
+scripts/deploy-prod.sh
 ```
 
 ## SDK
 
-Sites load `/spot.js` from their own origin (Caddy serves it on every
-host, and routes `/api/*` to the shared backend — same-origin, no CORS):
+Sites load `/spot.js` from their own origin:
 
-```js
-const me = await spot.me();                      // { email, name, peer_name, peer_ip, groups }
-const posts = spot.db.collection('posts');
-await posts.create({ title: 'Hello Spot DB' });
-await posts.list();
+```html
+<script src="/spot.js"></script>
 ```
 
-Collections are private to their site, with one exception: collections
-named `shared-*` live in a single global namespace that every site can
-read and write — that's how cross-site libraries (leaderboards,
-comments, analytics) share data. The prefix makes sharing an explicit,
-visible choice.
+All calls are same-origin:
 
-Realtime: any collection can be subscribed to, and every visitor sees
-changes live. Under the hood each write fires `pg_notify` in its own
-transaction; a dedicated listener connection relays events to a hub
-that fans out to websocket sessions (`/api/ws`):
+```js
+const me = await spot.me();
+const posts = spot.db.collection('posts');
+await posts.create({ title: 'Hello Spot DB' });
+const docs = await posts.list();
+```
+
+Collections are private to their site, except `shared-*` collections,
+which live in one global namespace every site can read and write.
+
+Realtime DB subscriptions are process-local and delivered after SQLite
+commits:
 
 ```js
 const unsubscribe = posts.subscribe({
-  onCreate: (doc) => ...,
-  onUpdate: (doc) => ...,
-  onDelete: (id) => ...,
+  onCreate: (doc) => console.log(doc),
+  onUpdate: (doc) => console.log(doc),
+  onDelete: (id) => console.log(id),
 });
 ```
 
-For transient multiplayer/control-panel traffic, use ephemeral realtime
-rooms. Room messages are not stored and are broadcast to the other
-subscribers in the room; presence snapshots update when visitors join,
-leave, or call `setPresence`:
+Ephemeral realtime rooms are also process-local and are not persisted:
 
 ```js
 const room = spot.realtime.room('control');
@@ -186,149 +283,93 @@ room.setPresence({ role: 'operator' });
 room.send('cursor', { x: 12, y: 8 });
 ```
 
-Rooms are private to their site, with the same exception as collections:
-`shared-*` rooms live in a single global namespace across Spot sites.
-
-A consequence of the same-origin routing: sites cannot serve their own
-files under `/api/` or at `/spot.js`.
-
 ## Access Control
 
-Sites are **open to everyone on the mesh by default**. A site restricts
-itself by shipping an `_access.json` at its root:
+Sites are open to everyone who can reach Spot by default. A site restricts
+itself by shipping `_access.json` at its root:
 
 ```json
-{ "allow": ["alice@corp.com", "team-payments"] }
+{ "allow": ["alice@example.com", "team-payments"] }
 ```
 
-Entries containing `@` match the visitor's email; everything else
-matches a mesh group name (a NetBird group or Tailscale ACL group).
-Caddy consults `spot-api` (`forward_auth` → `/api/authz`)
-on every request, and the backend applies the same check before serving
-site APIs or uploads. Restricted sites **fail closed**: an unparseable
-policy or an unreachable identity resolver denies access rather than
-allowing it.
+Entries containing `@` match email. Other entries match mesh groups. A
+broken policy fails closed.
 
-Deploys have a separate integrity rule: the first deploy of a site
-claims it for that identity. Later deploys, including changes to
-`_access.json`, are allowed only for the site owner or platform admins
-configured with `SPOT_ADMIN_EMAILS` / `SPOT_ADMIN_GROUPS`. Every deploy
-attempt is recorded in `site_deploy_audit`.
+The first deploy claims a site name. Later deploys and deletes require
+the original owner or a platform admin from `SPOT_ADMIN_EMAILS` or
+`SPOT_ADMIN_GROUPS`.
 
-One consequence to be aware of:
+In `single-user` mode, every visitor has the same configured identity.
+Ownership still works, but `_access.json` cannot provide per-person
+authorization.
 
-- `_access.json` is an allowlist, not a secret; permitted visitors can
-  fetch it like any other file of the site.
+Sites can disable source downloads without becoming private:
 
-## Site pages
+```json
+{ "download": false }
+```
 
-The apex serves two platform pages next to the deploy UI:
+## Platform Pages
 
-- **`/spots`** — the deployer's own sites, with size, access status, and
-  a delete action.
-- **`/gallery`** — every public (unrestricted) site on the mesh.
+- `/` is the browser deployer.
+- `/spots` lists the caller's sites.
+- `/gallery` lists unrestricted public sites.
 
-Both are backed by apex-only endpoints, gated like `/api/deploy` so a
-deployed site cannot enumerate or delete sites through a visitor:
+Important APIs:
 
-- `GET /api/sites/mine` — sites owned by the caller, with the last
-  successful deploy's file count and size.
-- `GET /api/sites/public` — unrestricted sites; restricted ones stay out
-  entirely.
-- `DELETE /api/sites/{name}` — owner or platform admin only. Removes the
-  served files, the site's uploads, its private collections, and the
-  registry claim (so the name is free again); the action is recorded in
-  `site_deploy_audit`. Shared `shared-*` collections are not touched.
-
-## Production notes
-
-- **DNS**: publish `*.spot.<domain>` as an A record pointing at the VM's
-  mesh IP. Off-mesh clients can resolve it but cannot route to it.
-- **Source IP must be the peer IP** — identity resolves the request's
-  source address against the mesh peer list, so the front proxy has to
-  see the real mesh IP. Docker bridge port-publishing SNATs every inbound
-  connection to the docker gateway, which would make every visitor look
-  like one non-peer address and break identity. Run Caddy on the host
-  network: `docker compose -f docker-compose.yml -f docker-compose.mesh.yml up -d`
-  (see `docker-compose.mesh.yml`). Without this, `/api/me` returns
-  404 for everyone.
-- **TLS**: replace `tls internal` in `caddy/Caddyfile` with a DNS-01
-  wildcard challenge (e.g. the caddy-dns/cloudflare module) for publicly
-  trusted certs. Also bump the `{labels.N}` index to match your domain's
-  label count (see the comment in the Caddyfile).
-- **NetBird**: create an access policy `employees -> spot-vm:443`, and a
-  service-account PAT for `NETBIRD_API_URL`/`NETBIRD_API_TOKEN` so the
-  API can resolve peer IPs to users.
-- **Tailscale**: create an ACL or grant that lets employees reach
-  `spot-vm:443`. Configure an OAuth client with
-  `devices:core:read`, `devices:posture_attributes:read`,
-  `users:read`, and `policy_file:read` scopes, then set
-  `TAILSCALE_OAUTH_CLIENT_ID`/`TAILSCALE_OAUTH_CLIENT_SECRET`
-  (preferred) or `TAILSCALE_API_TOKEN`. `TAILSCALE_TAILNET` may stay
-  empty to use `-`, the token's tailnet. `policy_file:read` is needed so
-  Spot can expose Tailscale ACL groups in `_access.json`.
-- `spot-api` refuses to start on a
-  non-`.localhost` domain without one mesh identity provider, and
-  `SPOT_DEV_IDENTITY_EMAIL` is only accepted for `.localhost` development.
-- **Trusted proxies**: `spot-api` only trusts `X-Forwarded-*` headers
-  from `SPOT_TRUSTED_PROXIES`. The local compose stack pins its Docker
-  network and trusts only loopback plus that subnet; the mesh overlay
-  narrows this to loopback plus the pinned Docker gateway `/32`.
-- **Credentials**: local `.localhost` development may use the example
-  RustFS/Postgres passwords. Shared or mesh-backed deployments must
-  replace them or `spot-api` refuses to start.
-- **RustFS** is beta (v1.0.0-beta.8, single-node). Sites are regenerable,
-  so the blast radius is low; Garage or SeaweedFS are drop-in S3
-  alternatives if that bothers you.
+- `POST /api/deploy` deploys a site from the apex only.
+- `GET /api/sites/mine` lists the caller's sites.
+- `GET /api/sites/public` lists unrestricted sites.
+- `DELETE /api/sites/{name}` deletes a site, its uploads, private docs,
+  and registry claim.
+- `GET /api/download` on a site subdomain downloads a source ZIP,
+  unless the site disables downloads.
 
 ## Files and AI
 
-Uploads go through the server (browsers never see storage credentials)
-into the `spot-uploads` bucket; download URLs are immutable and may be
-embedded from any site. If the upload belongs to a restricted site, the
-download is restricted by that site's `_access.json` too:
+Uploads go through Spot, so browsers never see storage credentials:
 
 ```js
-const stored = await spot.files.upload(file);  // { id, name, size, content_type, url }
+const stored = await spot.files.upload(file);
 ```
 
-The content type is sniffed from the bytes, not the client's claim.
-Images, PDFs, plain text, and audio/video render inline; everything else
-(HTML, SVG, unknown) is served as a sandboxed `attachment` with
-`nosniff` so an uploaded file can't run script in a viewer's site origin.
-For stricter isolation in production, serve `/api/files` from a separate
-cookieless domain.
+Images, PDFs, plain text, audio, and video render inline. HTML, SVG, and
+unknown types download as attachments with `nosniff`.
 
-The AI proxy holds the Anthropic key server-side (`ANTHROPIC_API_KEY`
-in `.env`). By default only the site owner or platform admins may call
-it, so a public mesh site cannot spend the shared key for every visitor.
-Set `SPOT_AI_ACCESS=visitors` to allow all authorized visitors globally,
-or opt a restricted site in with:
+The AI proxy holds the Anthropic key server-side:
+
+```env
+ANTHROPIC_API_KEY=...
+```
+
+By default only the site owner and platform admins may call it. Set
+`SPOT_AI_ACCESS=visitors` globally, or opt in a restricted site:
 
 ```json
 { "allow": ["team-payments"], "ai": "visitors" }
 ```
 
-Set `ANTHROPIC_BASE_URL` to route the proxy through an
-Anthropic-compatible gateway instead of the Claude API. Defaults:
-`claude-opus-4-8` (deployment-overridable with `SPOT_AI_MODEL`, e.g.
-when the gateway serves a different model list), adaptive thinking,
-16K max tokens. Requests may set `system` and `max_tokens`; `model` is
-accepted only when named in `SPOT_AI_ALLOWED_MODELS` or when it matches
-the deployment default:
+## Tests
 
-```js
-const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
-console.log(res.text);
+```sh
+just test
+just test-integration
+just e2e
 ```
 
-## Rate limits
+`just e2e` starts compose, deploys the demo site, exercises static
+serving, DB APIs, uploads, site deletion, and platform pages.
 
-Per peer IP: database 25 req/s (burst 50), realtime room sends 30 req/s
-(burst 60), uploads 2 req/s (burst 10), AI 1 request per 2s (burst 10),
-deploys 1 per 2s (burst 3). The authz endpoint Caddy consults for
-static files is deliberately unlimited.
+## Production Notes
 
-Compared to the blog's feature list, only the data warehouse
-(Shopify-specific BigQuery) is deliberately omitted — wire your own
-warehouse in if one exists.
+- Mesh identity depends on the real peer IP. Run Spot directly on the
+  host network or behind a proxy that preserves source IP correctly.
+- Shared deployments must configure exactly one mesh provider unless
+  `SPOT_AUTH_MODE=single-user` is set.
+- `SPOT_DEV_IDENTITY_EMAIL` is accepted only for `.localhost`.
+- Shared mesh deployments must replace default RustFS credentials.
+- RustFS is convenient for local and small deployments. Any
+  S3-compatible store can replace it.
+- Multi-process Spot against one SQLite file is intentionally not the
+  target. If that becomes necessary, add a SQLite pub/sub layer and
+  explicit leader/runtime coordination then.

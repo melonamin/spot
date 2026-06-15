@@ -5,9 +5,10 @@ package main
 import (
 	"context"
 	"database/sql"
-	_ "embed"
 	"errors"
+	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -15,19 +16,16 @@ import (
 	"strings"
 	"syscall"
 	"time"
-
-	"github.com/jackc/pgx/v5/pgconn"
-	_ "github.com/jackc/pgx/v5/stdlib"
 )
-
-//go:embed schema.sql
-var schemaSQL string
 
 type config struct {
 	Port                 string
-	DatabaseURL          string
+	StorageMode          string
+	DataDir              string
+	SQLitePath           string
 	SpotDomain           string
 	SitesDir             string
+	AuthMode             string
 	NetbirdAPIURL        string
 	NetbirdAPIToken      string
 	TailscaleAPIURL      string
@@ -50,14 +48,32 @@ type config struct {
 	DevIdentityEmail     string
 	DevIdentityName      string
 	DevIdentityGroups    []string
+	SingleUserEmail      string
+	SingleUserName       string
+	SingleUserGroups     []string
 }
 
+const (
+	authModeAuto       = "auto"
+	authModeSingleUser = "single-user"
+
+	storageModeS3    = "s3"
+	storageModeLocal = "local"
+)
+
 func loadConfig() (config, error) {
+	return loadConfigFrom(os.Args[1:])
+}
+
+func loadConfigFrom(args []string) (config, error) {
 	cfg := config{
 		Port:                 envOr("PORT", "8080"),
-		DatabaseURL:          os.Getenv("DATABASE_URL"),
+		StorageMode:          normalizeStorageMode(os.Getenv("SPOT_STORAGE_MODE")),
+		DataDir:              envOr("SPOT_DATA_DIR", "./data"),
+		SQLitePath:           os.Getenv("SPOT_SQLITE_PATH"),
 		SpotDomain:           os.Getenv("SPOT_DOMAIN"),
-		SitesDir:             envOr("SPOT_SITES_DIR", "/srv/sites"),
+		SitesDir:             os.Getenv("SPOT_SITES_DIR"),
+		AuthMode:             normalizeAuthMode(os.Getenv("SPOT_AUTH_MODE")),
 		NetbirdAPIURL:        os.Getenv("NETBIRD_API_URL"),
 		NetbirdAPIToken:      os.Getenv("NETBIRD_API_TOKEN"),
 		TailscaleAPIURL:      os.Getenv("TAILSCALE_API_URL"),
@@ -83,9 +99,18 @@ func loadConfig() (config, error) {
 		DevIdentityEmail:  os.Getenv("SPOT_DEV_IDENTITY_EMAIL"),
 		DevIdentityName:   envOr("SPOT_DEV_IDENTITY_NAME", "Spot Dev"),
 		DevIdentityGroups: splitList(os.Getenv("SPOT_DEV_IDENTITY_GROUPS")),
+		SingleUserEmail:   envOr("SPOT_SINGLE_USER_EMAIL", "owner@spot.local"),
+		SingleUserName:    envOr("SPOT_SINGLE_USER_NAME", "Spot Owner"),
+		SingleUserGroups:  splitList(os.Getenv("SPOT_SINGLE_USER_GROUPS")),
 	}
-	if cfg.DatabaseURL == "" {
-		return cfg, errors.New("DATABASE_URL is required")
+	if err := applyCLIFlags(&cfg, args); err != nil {
+		return cfg, err
+	}
+	if cfg.SQLitePath == "" {
+		cfg.SQLitePath = cfg.DataDir + "/spot.db"
+	}
+	if cfg.StorageMode == storageModeLocal {
+		cfg.SitesDir = envOr("SPOT_SITES_DIR", cfg.DataDir+"/sites")
 	}
 	if cfg.SpotDomain == "" {
 		return cfg, errors.New("SPOT_DOMAIN is required (e.g. spot.localhost)")
@@ -99,7 +124,52 @@ func loadConfig() (config, error) {
 	return cfg, nil
 }
 
+func applyCLIFlags(cfg *config, args []string) error {
+	if len(args) > 0 && args[0] == "serve" {
+		args = args[1:]
+	}
+	fs := flag.NewFlagSet("spot-api", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+	fs.StringVar(&cfg.StorageMode, "storage", cfg.StorageMode, "storage mode: s3 or local")
+	fs.StringVar(&cfg.AuthMode, "auth", cfg.AuthMode, "auth mode: auto or single-user")
+	fs.StringVar(&cfg.SpotDomain, "domain", cfg.SpotDomain, "apex domain for Spot")
+	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "data directory for SQLite and local storage")
+	fs.StringVar(&cfg.SQLitePath, "sqlite", cfg.SQLitePath, "SQLite database path")
+	fs.StringVar(&cfg.Port, "listen", cfg.Port, "listen port or address")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() > 0 {
+		return fmt.Errorf("unexpected arguments: %s", strings.Join(fs.Args(), " "))
+	}
+	cfg.StorageMode = normalizeStorageMode(cfg.StorageMode)
+	cfg.AuthMode = normalizeAuthMode(cfg.AuthMode)
+	return nil
+}
+
+func listenAddr(listen string) string {
+	listen = strings.TrimSpace(listen)
+	if listen == "" {
+		return ":8080"
+	}
+	if strings.Contains(listen, ":") {
+		return listen
+	}
+	return ":" + listen
+}
+
 func validateDeploymentSafety(cfg config) error {
+	mode := normalizeAuthMode(cfg.AuthMode)
+	if mode != authModeAuto && mode != authModeSingleUser {
+		return fmt.Errorf("SPOT_AUTH_MODE must be %q or %q", authModeAuto, authModeSingleUser)
+	}
+	storageMode := normalizeStorageMode(cfg.StorageMode)
+	if storageMode != storageModeS3 && storageMode != storageModeLocal {
+		return fmt.Errorf("SPOT_STORAGE_MODE must be %q or %q", storageModeS3, storageModeLocal)
+	}
+	if storageMode == storageModeS3 && strings.TrimSpace(cfg.S3Endpoint) == "" {
+		return errors.New("SPOT_S3_ENDPOINT is required when SPOT_STORAGE_MODE=s3")
+	}
 	netbird := netbirdConfigured(cfg)
 	tailscale := tailscaleConfigured(cfg)
 	if netbird && tailscale {
@@ -110,6 +180,15 @@ func validateDeploymentSafety(cfg config) error {
 	}
 	if tailscaleOAuthConfigured(cfg) && (cfg.TailscaleOAuthID == "" || cfg.TailscaleOAuthSecret == "") {
 		return errors.New("Tailscale OAuth requires TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET")
+	}
+	if mode == authModeSingleUser {
+		if netbird || tailscale {
+			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_* or TAILSCALE_*")
+		}
+		if strings.TrimSpace(cfg.SingleUserEmail) == "" {
+			return errors.New("SPOT_SINGLE_USER_EMAIL is required when SPOT_AUTH_MODE=single-user")
+		}
+		return nil
 	}
 	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale
 	if !shared {
@@ -124,13 +203,32 @@ func validateDeploymentSafety(cfg config) error {
 	if !netbird && !tailscale {
 		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET")
 	}
-	if cfg.S3Endpoint != "" && cfg.S3AccessKey == "rustfsadmin" && cfg.S3SecretKey == "rustfsadmin" {
+	if storageMode == storageModeS3 && cfg.S3Endpoint != "" && (cfg.S3AccessKey == "rustfsadmin" || cfg.S3SecretKey == "rustfsadmin") {
 		return errors.New("shared deployments must replace the default RustFS credentials")
 	}
-	if databasePassword(cfg.DatabaseURL) == "spot" {
-		return errors.New("shared deployments must replace the default Postgres password")
-	}
 	return nil
+}
+
+func normalizeAuthMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return authModeAuto
+	}
+	return mode
+}
+
+func normalizeStorageMode(mode string) string {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	if mode == "" {
+		return storageModeS3
+	}
+	if mode == "appliance" {
+		return storageModeLocal
+	}
+	if mode == "server" {
+		return storageModeS3
+	}
+	return mode
 }
 
 func netbirdConfigured(cfg config) bool {
@@ -148,14 +246,6 @@ func tailscaleOAuthConfigured(cfg config) bool {
 func localSpotDomain(domain string) bool {
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 	return domain == "localhost" || strings.HasSuffix(domain, ".localhost")
-}
-
-func databasePassword(databaseURL string) string {
-	cfg, err := pgconn.ParseConfig(databaseURL)
-	if err != nil {
-		return ""
-	}
-	return cfg.Password
 }
 
 func envOr(key, fallback string) string {
@@ -176,29 +266,11 @@ func splitList(raw string) []string {
 	return out
 }
 
-func openDB(ctx context.Context, url string) (*sql.DB, error) {
-	db, err := sql.Open("pgx", url)
-	if err != nil {
-		return nil, fmt.Errorf("open database: %w", err)
-	}
-	deadline := time.Now().Add(30 * time.Second)
-	for {
-		err = db.PingContext(ctx)
-		if err == nil {
-			break
-		}
-		if time.Now().After(deadline) {
-			return nil, fmt.Errorf("database not reachable after 30s: %w", err)
-		}
-		time.Sleep(time.Second)
-	}
-	if _, err := db.ExecContext(ctx, schemaSQL); err != nil {
-		return nil, fmt.Errorf("apply schema: %w", err)
-	}
-	return db, nil
-}
-
 func newResolver(cfg config) (IdentityResolver, string) {
+	if normalizeAuthMode(cfg.AuthMode) == authModeSingleUser {
+		return NewStaticResolver(cfg.SingleUserEmail, cfg.SingleUserName, cfg.SingleUserGroups),
+			fmt.Sprintf("using single-user identity %s", cfg.SingleUserEmail)
+	}
 	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
 		return NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second),
 			fmt.Sprintf("resolving via NetBird API at %s", cfg.NetbirdAPIURL)
@@ -227,7 +299,8 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
-	db, err := openDB(ctx, cfg.DatabaseURL)
+	var db *sql.DB
+	db, err = openSQLiteDB(ctx, cfg.SQLitePath)
 	if err != nil {
 		log.Fatalf("database: %v", err)
 	}
@@ -236,14 +309,23 @@ func main() {
 	resolver, resolverLog := newResolver(cfg)
 	log.Printf("identity: %s", resolverLog)
 
-	store := &DocStore{db: db}
 	hub := NewHub()
-	listener := &Listener{dsn: cfg.DatabaseURL, store: store, hub: hub}
-	go listener.Run(ctx)
+	store := &DocStore{db: db, hub: hub}
 
-	var files *FileStore
-	var sites *SiteStore
-	if cfg.S3Endpoint != "" {
+	var files FileStorage
+	var sites SiteStorage
+	if cfg.StorageMode == storageModeLocal {
+		files, err = NewLocalFileStore(cfg.DataDir + "/uploads")
+		if err != nil {
+			log.Fatalf("file store: %v", err)
+		}
+		sites, err = NewLocalSiteStore(cfg.SitesDir)
+		if err != nil {
+			log.Fatalf("site store: %v", err)
+		}
+		log.Printf("files: storing uploads under %s/uploads", cfg.DataDir)
+		log.Printf("deploys: storing sites under %s", cfg.SitesDir)
+	} else {
 		files, err = NewFileStore(cfg.S3Endpoint, cfg.S3AccessKey, cfg.S3SecretKey, cfg.UploadsBucket)
 		if err != nil {
 			log.Fatalf("file store: %v", err)
@@ -254,8 +336,6 @@ func main() {
 			log.Fatalf("site store: %v", err)
 		}
 		log.Printf("deploys: storing sites in %s/%s", cfg.S3Endpoint, cfg.SitesBucket)
-	} else {
-		log.Printf("files: SPOT_S3_ENDPOINT not set, /api/files and /api/deploy will return 503")
 	}
 
 	var ai *AIProxy
@@ -280,10 +360,14 @@ func main() {
 	}
 
 	registry := NewSiteRegistry(db, adminPolicy)
+	var policies *PolicyStore
+	if cfg.StorageMode == storageModeLocal {
+		policies = NewPolicyStore(cfg.SitesDir, 5*time.Second)
+	}
 	srv := &Server{
 		store:          store,
 		resolver:       resolver,
-		policies:       NewPolicyStore(cfg.SitesDir, 5*time.Second),
+		policies:       policies,
 		hub:            hub,
 		files:          files,
 		sites:          sites,
@@ -293,12 +377,12 @@ func main() {
 		ai:             ai,
 		aiAccess:       cfg.AIAccess,
 		spotDomain:     cfg.SpotDomain,
-		sitesDir:       cfg.SitesDir,
 		trustedProxies: trustedProxies,
+		serveStatic:    true,
 	}
 
 	httpSrv := &http.Server{
-		Addr:              ":" + cfg.Port,
+		Addr:              listenAddr(cfg.Port),
 		Handler:           srv.routes(),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
@@ -310,7 +394,7 @@ func main() {
 		_ = httpSrv.Shutdown(shutdownCtx)
 	}()
 
-	log.Printf("spot-api listening on :%s (domain %s)", cfg.Port, cfg.SpotDomain)
+	log.Printf("spot-api listening on %s (domain %s, storage %s)", httpSrv.Addr, cfg.SpotDomain, cfg.StorageMode)
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}
