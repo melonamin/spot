@@ -364,6 +364,70 @@ func TestAIChatStream(t *testing.T) {
 	}
 }
 
+func TestAIChatStreamIncompleteUpstream(t *testing.T) {
+	t.Run("before first token", func(t *testing.T) {
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte("data: not-json\n\n"))
+		}))
+		defer api.Close()
+		srv := aiTestServer(t, api.URL)
+
+		rec := postChatStream(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+		if rec.Code != http.StatusBadGateway {
+			t.Fatalf("status %d body %s, want 502", rec.Code, rec.Body)
+		}
+	})
+
+	t.Run("after first token", func(t *testing.T) {
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(`data: {"model":"gpt-5","choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}` + "\n\n"))
+		}))
+		defer api.Close()
+		srv := aiTestServer(t, api.URL)
+
+		rec := postChatStream(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d body %s, want started stream", rec.Code, rec.Body)
+		}
+		text, done := sseDeltas(t, rec.Body.String())
+		if text != "Hel" {
+			t.Errorf("streamed text = %q, want Hel", text)
+		}
+		if done != nil {
+			t.Fatalf("unexpected done frame in %q", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Fatalf("missing error frame in %q", rec.Body.String())
+		}
+	})
+
+	t.Run("after finish reason", func(t *testing.T) {
+		api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "text/event-stream")
+			w.Write([]byte(`data: {"model":"gpt-5","choices":[{"delta":{"content":"Hi"},"finish_reason":"stop"}]}` + "\n\n"))
+		}))
+		defer api.Close()
+		srv := aiTestServer(t, api.URL)
+
+		rec := postChatStream(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status %d body %s, want started stream", rec.Code, rec.Body)
+		}
+		text, done := sseDeltas(t, rec.Body.String())
+		if text != "Hi" {
+			t.Errorf("streamed text = %q, want Hi", text)
+		}
+		if done != nil {
+			t.Fatalf("unexpected done frame in %q", rec.Body.String())
+		}
+		if !strings.Contains(rec.Body.String(), `"error"`) {
+			t.Fatalf("missing error frame in %q", rec.Body.String())
+		}
+	})
+}
+
 // TestAIChatStreamErrorsBeforeStream pins the timing rule: failures that
 // happen before any token is delivered are HTTP errors, not SSE frames.
 func TestAIChatStreamErrorsBeforeStream(t *testing.T) {

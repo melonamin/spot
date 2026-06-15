@@ -389,6 +389,7 @@ func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatRe
 
 type openAIChatStreamChunk struct {
 	Model   string `json:"model"`
+	Error   any    `json:"error"`
 	Choices []struct {
 		Delta struct {
 			Content string `json:"content"`
@@ -444,6 +445,7 @@ func (p *AIProxy) streamChat(ctx context.Context, req aiChatRequest, onDelta fun
 	}
 
 	res := aiChatResponse{Model: model}
+	terminal := false
 	scanner := bufio.NewScanner(resp.Body)
 	scanner.Buffer(make([]byte, 0, 64<<10), 1<<20)
 	for scanner.Scan() {
@@ -456,11 +458,15 @@ func (p *AIProxy) streamChat(ctx context.Context, req aiChatRequest, onDelta fun
 			continue
 		}
 		if data == "[DONE]" {
+			terminal = true
 			break
 		}
 		var chunk openAIChatStreamChunk
 		if err := json.Unmarshal([]byte(data), &chunk); err != nil {
-			continue // tolerate keep-alive comments and partial frames
+			return res, upstreamAIError{message: "AI stream returned malformed data"}
+		}
+		if chunk.Error != nil {
+			return res, upstreamAIError{message: aiStreamErrorMessage(chunk.Error)}
 		}
 		if chunk.Model != "" {
 			res.Model = chunk.Model
@@ -490,7 +496,24 @@ func (p *AIProxy) streamChat(ctx context.Context, req aiChatRequest, onDelta fun
 	if err := scanner.Err(); err != nil {
 		return res, fmt.Errorf("read AI stream: %w", err)
 	}
+	if !terminal {
+		return res, upstreamAIError{message: "AI stream ended before completion"}
+	}
 	return res, nil
+}
+
+func aiStreamErrorMessage(raw any) string {
+	switch e := raw.(type) {
+	case string:
+		if strings.TrimSpace(e) != "" {
+			return e
+		}
+	case map[string]any:
+		if msg, ok := e["message"].(string); ok && strings.TrimSpace(msg) != "" {
+			return msg
+		}
+	}
+	return "AI stream returned an error"
 }
 
 func (s *Server) handleAIImage(w http.ResponseWriter, r *http.Request) {
