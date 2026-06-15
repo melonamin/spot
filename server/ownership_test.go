@@ -77,6 +77,10 @@ func TestDocumentOwnershipOverHTTP(t *testing.T) {
 	if all := list(""); len(all) != 2 {
 		t.Errorf("list all = %d docs, want 2", len(all))
 	}
+	batchMine := list("?mine=true&ids=" + alice.ID + "," + bob.ID)
+	if len(batchMine) != 1 || batchMine[0].ID != bob.ID {
+		t.Errorf("bob batch mine = %+v, want only bob doc", batchMine)
+	}
 	firstPage := list("?limit=1")
 	if len(firstPage) != 1 {
 		t.Fatalf("first page = %d docs, want 1", len(firstPage))
@@ -102,6 +106,18 @@ func TestDocumentOwnershipOverHTTP(t *testing.T) {
 	}
 	if code := updateMine(bob.ID, `{"title": "bob edited"}`); code != http.StatusOK {
 		t.Fatalf("bob update bob mine = %d, want 200", code)
+	}
+
+	incrementMine := func(id, body string) int {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodPost, "http://demo.spot.localhost/api/db/notes/"+id+"/increment?mine=true",
+			strings.NewReader(body))
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec.Code
+	}
+	if code := incrementMine(alice.ID, `{"field":"title"}`); code != http.StatusNotFound {
+		t.Fatalf("bob increment alice string field mine = %d, want 404", code)
 	}
 
 	deleteMine := func(id string) int {

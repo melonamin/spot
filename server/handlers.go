@@ -259,6 +259,9 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 	if id.PeerIP == "" {
 		id.PeerIP = ip
 	}
+	if id.Groups == nil {
+		id.Groups = []string{}
+	}
 	return id, true
 }
 
@@ -532,15 +535,18 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // access (apex root, unreadable policy, unconfigured owner checks, lookup
 // error) reports false rather than failing the request.
 func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) bool {
-	if s.aiAccess == aiAccessVisitors {
-		return true
-	}
-	if site == "" {
+	if site == "" || s.ai == nil || !s.ai.configured() {
 		return false
 	}
 	policy, err := s.policyForSite(ctx, site)
 	if err != nil {
 		return false
+	}
+	if policy != nil && policy.RestrictsAccess() && !policy.Allows(actor) {
+		return false
+	}
+	if s.aiAccess == aiAccessVisitors {
+		return true
 	}
 	if policy.AllowsAIVisitors() {
 		return true
@@ -685,6 +691,12 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					continue
 				}
 				s.hub.Subscribe(scope, req.Collection, docOut)
+				if err := wsjson.Write(ctx, conn, map[string]string{
+					"type":       "subscribed",
+					"collection": req.Collection,
+				}); err != nil {
+					return
+				}
 			case "unsubscribe":
 				scope, err := scopeFor(site, req.Collection)
 				if err != nil {
@@ -855,7 +867,13 @@ func (s *Server) handleList(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 		}
-		docs, err := s.store.GetMany(r.Context(), scope, collection, ids)
+		var docs []Document
+		var err error
+		if owner != "" {
+			docs, err = s.store.GetManyOwned(r.Context(), scope, collection, ids, owner)
+		} else {
+			docs, err = s.store.GetMany(r.Context(), scope, collection, ids)
+		}
 		if err != nil {
 			s.storeError(w, err)
 			return

@@ -27,6 +27,10 @@ declare namespace SpotSDK {
   /** Retry control: true (smart auto-retry, the default), false, or a max-retry count. */
   type RetryOption = boolean | number;
 
+  interface RequestOptions {
+    retry?: RetryOption;
+  }
+
   interface Config {
     retry?: RetryOption;
     maxRetries?: number;
@@ -56,13 +60,28 @@ declare namespace SpotSDK {
   /** field -> value (equality) or field -> { op: value }. */
   type Where = Record<string, unknown | Partial<Record<FilterOp, unknown>>>;
 
-  interface ListOptions {
+  interface ListOptions extends RequestOptions {
     limit?: number;
     mine?: boolean;
     after?: string;
     where?: Where;
     sort?: string;
     order?: 'asc' | 'desc';
+  }
+
+  interface IterateOptions extends RequestOptions {
+    pageSize?: number;
+    mine?: boolean;
+    where?: Where;
+  }
+
+  interface CountOptions extends RequestOptions {
+    where?: Where;
+    mine?: boolean;
+  }
+
+  interface OwnershipOptions extends RequestOptions {
+    mine?: boolean;
   }
 
   interface SubscribeHandlers<T = Record<string, unknown>> {
@@ -72,46 +91,59 @@ declare namespace SpotSDK {
     onError?: (err: Error) => void;
   }
 
+  interface SubscribeOptions extends RequestOptions {
+    replay?: boolean;
+  }
+
   interface Collection<T = Record<string, unknown>> {
     list(opts?: ListOptions): Promise<Document<T>[]>;
-    iterate(opts?: { pageSize?: number; mine?: boolean; where?: Where }): AsyncGenerator<Document<T>>;
-    count(opts?: { where?: Where; mine?: boolean }): Promise<number>;
-    getMany(ids: string[]): Promise<Document<T>[]>;
-    create(data: T): Promise<Document<T>>;
-    get(id: string): Promise<Document<T>>;
-    update(id: string, data: T, opts?: { mine?: boolean }): Promise<Document<T>>;
-    updateMine(id: string, data: T): Promise<Document<T>>;
-    delete(id: string, opts?: { mine?: boolean }): Promise<null>;
-    deleteMine(id: string): Promise<null>;
-    increment(id: string, field: string, by?: number, opts?: { mine?: boolean }): Promise<Document<T>>;
-    incrementMine(id: string, field: string, by?: number): Promise<Document<T>>;
-    subscribe(handlers: SubscribeHandlers<T>, opts?: { replay?: boolean }): () => void;
+    iterate(opts?: IterateOptions): AsyncGenerator<Document<T>>;
+    count(opts?: CountOptions): Promise<number>;
+    getMany(ids: string[], opts?: RequestOptions): Promise<Document<T>[]>;
+    create(data: T, opts?: RequestOptions): Promise<Document<T>>;
+    get(id: string, opts?: RequestOptions): Promise<Document<T>>;
+    update(id: string, data: T, opts?: OwnershipOptions): Promise<Document<T>>;
+    updateMine(id: string, data: T, opts?: RequestOptions): Promise<Document<T>>;
+    delete(id: string, opts?: OwnershipOptions): Promise<null>;
+    deleteMine(id: string, opts?: RequestOptions): Promise<null>;
+    increment(id: string, field: string, by?: number, opts?: OwnershipOptions): Promise<Document<T>>;
+    incrementMine(id: string, field: string, by?: number, opts?: RequestOptions): Promise<Document<T>>;
+    subscribe(handlers: SubscribeHandlers<T>, opts?: SubscribeOptions): () => void;
   }
 
   interface ChatMessage {
-    role: 'user' | 'assistant' | 'system';
+    role: 'user' | 'assistant';
     content: string;
   }
+
   interface ChatResult {
     text: string;
     model: string;
     stop_reason: string;
     usage: unknown;
   }
-  interface ChatOptions {
+
+  interface ChatOptions extends RequestOptions {
     model?: string;
     system?: string;
     max_tokens?: number;
   }
-  interface StreamOptions extends ChatOptions {
+
+  interface StreamOptions {
+    model?: string;
+    system?: string;
+    max_tokens?: number;
     onToken?: (delta: string, text: string) => void;
     signal?: AbortSignal;
   }
+
   interface ImageResult {
     provider: string;
     model: string;
     images: Array<{ b64: string; mime_type: string; data_url: string }>;
   }
+
+  type ImageOptions = Record<string, unknown> & RequestOptions;
 
   interface StoredFile {
     id: string;
@@ -126,6 +158,11 @@ declare namespace SpotSDK {
     [key: string]: unknown;
   }
 
+  interface DeleteSiteResult {
+    site: string;
+    files: number;
+  }
+
   interface RoomMessage<D = unknown> {
     event: string;
     room: string;
@@ -133,7 +170,9 @@ declare namespace SpotSDK {
     data: D;
     sent_at: string;
   }
+
   type RoomStatus = 'connecting' | 'open' | 'reconnecting' | 'closed';
+
   interface Room {
     send(event: string, data?: unknown): void;
     setPresence(data?: unknown): void;
@@ -148,23 +187,24 @@ declare namespace SpotSDK {
     SpotError: typeof SpotError;
     /** Set default request behavior; returns the resolved config. */
     configure(opts?: Config): Config;
-    me(): Promise<Identity>;
+    me(opts?: RequestOptions): Promise<Identity>;
     db: { collection<T = Record<string, unknown>>(name: string): Collection<T> };
     realtime: { room(name: string): Room };
     ai: {
       chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
       stream(messages: ChatMessage[], opts?: StreamOptions): Promise<ChatResult>;
-      image(prompt: string, opts?: Record<string, unknown>): Promise<ImageResult>;
+      image(prompt: string, opts?: ImageOptions): Promise<ImageResult>;
     };
     files: {
-      upload(file: File | Blob, opts?: { name?: string }): Promise<StoredFile>;
-      list(): Promise<StoredFile[]>;
-      delete(file: StoredFile | string, name?: string): Promise<null>;
+      upload(file: File | Blob, opts?: { name?: string } & RequestOptions): Promise<StoredFile>;
+      list(opts?: RequestOptions): Promise<StoredFile[]>;
+      delete(file: StoredFile, opts?: RequestOptions): Promise<null>;
+      delete(file: string, name: string, opts?: RequestOptions): Promise<null>;
     };
     sites: {
-      mine(): Promise<SiteInfo[]>;
-      public(): Promise<SiteInfo[]>;
-      delete(name: string): Promise<null>;
+      mine(opts?: RequestOptions): Promise<SiteInfo[]>;
+      public(opts?: RequestOptions): Promise<SiteInfo[]>;
+      delete(name: string, opts?: RequestOptions): Promise<DeleteSiteResult>;
     };
   }
 }

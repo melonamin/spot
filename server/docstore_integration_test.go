@@ -247,9 +247,27 @@ func TestDocStoreQuery(t *testing.T) {
 		t.Errorf("bad field err = %v, want ErrBadQuery", err)
 	}
 	if _, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "priority.", Op: "eq", Value: 1}},
+	}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("trailing dot field err = %v, want ErrBadQuery", err)
+	}
+	if _, err := store.Query(ctx, scope, coll, ListQuery{Sort: "priority..rank"}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("doubled dot sort err = %v, want ErrBadQuery", err)
+	}
+	if _, err := store.Query(ctx, scope, coll, ListQuery{
 		Where: []Filter{{Field: "priority", Op: "between", Value: 1}},
 	}); !errors.Is(err, ErrBadQuery) {
 		t.Errorf("unknown op err = %v, want ErrBadQuery", err)
+	}
+	if _, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "priority", Op: "gt", Value: map[string]any{"x": float64(1)}}},
+	}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("object comparison err = %v, want ErrBadQuery", err)
+	}
+	if _, err := store.Query(ctx, scope, coll, ListQuery{
+		Where: []Filter{{Field: "status", Op: "in", Value: []any{"open", map[string]any{"x": float64(1)}}}},
+	}); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("object in value err = %v, want ErrBadQuery", err)
 	}
 }
 
@@ -286,6 +304,21 @@ func TestDocStoreGetMany(t *testing.T) {
 	if len(empty) != 0 {
 		t.Errorf("GetMany(nil) returned %d, want 0", len(empty))
 	}
+
+	owned, err := store.Create(ctx, scope, coll, "alice@example.com", map[string]any{"n": float64(4)})
+	if err != nil {
+		t.Fatalf("Create owned: %v", err)
+	}
+	if _, err := store.Create(ctx, scope, coll, "bob@example.com", map[string]any{"n": float64(5)}); err != nil {
+		t.Fatalf("Create other owned: %v", err)
+	}
+	mine, err := store.GetManyOwned(ctx, scope, coll, []string{a.ID, owned.ID}, "alice@example.com")
+	if err != nil {
+		t.Fatalf("GetManyOwned: %v", err)
+	}
+	if len(mine) != 1 || mine[0].ID != owned.ID {
+		t.Errorf("GetManyOwned returned %+v, want only alice's requested doc", mine)
+	}
 }
 
 func TestDocStoreIncrement(t *testing.T) {
@@ -319,19 +352,33 @@ func TestDocStoreIncrement(t *testing.T) {
 	if _, err := store.Increment(ctx, scope, coll, doc.ID, "title", 1); !errors.Is(err, ErrFieldNotNumeric) {
 		t.Errorf("increment string field err = %v, want ErrFieldNotNumeric", err)
 	}
+	if _, err := store.Increment(ctx, scope, coll, doc.ID, "views.", 1); !errors.Is(err, ErrBadQuery) {
+		t.Errorf("increment bad field err = %v, want ErrBadQuery", err)
+	}
 
 	const missing = "00000000-0000-4000-8000-000000000000"
 	if _, err := store.Increment(ctx, scope, coll, missing, "views", 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("increment missing doc err = %v, want ErrNotFound", err)
 	}
 
+	huge, err := store.Increment(ctx, scope, coll, doc.ID, "huge", 1e19)
+	if err != nil {
+		t.Fatalf("Increment huge: %v", err)
+	}
+	if huge.Data["huge"] != 1e19 {
+		t.Errorf("huge = %v, want 1e19", huge.Data["huge"])
+	}
+
 	// Ownership is enforced for the owned variant.
-	owned, err := store.Create(ctx, scope, coll, "alice@example.com", map[string]any{"n": float64(0)})
+	owned, err := store.Create(ctx, scope, coll, "alice@example.com", map[string]any{"n": float64(0), "title": "owned"})
 	if err != nil {
 		t.Fatalf("Create owned: %v", err)
 	}
 	if _, err := store.IncrementOwned(ctx, scope, coll, owned.ID, "bob@example.com", "n", 1); !errors.Is(err, ErrNotFound) {
 		t.Errorf("IncrementOwned wrong owner err = %v, want ErrNotFound", err)
+	}
+	if _, err := store.IncrementOwned(ctx, scope, coll, owned.ID, "bob@example.com", "title", 1); !errors.Is(err, ErrNotFound) {
+		t.Errorf("IncrementOwned wrong owner non-numeric err = %v, want ErrNotFound", err)
 	}
 	if mine, err := store.IncrementOwned(ctx, scope, coll, owned.ID, "alice@example.com", "n", 2); err != nil {
 		t.Fatalf("IncrementOwned: %v", err)

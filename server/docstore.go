@@ -55,7 +55,7 @@ type ListQuery struct {
 // docFieldRe constrains JSON field names used in filters and sorts so they can
 // be embedded in a json path ("$."+field) without injection risk; the path
 // itself is still passed as a bound parameter.
-var docFieldRe = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_.]*$`)
+var docFieldRe = regexp.MustCompile(`^[A-Za-z0-9_]+(\.[A-Za-z0-9_]+)*$`)
 
 var filterOps = map[string]string{
 	"eq":  "=",
@@ -216,6 +216,15 @@ func (s *DocStore) Count(ctx context.Context, scope, collection, owner string, w
 // GetMany returns the documents with the given ids that exist in the scope,
 // newest first. Missing ids are omitted rather than erroring.
 func (s *DocStore) GetMany(ctx context.Context, scope, collection string, ids []string) ([]Document, error) {
+	return s.getMany(ctx, scope, collection, ids, "")
+}
+
+// GetManyOwned returns only documents owned by owner from the requested ids.
+func (s *DocStore) GetManyOwned(ctx context.Context, scope, collection string, ids []string, owner string) ([]Document, error) {
+	return s.getMany(ctx, scope, collection, ids, owner)
+}
+
+func (s *DocStore) getMany(ctx context.Context, scope, collection string, ids []string, owner string) ([]Document, error) {
 	if len(ids) == 0 {
 		return []Document{}, nil
 	}
@@ -229,7 +238,12 @@ func (s *DocStore) GetMany(ctx context.Context, scope, collection string, ids []
 		sb.WriteString("?")
 		args = append(args, id)
 	}
-	sb.WriteString(") ORDER BY created_at DESC, id DESC")
+	sb.WriteString(")")
+	if owner != "" {
+		sb.WriteString(" AND owner = ?")
+		args = append(args, owner)
+	}
+	sb.WriteString(" ORDER BY created_at DESC, id DESC")
 
 	rows, err := s.db.QueryContext(ctx, sb.String(), args...)
 	if err != nil {
@@ -281,6 +295,9 @@ func buildWhere(filters []Filter) (string, []any, error) {
 			sb.WriteString(" AND json_extract(data, ?) IN (")
 			args = append(args, path)
 			for i, v := range vals {
+				if !isFilterScalar(v) {
+					return "", nil, fmt.Errorf("%w: in on %q needs scalar values", ErrBadQuery, f.Field)
+				}
 				if i > 0 {
 					sb.WriteString(",")
 				}
@@ -301,10 +318,13 @@ func buildWhere(filters []Filter) (string, []any, error) {
 			if _, isSlice := f.Value.([]any); isSlice {
 				return "", nil, fmt.Errorf("%w: use in for array values on %q", ErrBadQuery, f.Field)
 			}
+			if !isFilterScalar(f.Value) {
+				return "", nil, fmt.Errorf("%w: object values are not supported on %q", ErrBadQuery, f.Field)
+			}
 			sb.WriteString(" AND json_extract(data, ?) " + filterOps[f.Op] + " ?")
 			args = append(args, path, normalizeFilterValue(f.Value))
 		case "gt", "gte", "lt", "lte":
-			if _, isSlice := f.Value.([]any); isSlice {
+			if !isFilterScalar(f.Value) {
 				return "", nil, fmt.Errorf("%w: %s on %q needs a scalar", ErrBadQuery, f.Op, f.Field)
 			}
 			sb.WriteString(" AND json_extract(data, ?) " + filterOps[f.Op] + " ?")
@@ -314,6 +334,15 @@ func buildWhere(filters []Filter) (string, []any, error) {
 		}
 	}
 	return sb.String(), args, nil
+}
+
+func isFilterScalar(v any) bool {
+	switch v.(type) {
+	case []any, map[string]any:
+		return false
+	default:
+		return true
+	}
 }
 
 // normalizeFilterValue maps a JSON bool to the 1/0 integer json_extract yields
@@ -401,9 +430,14 @@ func (s *DocStore) increment(ctx context.Context, scope, collection, id, owner, 
 		return Document{}, fmt.Errorf("%w: increment amount must be a finite number", ErrBadQuery)
 	}
 	path := "$." + field
-	// Store a whole amount as an integer so counters stay integers in JSON.
+	// Store an in-range whole amount as an integer so counters stay integers in
+	// JSON; larger finite whole numbers stay float64 to avoid int64 overflow.
 	var amount any = by
-	if by == math.Trunc(by) {
+	const (
+		minInt64Float          = -9223372036854775808.0
+		maxInt64ExclusiveFloat = 9223372036854775808.0
+	)
+	if by == math.Trunc(by) && by >= minInt64Float && by < maxInt64ExclusiveFloat {
 		amount = int64(by)
 	}
 
@@ -421,7 +455,7 @@ func (s *DocStore) increment(ctx context.Context, scope, collection, id, owner, 
 		// No row matched: the document is missing/owned by someone else, or the
 		// field is non-numeric (the type guard in the statement excluded it).
 		// Classify on the same transaction to give a useful error.
-		return Document{}, classifyIncrementMiss(ctx, tx, scope, collection, id, path)
+		return Document{}, classifyIncrementMiss(ctx, tx, scope, collection, id, owner, path)
 	}
 	if err != nil {
 		return Document{}, fmt.Errorf("increment document: %w", err)
@@ -437,11 +471,12 @@ func (s *DocStore) increment(ctx context.Context, scope, collection, id, owner, 
 }
 
 // classifyIncrementMiss explains why an increment matched no row.
-func classifyIncrementMiss(ctx context.Context, q rowQuerier, scope, collection, id, path string) error {
+func classifyIncrementMiss(ctx context.Context, q rowQuerier, scope, collection, id, owner, path string) error {
 	var typ sql.NullString
 	err := q.QueryRowContext(ctx,
-		`SELECT json_type(data, ?) FROM documents WHERE scope = ? AND collection = ? AND id = ?`,
-		path, scope, collection, id,
+		`SELECT json_type(data, ?) FROM documents
+		 WHERE scope = ? AND collection = ? AND id = ? AND (? = '' OR owner = ?)`,
+		path, scope, collection, id, owner, owner,
 	).Scan(&typ)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrNotFound

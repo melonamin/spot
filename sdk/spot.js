@@ -43,7 +43,7 @@
   // applied server-side. A 429 is always safe to retry regardless of method:
   // the rate limiter rejects before the handler runs, so the request never
   // took effect.
-  const idempotent = new Set(['GET', 'HEAD', 'PUT', 'DELETE', 'OPTIONS']);
+  const idempotent = new Set(['GET', 'HEAD', 'PUT', 'OPTIONS']);
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -131,65 +131,72 @@
     // of eq, ne, gt, gte, lt, lte, in (in takes an array). `sort` names a
     // field; `order` is 'asc' or 'desc'. The `after` cursor only applies to
     // the default newest-first order.
-    list: async ({ limit = 100, mine = false, after, where, sort, order } = {}) => {
+    list: async ({ limit = 100, mine = false, after, where, sort, order, retry } = {}) => {
       const params = { limit, mine, after, sort, order };
       if (where) params.where = JSON.stringify(where);
-      return (await api(`/api/db/${name}${query(params)}`)).documents;
+      return (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
     },
     // count({ where, mine }) -> number of matching documents.
-    count: async ({ where, mine = false } = {}) => {
+    count: async ({ where, mine = false, retry } = {}) => {
       const params = { mine };
       if (where) params.where = JSON.stringify(where);
-      return (await api(`/api/db/${name}/count${query(params)}`)).count;
+      return (await api(`/api/db/${name}/count${query(params)}`, { retry })).count;
     },
     // getMany([id, ...]) -> the documents that exist, newest first. Missing
     // ids are omitted.
-    getMany: async (ids = []) => {
+    getMany: async (ids = [], { retry } = {}) => {
       if (!ids.length) return [];
-      return (await api(`/api/db/${name}${query({ ids: ids.join(',') })}`)).documents;
+      return (await api(`/api/db/${name}${query({ ids: ids.join(',') })}`, { retry })).documents;
     },
     // Async iterator over the whole collection, newest first, paging through
     // the `after` cursor so a site never has to manage it by hand:
     //   for await (const doc of posts.iterate({ pageSize })) { … }
-    iterate: async function* ({ pageSize = 100, mine = false, where } = {}) {
+    iterate: async function* ({ pageSize = 100, mine = false, where, retry } = {}) {
       let after;
       for (;;) {
         const params = { limit: pageSize, mine, after };
         if (where) params.where = JSON.stringify(where);
-        const page = (await api(`/api/db/${name}${query(params)}`)).documents;
+        const page = (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
         for (const doc of page) yield doc;
         if (page.length < pageSize) return;
         after = page[page.length - 1].id;
       }
     },
-    create: (data) =>
-      api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data) }),
-    get: (id) => api(`/api/db/${name}/${id}`),
-    update: (id, data, { mine = false } = {}) =>
-      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'PUT', body: JSON.stringify(data) }),
-    updateMine: (id, data) =>
-      api(`/api/db/${name}/${id}?mine=true`, { method: 'PUT', body: JSON.stringify(data) }),
-    delete: (id, { mine = false } = {}) =>
-      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE' }),
-    deleteMine: (id) => api(`/api/db/${name}/${id}?mine=true`, { method: 'DELETE' }),
+    create: (data, { retry } = {}) =>
+      api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data), retry }),
+    get: (id, { retry } = {}) => api(`/api/db/${name}/${id}`, { retry }),
+    update: (id, data, { mine = false, retry } = {}) =>
+      api(`/api/db/${name}/${id}${query({ mine })}`, {
+        method: 'PUT',
+        body: JSON.stringify(data),
+        retry,
+      }),
+    updateMine: (id, data, { retry } = {}) =>
+      api(`/api/db/${name}/${id}?mine=true`, { method: 'PUT', body: JSON.stringify(data), retry }),
+    delete: (id, { mine = false, retry } = {}) =>
+      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE', retry }),
+    deleteMine: (id, { retry } = {}) =>
+      api(`/api/db/${name}/${id}?mine=true`, { method: 'DELETE', retry }),
     // Atomically add `by` (default 1) to a numeric field, server-side, so
     // concurrent counters never lose updates. Resolves with the updated doc.
-    increment: (id, field, by = 1, { mine = false } = {}) =>
+    increment: (id, field, by = 1, { mine = false, retry } = {}) =>
       api(`/api/db/${name}/${id}/increment${query({ mine })}`, {
         method: 'POST',
         body: JSON.stringify({ field, by }),
+        retry,
       }),
-    incrementMine: (id, field, by = 1) =>
+    incrementMine: (id, field, by = 1, { retry } = {}) =>
       api(`/api/db/${name}/${id}/increment?mine=true`, {
         method: 'POST',
         body: JSON.stringify({ field, by }),
+        retry,
       }),
     // Live changes from all visitors. Returns an unsubscribe function;
     // reconnects automatically until unsubscribed. With { replay: true } the
     // current documents are emitted as onCreate first (in creation order),
     // then live changes — closing the gap between an initial list() and the
     // subscription, with no missed or duplicated events.
-    subscribe: (handlers = {}, { replay = false } = {}) => {
+    subscribe: (handlers = {}, { replay = false, retry } = {}) => {
       const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
       let ws;
       let closed = false;
@@ -219,6 +226,7 @@
           return;
         }
         if (known.has(doc.id)) {
+          if (type === 'create') return;
           emit('update', doc);
           return;
         }
@@ -237,10 +245,21 @@
       const runReplay = async () => {
         replaying = true;
         try {
-          const docs = (await api(`/api/db/${name}${query({ limit: 1000 })}`)).documents;
+          const pageSize = 1000;
+          const pages = [];
+          let after;
+          for (;;) {
+            const docs = (await api(`/api/db/${name}${query({ limit: pageSize, after })}`, { retry }))
+              .documents;
+            pages.push(docs);
+            if (docs.length < pageSize) break;
+            after = docs[docs.length - 1].id;
+          }
           // list() is newest first; replay oldest first so consumers build
           // state in creation order.
-          for (let i = docs.length - 1; i >= 0; i--) dispatch('create', docs[i]);
+          for (let p = pages.length - 1; p >= 0; p--) {
+            for (let i = pages[p].length - 1; i >= 0; i--) dispatch('create', pages[p][i]);
+          }
         } catch (err) {
           if (handlers.onError) handlers.onError(err);
           else console.error('spot:', err.message || err);
@@ -259,9 +278,6 @@
         ws = new WebSocket(`${proto}//${location.host}/api/ws`);
         ws.addEventListener('open', () => {
           ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
-          // Subscribe is registered before the snapshot is read, so any change
-          // after the snapshot arrives over the socket and is buffered.
-          if (replay && !replayed) runReplay();
         });
         ws.addEventListener('message', (e) => {
           let msg;
@@ -277,6 +293,13 @@
             return;
           }
           if (msg.collection !== name) return;
+          if (msg.type === 'subscribed') {
+            // The server sends this only after the subscription is registered,
+            // so the snapshot cannot miss later changes; socket events that
+            // arrive during the snapshot are buffered by handleEvent.
+            if (replay && !replayed) runReplay();
+            return;
+          }
           if (msg.type === 'create') handleEvent('create', msg.doc);
           if (msg.type === 'update') handleEvent('update', msg.doc);
           if (msg.type === 'delete') handleEvent('delete', null, msg.id);
@@ -448,7 +471,7 @@
     // { email, name, peer_name, peer_ip, groups, ai_allowed }. ai_allowed
     // reports whether this visitor may call spot.ai on this site, so a page
     // can show or hide AI features without provoking a 403.
-    me: () => api('/api/me'),
+    me: ({ retry } = {}) => api('/api/me', { retry }),
     db: { collection },
     realtime: {
       // Ephemeral room for multiplayer/control-panel traffic.
@@ -458,22 +481,31 @@
     ai: {
       // chat([{role, content}, ...], {model, system, max_tokens})
       // -> { text, model, stop_reason, usage }
-      chat: (messages, opts = {}) =>
-        api('/api/ai/chat', {
+      chat: (messages, opts = {}) => {
+        const { retry, ...rest } = opts;
+        return api('/api/ai/chat', {
           method: 'POST',
-          body: JSON.stringify({ messages, ...opts }),
-        }),
+          body: JSON.stringify({ messages, ...rest }),
+          retry,
+        });
+      },
       // stream([{role, content}, ...], {onToken, model, system, max_tokens, signal})
       // Calls onToken(delta, text) as tokens arrive and resolves with the
       // final { text, model, stop_reason, usage }.
       stream: async (messages, opts = {}) => {
-        const { onToken, signal, ...rest } = opts;
-        const res = await fetch('/api/ai/chat/stream', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ messages, ...rest }),
-          signal,
-        });
+        const { onToken, signal, retry, ...rest } = opts;
+        let res;
+        try {
+          res = await fetch('/api/ai/chat/stream', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ messages, ...rest }),
+            signal,
+          });
+        } catch (err) {
+          if (err && err.name === 'AbortError') throw err;
+          throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+        }
         if (!res.ok || !res.body) {
           const body = await res.json().catch(() => null);
           throw new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
@@ -486,6 +518,7 @@
         const decoder = new TextDecoder();
         const result = { text: '', model: undefined, stop_reason: undefined, usage: undefined };
         let buffer = '';
+        let doneFrame = false;
         for (;;) {
           const { value, done } = await reader.read();
           if (done) break;
@@ -509,45 +542,54 @@
               onToken?.(msg.delta, result.text);
             }
             if (msg.done) {
+              doneFrame = true;
               result.model = msg.model;
               result.stop_reason = msg.stop_reason;
               result.usage = msg.usage;
             }
           }
         }
+        if (!doneFrame) throw new SpotError('AI stream ended before completion', { code: 'stream' });
         return result;
       },
       // image('prompt', {model, size, aspect_ratio, image_size, quality, output_format})
       // -> { provider, model, images: [{ b64, mime_type, data_url }] }
-      image: (prompt, opts = {}) =>
-        api('/api/ai/image', {
+      image: (prompt, opts = {}) => {
+        const { retry, ...rest } = opts;
+        return api('/api/ai/image', {
           method: 'POST',
-          body: JSON.stringify({ prompt, ...opts }),
-        }),
+          body: JSON.stringify({ prompt, ...rest }),
+          retry,
+        });
+      },
     },
     files: {
       // upload(File|Blob) -> { id, name, size, content_type, url }
-      upload: (file, { name } = {}) => {
+      upload: (file, { name, retry } = {}) => {
         const form = new FormData();
         form.append('file', file, name || file.name || 'file');
-        return request('/api/files', { method: 'POST', body: form });
+        return request('/api/files', { method: 'POST', body: form, retry });
       },
       // list() -> [{ id, name, size, url }, ...]
-      list: async () => (await api('/api/files')).files,
+      list: async ({ retry } = {}) => (await api('/api/files', { retry })).files,
       // delete(file) where file is a stored descriptor or (id, name).
-      delete: (file, name) => {
+      delete: (file, nameOrOpts, opts = {}) => {
         const id = typeof file === 'object' ? file.id : file;
-        const fileName = typeof file === 'object' ? file.name : name;
+        const fileName = typeof file === 'object' ? file.name : nameOrOpts;
+        const { retry } =
+          typeof file === 'object' && nameOrOpts && typeof nameOrOpts === 'object' ? nameOrOpts : opts;
         return api(`/api/files/${encodeURIComponent(id)}/${encodeURIComponent(fileName)}`, {
           method: 'DELETE',
+          retry,
         });
       },
     },
     sites: {
       // Apex-only platform APIs: these work from the Spot root, not site subdomains.
-      mine: async () => (await api('/api/sites/mine')).sites,
-      public: async () => (await api('/api/sites/public')).sites,
-      delete: (name) => api(`/api/sites/${encodeURIComponent(name)}`, { method: 'DELETE' }),
+      mine: async ({ retry } = {}) => (await api('/api/sites/mine', { retry })).sites,
+      public: async ({ retry } = {}) => (await api('/api/sites/public', { retry })).sites,
+      delete: (name, { retry } = {}) =>
+        api(`/api/sites/${encodeURIComponent(name)}`, { method: 'DELETE', retry }),
     },
   };
 })();

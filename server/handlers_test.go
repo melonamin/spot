@@ -33,6 +33,8 @@ func TestMeReportsAIAllowedAndGroups(t *testing.T) {
 	// Global visitor AI access grants everyone.
 	visitors := &Server{
 		aiAccess:   aiAccessVisitors,
+		ai:         NewAIProxy("test-key", "", "", nil, nil),
+		sites:      newTestSiteStore(t),
 		resolver:   NewStaticResolver("v@example.com", "V", []string{"team-a"}),
 		spotDomain: "spot.localhost",
 	}
@@ -43,10 +45,15 @@ func TestMeReportsAIAllowedAndGroups(t *testing.T) {
 	if len(me.Groups) != 1 || me.Groups[0] != "team-a" {
 		t.Errorf("groups = %v, want [team-a]", me.Groups)
 	}
+	visitors.ai = nil
+	if get(visitors).AIAllowed {
+		t.Error("aiAccess=visitors without configured proxy: ai_allowed = true, want false")
+	}
 
 	// Owners-only: the owner is allowed, a stranger is not.
 	owner := &Server{
 		aiAccess:    aiAccessOwners,
+		ai:          NewAIProxy("test-key", "", "", nil, nil),
 		siteManager: fakeSiteManager{allowed: true},
 		sites:       newTestSiteStore(t),
 		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
@@ -55,9 +62,13 @@ func TestMeReportsAIAllowedAndGroups(t *testing.T) {
 	if !get(owner).AIAllowed {
 		t.Error("owner on owners-only site: ai_allowed = false, want true")
 	}
+	if groups := get(owner).Groups; groups == nil || len(groups) != 0 {
+		t.Errorf("owner groups = %#v, want empty array", groups)
+	}
 
 	stranger := &Server{
 		aiAccess:    aiAccessOwners,
+		ai:          NewAIProxy("test-key", "", "", nil, nil),
 		siteManager: fakeSiteManager{allowed: false},
 		sites:       newTestSiteStore(t),
 		resolver:    NewStaticResolver("stranger@example.com", "Stranger", nil),
@@ -65,6 +76,32 @@ func TestMeReportsAIAllowedAndGroups(t *testing.T) {
 	}
 	if get(stranger).AIAllowed {
 		t.Error("stranger on owners-only site: ai_allowed = true, want false")
+	}
+
+	restrictedSites := newTestSiteStore(t)
+	if err := restrictedSites.Put(context.Background(), "demo", accessFileName, "application/json",
+		[]byte(`{"allow":["owner@example.com"],"ai":"visitors"}`)); err != nil {
+		t.Fatalf("write restricted policy: %v", err)
+	}
+	restrictedOwner := &Server{
+		aiAccess:   aiAccessOwners,
+		ai:         NewAIProxy("test-key", "", "", nil, nil),
+		sites:      restrictedSites,
+		resolver:   NewStaticResolver("owner@example.com", "Owner", nil),
+		spotDomain: "spot.localhost",
+	}
+	if !get(restrictedOwner).AIAllowed {
+		t.Error("allowed viewer on site with ai=visitors: ai_allowed = false, want true")
+	}
+	restrictedStranger := &Server{
+		aiAccess:   aiAccessOwners,
+		ai:         NewAIProxy("test-key", "", "", nil, nil),
+		sites:      restrictedSites,
+		resolver:   NewStaticResolver("stranger@example.com", "Stranger", nil),
+		spotDomain: "spot.localhost",
+	}
+	if get(restrictedStranger).AIAllowed {
+		t.Error("restricted-site stranger with ai=visitors: ai_allowed = true, want false")
 	}
 }
 
