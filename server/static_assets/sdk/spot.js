@@ -43,7 +43,7 @@
   // applied server-side. A 429 is always safe to retry regardless of method:
   // the rate limiter rejects before the handler runs, so the request never
   // took effect.
-  const idempotent = new Set(['GET', 'HEAD', 'PUT', 'OPTIONS']);
+  const replayable = new Set(['GET', 'HEAD', 'OPTIONS']);
 
   const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -91,7 +91,7 @@
         res = await fetch(path, { ...init, headers });
       } catch (err) {
         if (err && err.name === 'AbortError') throw err;
-        if (attempt < maxRetries && idempotent.has(method)) {
+        if (attempt < maxRetries && replayable.has(method)) {
           await sleep(backoffDelay(attempt));
           continue;
         }
@@ -102,7 +102,7 @@
       if (res.ok) return body;
       const retryAfter = retryAfterSeconds(res);
       const retryable =
-        res.status === 429 ? true : res.status === 503 ? idempotent.has(method) : false;
+        res.status === 429 ? true : res.status === 503 ? replayable.has(method) : false;
       if (retryable && attempt < maxRetries) {
         await sleep(backoffDelay(attempt, retryAfter));
         continue;
@@ -205,6 +205,7 @@
         let closed = false;
         let reconnectTimer;
         let replaying = false;
+        let replayAgain = false;
         // Last updated_at delivered per id, so a replay after a reconnect can
         // tell a new doc (onCreate) from a changed one (onUpdate) from one that
         // vanished while we were offline (onDelete).
@@ -252,7 +253,12 @@
         // retained, not whole documents), and the ascending cursor lets us emit
         // in creation order without buffering the whole collection.
         const runReplay = async () => {
+          if (replaying) {
+            replayAgain = true;
+            return;
+          }
           replaying = true;
+          replayAgain = false;
           try {
             const pageSize = 1000;
             const present = new Set();
@@ -294,6 +300,7 @@
               const ev = pending.shift();
               dispatch(ev.type, ev.doc, ev.id);
             }
+            if (replayAgain && !closed) runReplay();
           }
         };
 
@@ -323,7 +330,7 @@
               // events that arrive during it are buffered by handleEvent. Run
               // on every (re)subscribe so a reconnect catches up on what
               // changed while we were offline.
-              if (replay && !replaying) runReplay();
+              if (replay) runReplay();
               return;
             }
             if (msg.type === 'create') handleEvent('create', msg.doc);
