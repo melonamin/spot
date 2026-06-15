@@ -26,7 +26,14 @@ func TestFileUploadRoundtrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file store: %v", err)
 	}
-	srv := &Server{files: files, spotDomain: "spot.localhost"}
+	// A site store is required so the upload handler can resolve the site
+	// policy; without one the server fails closed (denies). The test site
+	// has no _access.json, so it resolves as public.
+	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
+	if err != nil {
+		t.Fatalf("site store: %v", err)
+	}
+	srv := &Server{files: files, sites: sites, spotDomain: "spot.localhost"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 
@@ -103,7 +110,14 @@ func TestFileUploadHTMLIsNotRenderable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("file store: %v", err)
 	}
-	srv := &Server{files: files, spotDomain: "spot.localhost"}
+	// A site store is required so the upload handler can resolve the site
+	// policy; without one the server fails closed (denies). The test site
+	// has no _access.json, so it resolves as public.
+	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
+	if err != nil {
+		t.Fatalf("site store: %v", err)
+	}
+	srv := &Server{files: files, sites: sites, spotDomain: "spot.localhost"}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
 

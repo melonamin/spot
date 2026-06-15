@@ -1,0 +1,127 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same ref.
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Build & unit tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Installs the Go and just versions pinned in mise.toml, so CI and
+      # local dev share one source of truth for the toolchain.
+      - uses: jdx/mise-action@v2
+
+      - name: Cache Go modules and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('server/go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - name: Check gofmt
+        run: |
+          unformatted=$(gofmt -l server)
+          if [ -n "$unformatted" ]; then
+            echo "These files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Build
+        run: just build
+
+      - name: Unit tests (go vet + go test)
+        run: just test
+
+      - name: SDK drift check
+        run: just check-generate
+
+  govulncheck:
+    name: Vulnerability scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Cache Go modules and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('server/go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+      - name: govulncheck
+        run: cd server && go run golang.org/x/vuln/cmd/govulncheck@latest ./...
+
+  integration:
+    name: Integration tests
+    runs-on: ubuntu-latest
+    services:
+      # S3 backend matching the local compose stack (server/filestore auto-
+      # creates its buckets, so no bootstrap step is needed).
+      rustfs:
+        image: rustfs/rustfs:1.0.0-beta.8
+        env:
+          RUSTFS_ACCESS_KEY: rustfsadmin
+          RUSTFS_SECRET_KEY: rustfsadmin
+        ports:
+          - 9000:9000
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+      - name: Cache Go modules and build
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/go-build
+            ~/go/pkg/mod
+          key: go-${{ runner.os }}-${{ hashFiles('server/go.sum') }}
+          restore-keys: go-${{ runner.os }}-
+
+      - name: Wait for RustFS
+        run: |
+          for _ in $(seq 1 60); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:9000/ || echo 000)
+            if [ "$code" != "000" ]; then
+              echo "RustFS is reachable (HTTP $code)"
+              exit 0
+            fi
+            sleep 2
+          done
+          echo "RustFS did not become reachable on :9000" >&2
+          exit 1
+
+      - name: Integration tests
+        env:
+          SPOT_TEST_S3_ENDPOINT: localhost:9000
+        run: just test-integration
+
+  e2e:
+    name: End-to-end
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jdx/mise-action@v2
+
+      # Brings up the full compose stack (building the server image from
+      # server/Dockerfile), deploys the demo site via cli/spot, and exercises
+      # serving plus the database API. Docker and compose are preinstalled on
+      # the runner.
+      - name: e2e
+        run: just e2e
