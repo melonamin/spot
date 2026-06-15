@@ -294,9 +294,15 @@ func newResolver(cfg config) (IdentityResolver, string) {
 	return nil, "NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET not set, /api/me will return 503"
 }
 
+// version is the build version, injected via -ldflags "-X main.version=...".
+// It stays "dev" for local and source builds.
+var version = "dev"
+
 func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	log.Printf("spot-api version %s", version)
 
 	cfg, err := loadConfig()
 	if err != nil {
