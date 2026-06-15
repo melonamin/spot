@@ -27,9 +27,20 @@ build-binary:
 test:
     cd server && go vet ./... && go test ./...
 
-# Integration tests against SQLite.
+# Integration tests need SQLite and (for the filestore tests) a running
+# S3/RustFS endpoint.
 test-integration:
     cd server && go test -tags integration ./...
+
+# Sync the embedded SDK copy under server/static_assets/sdk.
+generate:
+    cd server && go generate ./...
+
+# Fail if the embedded SDK copy is stale (drift between sdk/ and
+# server/static_assets/sdk/).
+check-generate:
+    cd server && go generate ./...
+    git diff --exit-code -- server/static_assets/sdk
 
 # Full end-to-end: stack up, deploy demo site, exercise serving + DB API.
 e2e:

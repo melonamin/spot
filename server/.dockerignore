@@ -1,0 +1,16 @@
+# Keep the build context lean. The image is built with `go build`, so all
+# Go sources (including *_test.go and the embedded static_assets) MUST stay
+# in the context. This file lives in server/ because the image build context
+# is ./server (see docker-compose.yml), so patterns are relative to server/.
+
+# Local dev binary (see .gitignore: server/server)
+server
+
+# Build and test artifacts
+*.test
+*.out
+
+# Editor cruft
+*.swp
+*~
+.DS_Store
