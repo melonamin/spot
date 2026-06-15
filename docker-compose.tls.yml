@@ -9,8 +9,10 @@
 
 services:
   caddy:
+    # Pulls the published image by default; `--build` builds from ./caddy.
+    # Pin a release with SPOT_CADDY_IMAGE=...:X.Y.Z.
+    image: ${SPOT_CADDY_IMAGE:-ghcr.io/melonamin/spot-caddy:latest}
     build: ./caddy
-    image: spot-caddy
     network_mode: host
     environment:
       SPOT_DOMAIN: "${SPOT_MESH_DOMAIN:-spot.test}"
