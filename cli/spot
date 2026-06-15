@@ -421,7 +421,7 @@ render_skill() {
     cat <<EOF
 ---
 name: spot
-description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs storage or identity.
+description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs identity, database, realtime, file uploads, text AI, or AI image generation.
 ---
 
 # Spot
@@ -519,18 +519,29 @@ global across Spot sites. Use rooms for cursors, player movement,
 operator presence, live controls, and other state that should not be
 persisted to the database.
 
-### AI
+### AI: text and image generation
 
-Call Claude from the browser — keys live on the server. By default this
-is limited to the site owner or platform admins; authorized visitors can
-use it only when the deployment sets SPOT_AI_ACCESS=visitors or the site
-opts in with \`"ai":"visitors"\` in \`_access.json\`.
+Call AI from the browser — the OpenAI-compatible gateway key lives on the
+server. By default this is limited to the site owner or platform admins;
+authorized visitors can use it only when the deployment sets
+SPOT_AI_ACCESS=visitors or the site opts in with \`"ai":"visitors"\` in
+\`_access.json\`.
 
 \`\`\`js
 const res = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
 // res = { text, model, stop_reason, usage }
 // Optional second-level fields in the request: system, max_tokens.
 // model is accepted only when the deployment allowlists it.
+
+const art = await spot.ai.image('A tiny cyberpunk greenhouse at night');
+// art = { provider, model, images: [{ b64, mime_type, data_url }] }
+const img = new Image();
+img.src = art.images[0].data_url;
+document.body.append(img);
+
+// Supports any /v1/images/generations model exposed by the gateway.
+// Common models include OpenAI gpt-image-2 and Nano Banana 2 through
+// the deployment's LiteLLM alias, such as gemini-3.1-flash-image-preview.
 \`\`\`
 
 ### File uploads

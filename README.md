@@ -325,7 +325,7 @@ Important APIs:
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
 
-## Files and AI
+## Files, Text AI, and Image Generation
 
 Uploads go through Spot, so browsers never see storage credentials:
 
@@ -336,11 +336,30 @@ const stored = await spot.files.upload(file);
 Images, PDFs, plain text, audio, and video render inline. HTML, SVG, and
 unknown types download as attachments with `nosniff`.
 
-The AI proxy holds the Anthropic key server-side:
+The AI proxy holds the OpenAI-compatible gateway key server-side. For LiteLLM,
+use the LiteLLM virtual key and proxy URL:
 
 ```env
-ANTHROPIC_API_KEY=...
+OPENAI_API_KEY=...
+OPENAI_BASE_URL=http://litellm:4000
+SPOT_AI_MODEL=...
+SPOT_AI_IMAGE_MODEL=gemini-3.1-flash-image-preview
 ```
+
+```js
+const chat = await spot.ai.chat([{ role: 'user', content: 'Summarize my tasks' }]);
+const art = await spot.ai.image('A tiny cyberpunk greenhouse at night');
+const img = new Image();
+img.src = art.images[0].data_url;
+document.body.append(img);
+```
+
+Text generation goes through `/v1/chat/completions`; image generation goes
+through `/v1/images/generations`. Image responses include browser-ready
+`images[0].data_url` plus `b64`, `mime_type`, and `model`. Set
+`SPOT_AI_IMAGE_MODEL` to choose the deployment default, or pass a model such
+as `{ model: 'gpt-image-2' }` or the LiteLLM Nano Banana 2 alias exposed by
+your gateway.
 
 By default only the site owner and platform admins may call it. Set
 `SPOT_AI_ACCESS=visitors` globally, or opt in a restricted site:

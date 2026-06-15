@@ -38,10 +38,12 @@ type config struct {
 	S3SecretKey          string
 	UploadsBucket        string
 	SitesBucket          string
-	AnthropicAPIKey      string
-	AnthropicBaseURL     string
+	OpenAIAPIKey         string
+	OpenAIBaseURL        string
 	AIModel              string
 	AIAllowedModels      []string
+	AIImageModel         string
+	AIAllowedImageModels []string
 	AIAccess             string
 	TrustedProxies       string
 	AdminAllow           []string
@@ -86,10 +88,12 @@ func loadConfigFrom(args []string) (config, error) {
 		S3SecretKey:          os.Getenv("SPOT_S3_SECRET_KEY"),
 		UploadsBucket:        envOr("SPOT_UPLOADS_BUCKET", "spot-uploads"),
 		SitesBucket:          envOr("SPOT_SITES_BUCKET", "spot-sites"),
-		AnthropicAPIKey:      os.Getenv("ANTHROPIC_API_KEY"),
-		AnthropicBaseURL:     os.Getenv("ANTHROPIC_BASE_URL"),
+		OpenAIAPIKey:         os.Getenv("OPENAI_API_KEY"),
+		OpenAIBaseURL:        os.Getenv("OPENAI_BASE_URL"),
 		AIModel:              os.Getenv("SPOT_AI_MODEL"),
 		AIAllowedModels:      splitList(os.Getenv("SPOT_AI_ALLOWED_MODELS")),
+		AIImageModel:         os.Getenv("SPOT_AI_IMAGE_MODEL"),
+		AIAllowedImageModels: splitList(os.Getenv("SPOT_AI_ALLOWED_IMAGE_MODELS")),
 		AIAccess:             envOr("SPOT_AI_ACCESS", aiAccessOwners),
 		TrustedProxies:       envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
 		AdminAllow: append(
@@ -339,15 +343,16 @@ func main() {
 	}
 
 	var ai *AIProxy
-	if cfg.AnthropicAPIKey != "" {
-		ai = NewAIProxyWithUpstream(cfg.AnthropicAPIKey, cfg.AnthropicBaseURL, cfg.AIModel, cfg.AIAllowedModels)
-		upstream := cfg.AnthropicBaseURL
+	if cfg.OpenAIAPIKey != "" {
+		ai = NewAIProxy(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL, cfg.AIModel, cfg.AIAllowedModels, cfg.AIAllowedImageModels)
+		ai.ConfigureImages(cfg.AIImageModel, cfg.AIAllowedImageModels)
+		upstream := cfg.OpenAIBaseURL
 		if upstream == "" {
-			upstream = "the Claude API"
+			upstream = "the OpenAI API"
 		}
-		log.Printf("ai: proxying to %s (default model %s)", upstream, ai.model)
+		log.Printf("ai: proxying to %s (default chat model %s, default image model %s)", upstream, ai.model, ai.imageModel)
 	} else {
-		log.Printf("ai: ANTHROPIC_API_KEY not set, /api/ai/chat will return 503")
+		log.Printf("ai: OPENAI_API_KEY not set, /api/ai/chat and /api/ai/image will return 503")
 	}
 
 	trustedProxies, err := NewTrustedProxies(cfg.TrustedProxies)

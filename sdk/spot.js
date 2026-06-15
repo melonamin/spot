@@ -212,6 +212,13 @@
           method: 'POST',
           body: JSON.stringify({ messages, ...opts }),
         }),
+      // image('prompt', {model, size, aspect_ratio, image_size, quality, output_format})
+      // -> { provider, model, images: [{ b64, mime_type, data_url }] }
+      image: (prompt, opts = {}) =>
+        api('/api/ai/image', {
+          method: 'POST',
+          body: JSON.stringify({ prompt, ...opts }),
+        }),
     },
     files: {
       // upload(File|Blob) -> { id, name, size, content_type, url }
