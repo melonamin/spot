@@ -8,9 +8,9 @@ CREATE TABLE IF NOT EXISTS documents (
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
 
-CREATE INDEX IF NOT EXISTS documents_scope_collection_idx
-    ON documents (scope, collection, created_at DESC);
-
+-- Covers both the default newest-first listing and cursor paging (which adds
+-- id as a tiebreaker). It subsumes a plain (scope, collection, created_at DESC)
+-- index, so only this one is kept; applyAdditiveMigrations drops the older one.
 CREATE INDEX IF NOT EXISTS documents_scope_collection_cursor_idx
     ON documents (scope, collection, created_at DESC, id DESC);
 

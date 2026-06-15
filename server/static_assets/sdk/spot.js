@@ -75,6 +75,22 @@
     return Math.random() * ceiling;
   };
 
+  // Build a SpotError from a non-ok response. Shared by request() and the
+  // streaming path so both classify status, code, and Retry-After identically.
+  const errorFromResponse = (res, body, retryAfter = retryAfterSeconds(res)) =>
+    new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
+      status: res.status,
+      code: codeForStatus(res.status),
+      retryAfter,
+    });
+
+  // Map a fetch() rejection onto the error to throw: re-raise aborts untouched,
+  // wrap everything else as a SpotError{code:'network'}.
+  const networkError = (err) => {
+    if (err && err.name === 'AbortError') return err;
+    return new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+  };
+
   // Single fetch path for every JSON and upload call: builds SpotError
   // consistently and applies the retry policy. Streaming (ai.stream) does not
   // go through here — a streamed body cannot be safely replayed.
@@ -95,7 +111,7 @@
           await sleep(backoffDelay(attempt));
           continue;
         }
-        throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+        throw networkError(err);
       }
       if (res.status === 204) return null;
       const body = await res.json().catch(() => null);
@@ -107,11 +123,7 @@
         await sleep(backoffDelay(attempt, retryAfter));
         continue;
       }
-      throw new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
-        status: res.status,
-        code: codeForStatus(res.status),
-        retryAfter,
-      });
+      throw errorFromResponse(res, body, retryAfter);
     }
   };
 
@@ -129,8 +141,10 @@
   const collection = (name) => {
     const c = {
       // list({ limit, mine }). Each document carries an `owner` (the mesh
-      // identity that created it). Pass mine:true to return only documents
-      // owned by the current visitor. Pass after:<doc id> for cursor paging.
+      // identity that created it — its lowercased email or peer IP — returned to
+      // anyone who can read the collection, so treat it as visible to all site
+      // visitors). Pass mine:true to return only documents owned by the current
+      // visitor. Pass after:<doc id> for cursor paging.
       // list({ limit, mine, after, where, sort, order }). `where` is an object
       // of field -> value (equality) or field -> { op: value } where op is one
       // of eq, ne, gt, gte, lt, lte, in (in takes an array). `sort` names a
@@ -538,16 +552,11 @@
             signal,
           });
         } catch (err) {
-          if (err && err.name === 'AbortError') throw err;
-          throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+          throw networkError(err);
         }
         if (!res.ok || !res.body) {
           const body = await res.json().catch(() => null);
-          throw new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
-            status: res.status,
-            code: codeForStatus(res.status),
-            retryAfter: retryAfterSeconds(res),
-          });
+          throw errorFromResponse(res, body);
         }
         const reader = res.body.getReader();
         const decoder = new TextDecoder();
@@ -589,12 +598,11 @@
             }
           }
         } catch (err) {
-          // Re-throw our own typed stream errors and aborts as-is; wrap anything
-          // else (a mid-stream connection drop rejects reader.read() with a raw
-          // TypeError) so callers always see a SpotError.
+          // Re-throw our own typed stream errors as-is; networkError re-raises
+          // aborts and wraps anything else (a mid-stream connection drop rejects
+          // reader.read() with a raw TypeError) so callers always see a SpotError.
           if (err instanceof SpotError) throw err;
-          if (err && err.name === 'AbortError') throw err;
-          throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
+          throw networkError(err);
         }
         if (!doneFrame) throw new SpotError('AI stream ended before completion', { code: 'stream' });
         return result;
@@ -621,10 +629,13 @@
       list: async ({ retry } = {}) => (await api('/api/files', { retry })).files,
       // delete(file) where file is a stored descriptor or (id, name).
       delete: (file, nameOrOpts, opts = {}) => {
-        const id = typeof file === 'object' ? file.id : file;
-        const fileName = typeof file === 'object' ? file.name : nameOrOpts;
+        // typeof null === 'object', so guard against null before treating file
+        // as a descriptor — otherwise file.id throws a raw TypeError.
+        const isDescriptor = file !== null && typeof file === 'object';
+        const id = isDescriptor ? file.id : file;
+        const fileName = isDescriptor ? file.name : nameOrOpts;
         const { retry } =
-          typeof file === 'object' && nameOrOpts && typeof nameOrOpts === 'object' ? nameOrOpts : opts;
+          isDescriptor && nameOrOpts && typeof nameOrOpts === 'object' ? nameOrOpts : opts;
         return api(`/api/files/${encodeURIComponent(id)}/${encodeURIComponent(fileName)}`, {
           method: 'DELETE',
           retry,

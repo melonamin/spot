@@ -428,6 +428,45 @@ func TestAIChatStreamIncompleteUpstream(t *testing.T) {
 	})
 }
 
+// TestAIChatStreamIgnoresPlaceholderError covers the aiStreamError fix: a
+// chunk carrying an empty/placeholder error value (an empty object or false)
+// is not a real error and must not abort an otherwise-valid stream.
+func TestAIChatStreamIgnoresPlaceholderError(t *testing.T) {
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, _ := w.(http.Flusher)
+		for _, chunk := range []string{
+			`{"error":false,"choices":[{"delta":{"content":"Hel"},"finish_reason":null}]}`,
+			`{"error":{},"choices":[{"delta":{"content":"lo"},"finish_reason":"stop"}]}`,
+		} {
+			if _, err := w.Write([]byte("data: " + chunk + "\n\n")); err != nil {
+				return
+			}
+			if flusher != nil {
+				flusher.Flush()
+			}
+		}
+		w.Write([]byte("data: [DONE]\n\n"))
+	}))
+	defer api.Close()
+	srv := aiTestServer(t, api.URL)
+
+	rec := postChatStream(t, srv, `{"messages": [{"role": "user", "content": "hi"}]}`)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("stream: status %d body %s", rec.Code, rec.Body)
+	}
+	text, done := sseDeltas(t, rec.Body.String())
+	if text != "Hello" {
+		t.Errorf("streamed text = %q, want Hello (placeholder error aborted the stream)", text)
+	}
+	if done == nil {
+		t.Fatalf("missing done frame in %q", rec.Body.String())
+	}
+	if strings.Contains(rec.Body.String(), `"error"`) {
+		t.Errorf("placeholder error surfaced as an error frame: %q", rec.Body.String())
+	}
+}
+
 // TestAIChatStreamErrorsBeforeStream pins the timing rule: failures that
 // happen before any token is delivered are HTTP errors, not SSE frames.
 func TestAIChatStreamErrorsBeforeStream(t *testing.T) {

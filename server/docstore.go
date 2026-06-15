@@ -132,16 +132,10 @@ func (s *DocStore) Query(ctx context.Context, scope, collection string, q ListQu
 	var sb strings.Builder
 	sb.WriteString(`SELECT id, owner, data, created_at, updated_at FROM documents WHERE scope = ? AND collection = ?`)
 	args := []any{scope, collection}
-	if q.Owner != "" {
-		sb.WriteString(" AND owner = ?")
-		args = append(args, q.Owner)
-	}
-	whereSQL, whereArgs, err := buildWhere(q.Where)
+	args, err := appendOwnerWhere(&sb, args, q.Owner, q.Where)
 	if err != nil {
 		return nil, err
 	}
-	sb.WriteString(whereSQL)
-	args = append(args, whereArgs...)
 
 	order, err := sortOrder(q.Order)
 	if err != nil {
@@ -151,7 +145,7 @@ func (s *DocStore) Query(ctx context.Context, scope, collection string, q ListQu
 		if !docFieldRe.MatchString(q.Sort) {
 			return nil, fmt.Errorf("%w: %q is not a valid sort field", ErrBadQuery, q.Sort)
 		}
-		sb.WriteString(" ORDER BY json_extract(data, ?) " + order + ", id DESC")
+		sb.WriteString(" ORDER BY json_extract(data, ?) " + order + ", id " + order)
 		args = append(args, "$."+q.Sort)
 	} else {
 		// Default order is by creation time. Honor an explicit asc/desc and keep
@@ -199,16 +193,10 @@ func (s *DocStore) Count(ctx context.Context, scope, collection, owner string, w
 	var sb strings.Builder
 	sb.WriteString(`SELECT count(*) FROM documents WHERE scope = ? AND collection = ?`)
 	args := []any{scope, collection}
-	if owner != "" {
-		sb.WriteString(" AND owner = ?")
-		args = append(args, owner)
-	}
-	whereSQL, whereArgs, err := buildWhere(where)
+	args, err := appendOwnerWhere(&sb, args, owner, where)
 	if err != nil {
 		return 0, err
 	}
-	sb.WriteString(whereSQL)
-	args = append(args, whereArgs...)
 
 	var n int
 	if err := s.db.QueryRowContext(ctx, sb.String(), args...).Scan(&n); err != nil {
@@ -243,9 +231,9 @@ func (s *DocStore) getMany(ctx context.Context, scope, collection string, ids []
 		args = append(args, id)
 	}
 	sb.WriteString(")")
-	if owner != "" {
-		sb.WriteString(" AND owner = ?")
-		args = append(args, owner)
+	args, err := appendOwnerWhere(&sb, args, owner, nil)
+	if err != nil {
+		return nil, err
 	}
 	sb.WriteString(" ORDER BY created_at DESC, id DESC")
 
@@ -264,6 +252,24 @@ func (s *DocStore) getMany(ctx context.Context, scope, collection string, ids []
 		docs = append(docs, doc)
 	}
 	return docs, rows.Err()
+}
+
+// appendOwnerWhere appends the optional owner filter and the validated field
+// filters to a documents query that has already bound scope and collection,
+// returning the extended args. It centralizes the owner/where assembly shared
+// by Query, Count, and getMany so the three cannot disagree on scoping. A
+// malformed filter returns ErrBadQuery.
+func appendOwnerWhere(sb *strings.Builder, args []any, owner string, where []Filter) ([]any, error) {
+	if owner != "" {
+		sb.WriteString(" AND owner = ?")
+		args = append(args, owner)
+	}
+	whereSQL, whereArgs, err := buildWhere(where)
+	if err != nil {
+		return args, err
+	}
+	sb.WriteString(whereSQL)
+	return append(args, whereArgs...), nil
 }
 
 // buildWhere turns validated filters into a SQL fragment and its bound args.
@@ -489,7 +495,7 @@ func (s *DocStore) increment(ctx context.Context, scope, collection, id, owner, 
 
 	var doc Document
 	var raw []byte
-	err = tx.QueryRowContext(ctx, incrementDocumentSQL, scope, collection, id, path, amount, owner).
+	err = tx.QueryRowContext(ctx, incrementDocumentSQL, scope, collection, id, path, owner, amount).
 		Scan(&doc.ID, &doc.Owner, &raw, &doc.CreatedAt, &doc.UpdatedAt)
 	if errors.Is(err, sql.ErrNoRows) {
 		// No row matched: the document is missing/owned by someone else, or the
@@ -598,22 +604,23 @@ const (
 		VALUES (?, ?, ?, ?)
 		RETURNING id, created_at, updated_at`
 
-	// The type guard makes a non-numeric field match no row, which increment
-	// distinguishes from a missing document; a null/absent field is treated as
-	// 0 by the coalesce.
+	// incrementWhereSQL is the WHERE clause shared by the increment read and
+	// write statements, so the two cannot drift. It binds ?1=scope, ?2=collection,
+	// ?3=id, ?4=path, ?5=owner (empty ?5 means no owner filter). The type guard
+	// makes a present non-numeric field match no row, which increment
+	// distinguishes from a missing document; a null/absent field would have
+	// matched and is treated as 0 by the coalesce.
+	incrementWhereSQL = ` WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?5 = '' OR owner = ?5)
+		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real', 'null'))`
+
 	incrementDocumentSQL = `UPDATE documents
-		SET data = json_set(data, ?4, coalesce(json_extract(data, ?4), 0) + ?5),
-		    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
-		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?6 = '' OR owner = ?6)
-		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real', 'null'))
+		SET data = json_set(data, ?4, coalesce(json_extract(data, ?4), 0) + ?6),
+		    updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')` + incrementWhereSQL + `
 		RETURNING id, owner, data, created_at, updated_at`
 
-	// incrementReadSQL mirrors incrementDocumentSQL's WHERE (owner filter and
-	// numeric-field guard) but only reads, so a zero-delta increment returns the
-	// current document with the same 404/409 contract and without a write.
-	incrementReadSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
-		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?5 = '' OR owner = ?5)
-		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real', 'null'))`
+	// A zero-delta increment uses this read so it returns the current document
+	// with the same 404/409 contract and without a write or realtime event.
+	incrementReadSQL = `SELECT id, owner, data, created_at, updated_at FROM documents` + incrementWhereSQL
 
 	getDocumentSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`

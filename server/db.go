@@ -44,12 +44,24 @@ func openSQLiteDB(ctx context.Context, path string) (*sql.DB, error) {
 }
 
 // applyAdditiveMigrations brings older databases up to the current schema
-// for changes that CREATE TABLE IF NOT EXISTS cannot express, namely
-// columns added to a table that already exists. New installs already have
-// these from schema.sql, so each step is a no-op for them.
+// for changes that CREATE TABLE IF NOT EXISTS cannot express: columns added
+// to a table that already exists, and dropping an index that a newer one
+// supersedes. New installs already match schema.sql, so each step is a no-op
+// for them.
 func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
-	return ensureColumn(ctx, db, "documents", "owner",
-		`ALTER TABLE documents ADD COLUMN owner text NOT NULL DEFAULT ''`)
+	if err := ensureColumn(ctx, db, "documents", "owner",
+		`ALTER TABLE documents ADD COLUMN owner text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// documents_scope_collection_cursor_idx (scope, collection, created_at DESC,
+	// id DESC) serves every lookup the older 3-column documents_scope_collection_idx
+	// did, so the latter is redundant write amplification. Drop it on existing
+	// databases; schema.sql no longer creates it and applies the cursor index
+	// first, so a query is never left without an index. A no-op once dropped.
+	if _, err := db.ExecContext(ctx, `DROP INDEX IF EXISTS documents_scope_collection_idx`); err != nil {
+		return fmt.Errorf("drop redundant documents index: %w", err)
+	}
+	return nil
 }
 
 // ensureColumn adds a column when it is missing. SQLite has no

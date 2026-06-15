@@ -306,7 +306,9 @@ several visitors can keep private records in one shared site.
 `list({ mine: true })` returns only the caller's documents. Writes are not
 restricted to the owner by default; use `updateMine`, `deleteMine`, or
 `{ mine: true }` on mutations when only the creator should be able to change
-a document.
+a document. The `owner` (a lowercased email or peer IP) is included in every
+read response, so on a site many visitors can read, treat it as visible to all
+of them.
 
 Realtime DB subscriptions are process-local and delivered after SQLite
 commits:

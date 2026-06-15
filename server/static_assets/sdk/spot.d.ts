@@ -50,6 +50,11 @@ declare namespace SpotSDK {
 
   interface Document<T = Record<string, unknown>> {
     id: string;
+    /**
+     * The mesh identity that created the document (lowercased email or peer IP).
+     * Returned to anyone who can read the collection, so treat it as visible to
+     * all site visitors. Empty when the creator could not be attributed.
+     */
     owner: string;
     data: T;
     created_at: string;

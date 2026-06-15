@@ -239,25 +239,45 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
+// resolvePeer looks up the visitor's mesh identity by client IP, filling
+// PeerIP from the request when the resolver omits it. It returns found=false
+// with a nil error when no resolver is configured or the peer is not in the
+// mesh, and a non-nil error for a resolver outage. It writes no response, so
+// callers map the outcome to their own status. Shared by resolveIdentity and
+// callerKey so the lookup cannot drift between them.
+func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	if s.resolver == nil {
+		return Identity{}, false, nil
+	}
+	ip := s.clientIP(r)
+	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	if err != nil {
+		return Identity{}, false, err
+	}
+	if !found {
+		return Identity{}, false, nil
+	}
+	if id.PeerIP == "" {
+		id.PeerIP = ip
+	}
+	return id, true, nil
+}
+
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
 	if s.resolver == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
 		return Identity{}, false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("%s: resolve %s: %v", purpose, ip, err)
+		log.Printf("%s: resolve %s: %v", purpose, s.clientIP(r), err)
 		httpError(w, http.StatusBadGateway, "could not reach the identity resolver")
 		return Identity{}, false
 	}
 	if !found {
-		httpError(w, http.StatusNotFound, "no identity matches "+ip)
+		httpError(w, http.StatusNotFound, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	if id.Groups == nil {
 		id.Groups = []string{}
@@ -270,22 +290,16 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 // "" with a nil error when no resolver is configured or the peer is not in
 // the mesh, so document ownership is best-effort on open, resolver-less
 // installs. A non-nil error means the resolver itself failed (a transient
-// outage); callers that stamp or filter by owner surface that rather than
-// silently treating the visitor as unattributed.
+// outage): a mine-scoped read or write surfaces it as 503, while the create
+// path treats it as best-effort and stamps an empty owner so an open site
+// keeps accepting writes during a blip.
 func (s *Server) callerKey(r *http.Request) (string, error) {
-	if s.resolver == nil {
-		return "", nil
-	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
 		return "", err
 	}
 	if !found {
 		return "", nil
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	return actorKey(id), nil
 }
@@ -358,18 +372,31 @@ func normalizeHost(host string) string {
 
 const defaultMaxUpload = 25 << 20
 
-func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+// requireFileSite runs the shared preamble for the host-addressed file
+// handlers: it checks the file store is configured, resolves the site from the
+// request host, and authorizes site access. It writes the matching error
+// response and returns ok=false on failure. handleDownload takes the site from
+// the path instead, so it does not use this.
+func (s *Server) requireFileSite(w http.ResponseWriter, r *http.Request) (string, bool) {
 	if s.files == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
-		return
+		return "", false
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	if site == "" {
 		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
-		return
+		return "", false
 	}
 	if !s.authorizeSiteAccess(w, r, site) {
+		return "", false
+	}
+	return site, true
+}
+
+func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
 		return
 	}
 	maxUpload := s.maxUpload
@@ -413,17 +440,8 @@ func (s *Server) handleUpload(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
-	if s.files == nil {
-		httpError(w, http.StatusServiceUnavailable,
-			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
-		return
-	}
-	site := siteFromHost(s.requestHost(r), s.spotDomain)
-	if site == "" {
-		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
-		return
-	}
-	if !s.authorizeSiteAccess(w, r, site) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
 		return
 	}
 	files, err := s.files.List(r.Context(), site)
@@ -439,17 +457,8 @@ func (s *Server) handleFileList(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleFileDelete(w http.ResponseWriter, r *http.Request) {
-	if s.files == nil {
-		httpError(w, http.StatusServiceUnavailable,
-			"file store not configured: set SPOT_S3_ENDPOINT and credentials")
-		return
-	}
-	site := siteFromHost(s.requestHost(r), s.spotDomain)
-	if site == "" {
-		httpError(w, http.StatusBadRequest, "files API must be called from a site subdomain")
-		return
-	}
-	if !s.authorizeSiteAccess(w, r, site) {
+	site, ok := s.requireFileSite(w, r)
+	if !ok {
 		return
 	}
 	id := r.PathValue("id")
@@ -538,7 +547,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 // server-side AI key on this site, mirroring authorizeAIUse without writing a
 // response. It is a best-effort read for UI gating: any inability to determine
 // access (apex root, unreadable policy, unconfigured owner checks, lookup
-// error) reports false rather than failing the request.
+// error) reports false rather than failing the request. It shares the visitor
+// rule (aiVisitorsAllowed) with authorizeAIUse; keep the two in step.
 func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) bool {
 	if site == "" || s.ai == nil || !s.ai.configured() {
 		return false
@@ -550,10 +560,7 @@ func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) 
 	if policy != nil && policy.RestrictsAccess() && !policy.Allows(actor) {
 		return false
 	}
-	if s.aiAccess == aiAccessVisitors {
-		return true
-	}
-	if policy.AllowsAIVisitors() {
+	if s.aiVisitorsAllowed(policy) {
 		return true
 	}
 	if s.siteManager == nil {
@@ -561,7 +568,9 @@ func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) 
 	}
 	// Only an owner-gated site that does not opt visitors in reaches here, so
 	// the ownership lookup runs solely when it is the only way to answer; the
-	// cheaper visitor/policy paths above short-circuit the common cases.
+	// cheaper visitor/policy paths above short-circuit the common cases. This
+	// is one indexed sites-table read per /api/me call in the default owners
+	// mode — acceptable for a per-page-load capability check, so it is not cached.
 	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
 	return err == nil && allowed
 }
@@ -1056,11 +1065,14 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	// Ownership is best-effort on create: a resolver outage degrades to an
+	// unattributed (empty-owner) document rather than failing the write, so an
+	// open site keeps accepting writes during a transient mesh blip. Restricted
+	// sites already required a resolved identity in s.scope's authorizeSiteAccess.
 	owner, err := s.callerKey(r)
 	if err != nil {
-		log.Printf("create: resolve owner: %v", err)
-		httpError(w, http.StatusServiceUnavailable, "could not reach the identity resolver")
-		return
+		log.Printf("create: resolve owner (continuing unattributed): %v", err)
+		owner = ""
 	}
 	doc, err := s.store.Create(r.Context(), scope, collection, owner, data)
 	if err != nil {

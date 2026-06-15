@@ -147,6 +147,44 @@ func TestListOrderHonoredWithoutSort(t *testing.T) {
 	}
 }
 
+// TestSortTiebreakFollowsOrder covers the Query fix: with a custom sort the
+// secondary id tiebreaker follows the requested order, so within a group of
+// equal sort values order=asc is the exact reverse of order=desc rather than
+// both collapsing to id DESC.
+func TestSortTiebreakFollowsOrder(t *testing.T) {
+	srv := newQueryTestServer(t)
+	for i := 0; i < 4; i++ {
+		if rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/scores",
+			`{"score":1}`); rec.Code != http.StatusCreated {
+			t.Fatalf("seed: %d %s", rec.Code, rec.Body)
+		}
+	}
+	list := func(query string) []Document {
+		t.Helper()
+		rec := doJSON(t, srv, http.MethodGet, "http://demo.spot.localhost/api/db/scores"+query, "")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("list%s: %d %s", query, rec.Code, rec.Body)
+		}
+		var out struct {
+			Documents []Document `json:"documents"`
+		}
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode: %v", err)
+		}
+		return out.Documents
+	}
+	asc := list("?sort=score&order=asc")
+	desc := list("?sort=score&order=desc")
+	if len(asc) != 4 || len(desc) != 4 {
+		t.Fatalf("len asc=%d desc=%d, want 4", len(asc), len(desc))
+	}
+	for i := range asc {
+		if asc[i].ID != desc[len(desc)-1-i].ID {
+			t.Fatalf("sort tiebreak: order=asc is not the reverse of order=desc at %d", i)
+		}
+	}
+}
+
 // TestIncrementByZeroIsNoOp covers the increment fix: a zero delta returns the
 // current document without bumping updated_at, while keeping the 404/409
 // contract.
@@ -231,17 +269,29 @@ func TestIncrementNullCounterTreatsAsZero(t *testing.T) {
 	}
 }
 
-// TestCreateAndMineFailOnResolverError covers the callerKey fix: a resolver
-// outage must fail loud (503) on create and on mine, never silently stamp or
-// filter an empty owner.
-func TestCreateAndMineFailOnResolverError(t *testing.T) {
+// TestCreateBestEffortAndMineFailOnResolverError covers the callerKey policy:
+// on an open site a resolver outage must not block writes — create proceeds
+// best-effort with an empty owner — while a mine-scoped request still fails
+// loud (503) rather than silently widening to every visitor's documents.
+func TestCreateBestEffortAndMineFailOnResolverError(t *testing.T) {
 	srv := newQueryTestServer(t)
 	srv.resolver = errResolver{err: errors.New("resolver unreachable")}
 
-	if rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/notes",
-		`{"title":"x"}`); rec.Code != http.StatusServiceUnavailable {
-		t.Errorf("create with failing resolver = %d, want 503 (body %s)", rec.Code, rec.Body)
+	rec := doJSON(t, srv, http.MethodPost, "http://demo.spot.localhost/api/db/notes",
+		`{"title":"x"}`)
+	if rec.Code != http.StatusCreated {
+		t.Fatalf("create with failing resolver on open site = %d, want 201 (body %s)", rec.Code, rec.Body)
 	}
+	var doc struct {
+		Owner string `json:"owner"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("decode created doc: %v", err)
+	}
+	if doc.Owner != "" {
+		t.Errorf("created doc owner = %q, want empty (unattributed) during resolver outage", doc.Owner)
+	}
+
 	if rec := doJSON(t, srv, http.MethodGet, "http://demo.spot.localhost/api/db/notes?mine=true", ""); rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("list mine with failing resolver = %d, want 503 (body %s)", rec.Code, rec.Body)
 	}
