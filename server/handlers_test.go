@@ -19,6 +19,9 @@ func TestSameOriginOnly(t *testing.T) {
 	call := func(origin string) int {
 		req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/me", nil)
 		req.Header.Set("X-Forwarded-Host", "demo.spot.localhost")
+		// The same-origin check matches scheme too, so the forwarded scheme
+		// from the trusted proxy must agree with the https Origin below.
+		req.Header.Set("X-Forwarded-Proto", "https")
 		if origin != "" {
 			req.Header.Set("Origin", origin)
 		}

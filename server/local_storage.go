@@ -26,7 +26,7 @@ func NewLocalFileStore(root string) (*LocalFileStore, error) {
 	return &LocalFileStore{root: root}, nil
 }
 
-func (f *LocalFileStore) Put(_ context.Context, site, filename, contentType string, r io.Reader, size int64) (StoredFile, error) {
+func (f *LocalFileStore) Put(_ context.Context, site, filename, contentType string, r io.Reader, _ int64) (StoredFile, error) {
 	if !siteNameRe.MatchString(site) {
 		return StoredFile{}, fmt.Errorf("invalid file site")
 	}
@@ -40,7 +40,8 @@ func (f *LocalFileStore) Put(_ context.Context, site, filename, contentType stri
 		return StoredFile{}, fmt.Errorf("create upload dir: %w", err)
 	}
 	path := filepath.Join(dir, name)
-	if err := writeFileAtomic(path, r); err != nil {
+	written, err := writeFileAtomic(path, r)
+	if err != nil {
 		return StoredFile{}, fmt.Errorf("store file %s/%s/%s: %w", site, id, name, err)
 	}
 	if contentType == "" {
@@ -49,7 +50,7 @@ func (f *LocalFileStore) Put(_ context.Context, site, filename, contentType stri
 	return StoredFile{
 		ID:          id,
 		Name:        name,
-		Size:        size,
+		Size:        written,
 		ContentType: contentType,
 		URL:         "/api/files/" + site + "/" + id + "/" + name,
 	}, nil
@@ -103,7 +104,7 @@ func (s *LocalSiteStore) Put(_ context.Context, site, path, _ string, data []byt
 	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		return fmt.Errorf("create site file dir: %w", err)
 	}
-	if err := writeFileAtomic(full, bytes.NewReader(data)); err != nil {
+	if _, err := writeFileAtomic(full, bytes.NewReader(data)); err != nil {
 		return fmt.Errorf("store site file %s/%s: %w", site, path, err)
 	}
 	return nil
@@ -180,21 +181,25 @@ func validSitePath(p string) bool {
 	return validDownloadPath(p)
 }
 
-func writeFileAtomic(path string, r io.Reader) error {
+func writeFileAtomic(path string, r io.Reader) (int64, error) {
 	tmp, err := os.CreateTemp(filepath.Dir(path), ".tmp-*")
 	if err != nil {
-		return err
+		return 0, err
 	}
 	tmpName := tmp.Name()
 	defer os.Remove(tmpName)
-	if _, err := io.Copy(tmp, r); err != nil {
+	n, err := io.Copy(tmp, r)
+	if err != nil {
 		tmp.Close()
-		return err
+		return 0, err
 	}
 	if err := tmp.Close(); err != nil {
-		return err
+		return 0, err
 	}
-	return os.Rename(tmpName, path)
+	if err := os.Rename(tmpName, path); err != nil {
+		return 0, err
+	}
+	return n, nil
 }
 
 func sniffContentType(file *os.File) string {

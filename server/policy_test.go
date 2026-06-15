@@ -109,12 +109,32 @@ func TestAccessPolicyRejectsNull(t *testing.T) {
 	}
 }
 
+func TestAccessPolicyAIValues(t *testing.T) {
+	for _, raw := range []string{`{}`, `{"ai":""}`, `{"ai":"owners"}`, `{"ai":"visitors"}`} {
+		t.Run("valid/"+raw, func(t *testing.T) {
+			if _, err := parseAccessPolicy("demo", []byte(raw)); err != nil {
+				t.Fatalf("parseAccessPolicy(%s) = %v, want ok", raw, err)
+			}
+		})
+	}
+	// A typo like "visitor" must fail the parse so the policy fails closed
+	// instead of silently behaving owner-only.
+	for _, raw := range []string{`{"ai":"visitor"}`, `{"ai":"all"}`, `{"ai":"everyone"}`} {
+		t.Run("invalid/"+raw, func(t *testing.T) {
+			if _, err := parseAccessPolicy("demo", []byte(raw)); err == nil {
+				t.Fatalf("parseAccessPolicy(%s) succeeded, want fail-closed error", raw)
+			}
+		})
+	}
+}
+
 func writeSiteFile(t *testing.T, dir, site, name, content string) {
 	t.Helper()
-	if err := os.MkdirAll(filepath.Join(dir, site), 0o755); err != nil {
+	full := filepath.Join(dir, site, name)
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, site, name), []byte(content), 0o644); err != nil {
+	if err := os.WriteFile(full, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

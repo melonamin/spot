@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestRateLimiterBurstAndIsolation(t *testing.T) {
@@ -48,5 +50,44 @@ func TestLimitedHandler(t *testing.T) {
 	}
 	if rec.Header().Get("Retry-After") == "" {
 		t.Error("429 response missing Retry-After header")
+	}
+}
+
+func TestRateLimiterCapEnforced(t *testing.T) {
+	limiter := NewRateLimiter(1, 1)
+
+	// A flood of distinct keys, all seen within the idle window so prune
+	// cannot free anything, must never grow the map past the cap.
+	for i := 0; i < maxVisitors*3; i++ {
+		limiter.Allow(fmt.Sprintf("100.64.%d.%d", i/256, i%256))
+	}
+
+	limiter.mu.Lock()
+	size := len(limiter.visitors)
+	limiter.mu.Unlock()
+	if size > maxVisitors {
+		t.Fatalf("visitor map grew to %d, exceeds cap %d", size, maxVisitors)
+	}
+}
+
+func TestRateLimiterPruneRemovesIdle(t *testing.T) {
+	limiter := NewRateLimiter(1, 1)
+
+	limiter.Allow("100.64.0.1")
+	limiter.Allow("100.64.0.2")
+
+	// Backdate one visitor past the idle cutoff so prune drops only it.
+	limiter.mu.Lock()
+	limiter.visitors["100.64.0.1"].lastSeen = time.Now().Add(-11 * time.Minute)
+	limiter.prune()
+	_, idleKept := limiter.visitors["100.64.0.1"]
+	_, freshKept := limiter.visitors["100.64.0.2"]
+	limiter.mu.Unlock()
+
+	if idleKept {
+		t.Error("prune kept an idle visitor")
+	}
+	if !freshKept {
+		t.Error("prune dropped a fresh visitor")
 	}
 }

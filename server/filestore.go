@@ -78,6 +78,9 @@ func (f *FileStore) Put(ctx context.Context, site, filename, contentType string,
 // Get returns the object stream and its content type. The caller closes
 // the reader.
 func (f *FileStore) Get(ctx context.Context, site, id, name string) (io.ReadCloser, string, error) {
+	if !siteNameRe.MatchString(site) || !fileIDRe.MatchString(id) || sanitizeFilename(name) != name {
+		return nil, "", ErrNotFound
+	}
 	key := site + "/" + id + "/" + name
 	obj, err := f.client.GetObject(ctx, f.bucket, key, minio.GetObjectOptions{})
 	if err != nil {
@@ -102,6 +105,9 @@ func (f *FileStore) Get(ctx context.Context, site, id, name string) (io.ReadClos
 // is deleted, so a later claimant of the name cannot serve or inherit
 // the old owner's uploads.
 func (f *FileStore) RemoveSite(ctx context.Context, site string) error {
+	if !siteNameRe.MatchString(site) {
+		return fmt.Errorf("invalid file site")
+	}
 	prefix := site + "/"
 	for obj := range f.client.ListObjects(ctx, f.bucket, minio.ListObjectsOptions{
 		Prefix:    prefix,

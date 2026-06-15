@@ -37,7 +37,6 @@ type Server struct {
 	aiAccess       string
 	maxUpload      int64
 	spotDomain     string
-	sitesDir       string
 	trustedProxies *TrustedProxies
 	serveStatic    bool
 	siteLocksMu    sync.Mutex
@@ -55,8 +54,10 @@ type Server struct {
 // the socket peer is one of the configured front proxies.
 func (s *Server) requestHost(r *http.Request) string {
 	if s.trustsRemote(r) {
-		if host := r.Header.Get("X-Forwarded-Host"); host != "" {
-			return host
+		if vals := r.Header.Values("X-Forwarded-Host"); len(vals) > 0 {
+			if host := strings.TrimSpace(vals[len(vals)-1]); host != "" {
+				return host
+			}
 		}
 	}
 	return r.Host
@@ -64,8 +65,10 @@ func (s *Server) requestHost(r *http.Request) string {
 
 func (s *Server) requestScheme(r *http.Request) string {
 	if s.trustsRemote(r) {
-		if proto := firstForwardedProto(r.Header.Get("X-Forwarded-Proto")); proto != "" {
-			return proto
+		if vals := r.Header.Values("X-Forwarded-Proto"); len(vals) > 0 {
+			if proto := lastForwardedProto(vals[len(vals)-1]); proto != "" {
+				return proto
+			}
 		}
 	}
 	if r.TLS != nil {
@@ -74,8 +77,9 @@ func (s *Server) requestScheme(r *http.Request) string {
 	return "http"
 }
 
-func firstForwardedProto(raw string) string {
-	proto := strings.ToLower(strings.TrimSpace(strings.Split(raw, ",")[0]))
+func lastForwardedProto(raw string) string {
+	entries := strings.Split(raw, ",")
+	proto := strings.ToLower(strings.TrimSpace(entries[len(entries)-1]))
 	if proto == "http" || proto == "https" {
 		return proto
 	}
@@ -142,7 +146,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
 	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
-	mux.HandleFunc("GET /api/ws", s.handleWS)
+	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
 	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
 	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
@@ -210,6 +214,9 @@ func (s *Server) originMatchesHost(r *http.Request) bool {
 	}
 	u, err := url.Parse(origin)
 	if err != nil || u.Host == "" {
+		return false
+	}
+	if !strings.EqualFold(u.Scheme, s.requestScheme(r)) {
 		return false
 	}
 	return sameHost(u.Host, s.requestHost(r))

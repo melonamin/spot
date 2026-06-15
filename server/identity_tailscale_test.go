@@ -134,6 +134,28 @@ func TestTailscaleResolver(t *testing.T) {
 	}
 }
 
+func TestTailscaleResolverIPv6TextualForm(t *testing.T) {
+	requests := 0
+	api := newTailscaleAPI(t, &requests, tailscaleAPIFixture{})
+	defer api.Close()
+
+	r := NewTailscaleResolver(api.URL, "test-token", "", time.Minute)
+	ctx := context.Background()
+
+	// The device advertises fd7a:115c:a1e0::7; an equal address in a
+	// different textual form (expanded, uppercase) must still resolve.
+	id, found, err := r.Resolve(ctx, "FD7A:115C:A1E0:0000:0000:0000:0000:0007")
+	if err != nil {
+		t.Fatalf("Resolve IPv6 textual form: %v", err)
+	}
+	if !found {
+		t.Fatal("Resolve IPv6 textual form: peer not found")
+	}
+	if id.Email != "sasha@example.com" || id.PeerName != "sasha-laptop" {
+		t.Errorf("Resolve IPv6 textual form = %+v", id)
+	}
+}
+
 func TestTailscaleDirectory(t *testing.T) {
 	requests := 0
 	api := newTailscaleAPI(t, &requests, tailscaleAPIFixture{})
@@ -286,6 +308,59 @@ func TestTailscaleOAuthTokenSourceRefreshes(t *testing.T) {
 	}
 	if dataRequests != 6 {
 		t.Fatalf("data requests = %d, want 6", dataRequests)
+	}
+}
+
+func TestTailscaleOAuthShortLivedTokenNotInstantlyExpired(t *testing.T) {
+	tokenRequests := 0
+	currentToken := ""
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/api/v2/oauth/token" {
+			tokenRequests++
+			currentToken = "minted-" + strconv.Itoa(tokenRequests)
+			w.Header().Set("Content-Type", "application/json")
+			json.NewEncoder(w).Encode(map[string]any{
+				"access_token": currentToken,
+				// Lifetime well below the 60s refresh skew: the token must
+				// still be usable rather than treated as instantly expired.
+				"expires_in": 10,
+			})
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer "+currentToken || currentToken == "" {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v2/tailnet/-/devices":
+			json.NewEncoder(w).Encode(tailscaleDevicesResponse{Devices: []tailscaleDevice{
+				{Addresses: []string{"100.64.0.7"}, User: "sasha@example.com", Hostname: "sasha-laptop"},
+			}})
+		case "/api/v2/tailnet/-/users":
+			json.NewEncoder(w).Encode(tailscaleUsersResponse{Users: []tailscaleUser{
+				{LoginName: "sasha@example.com", DisplayName: "Sasha"},
+			}})
+		case "/api/v2/tailnet/-/acl":
+			json.NewEncoder(w).Encode(tailscaleACLResponse{})
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer api.Close()
+
+	// Cache the data so a second Resolve reuses the minted token instead of
+	// refetching, isolating token reuse from the device cache TTL.
+	r := NewTailscaleOAuthResolver(api.URL, "client-id", "client-secret", "", time.Minute)
+	id, found, err := r.Resolve(context.Background(), "100.64.0.7")
+	if err != nil || !found || id.Email != "sasha@example.com" {
+		t.Fatalf("first Resolve = %+v found=%v err=%v", id, found, err)
+	}
+	if _, _, err := r.Resolve(context.Background(), "100.64.0.7"); err != nil {
+		t.Fatalf("second Resolve: %v", err)
+	}
+	if tokenRequests != 1 {
+		t.Fatalf("token requests = %d, want 1 (short-lived token reused, not instantly expired)", tokenRequests)
 	}
 }
 

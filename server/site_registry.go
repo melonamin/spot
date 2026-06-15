@@ -96,6 +96,17 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 	return DeployAuthorization{Action: "update"}, nil
 }
 
+// DeleteClaim removes a site's registry row. handleDeploy calls it when a
+// site's first deploy claims the name but its storage write then fails,
+// so a failed create does not permanently claim the name. It never runs
+// for a redeploy, so an existing site's claim is left intact.
+func (r *SiteRegistry) DeleteClaim(ctx context.Context, site string) error {
+	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
+		return fmt.Errorf("delete site claim %s: %w", site, err)
+	}
+	return nil
+}
+
 func (r *SiteRegistry) readSiteForUpdate(ctx context.Context, tx *sql.Tx, site string) (SiteRecord, error) {
 	var record SiteRecord
 	err := tx.QueryRowContext(ctx, readSiteSQL, site).

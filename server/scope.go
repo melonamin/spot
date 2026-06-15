@@ -27,6 +27,10 @@ func siteFromHost(host, spotDomain string) string {
 }
 
 func validSpotHost(host, spotDomain string) bool {
+	// An empty spotDomain accepts any host. This branch exists only for
+	// tests that construct a Server without a domain; production rejects an
+	// empty SPOT_DOMAIN at startup (see main.go), so it is never reached
+	// with real traffic.
 	if spotDomain == "" {
 		return true
 	}

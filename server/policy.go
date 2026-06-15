@@ -79,6 +79,14 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 		if err := json.Unmarshal(*aiRaw, &p.AI); err != nil {
 			return fmt.Errorf("ai must be a string: %w", err)
 		}
+		// Only "", "owners", and "visitors" carry meaning. Reject anything
+		// else (a typo like "visitor" or "all") so the policy fails closed
+		// instead of silently behaving owner-only.
+		switch strings.ToLower(strings.TrimSpace(p.AI)) {
+		case "", aiAccessOwners, aiAccessVisitors:
+		default:
+			return fmt.Errorf("ai must be one of %q, %q, or empty, got %q", aiAccessOwners, aiAccessVisitors, p.AI)
+		}
 	}
 	if downloadRaw != nil {
 		if bytes.Equal(bytes.TrimSpace(*downloadRaw), []byte("null")) {

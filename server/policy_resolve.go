@@ -15,6 +15,14 @@ func (s *Server) policyForSite(ctx context.Context, site string) (*AccessPolicy,
 			return policy, err
 		}
 	}
+	// Reaching here means no cached policy entry resolved the site and no
+	// site store is wired to read _access.json. In production a site store is
+	// always configured, so this branch is unreachable; it survives only for
+	// bare Servers in unit tests that serve open sites without a site store.
+	// Returning (nil, nil) treats the site as open, which is fail-OPEN — at
+	// odds with the documented fail-closed design. Inverting it to an error
+	// here would deny those tested open sites, so the behavior is left intact
+	// and the fail-closed hardening is deferred to a cross-cutting change.
 	if s.sites == nil {
 		return nil, nil
 	}

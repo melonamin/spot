@@ -56,13 +56,14 @@ func (s *Server) handleSiteDownload(w http.ResponseWriter, r *http.Request) {
 		"filename": site + ".zip",
 	}))
 	zw := zip.NewWriter(w)
-	defer zw.Close()
 
 	for _, name := range paths {
 		rc, info, err := s.sites.Open(r.Context(), site, name)
 		if err != nil {
+			// Status 200 is already committed, so a partial zip would
+			// look valid to the client. Abort the response instead.
 			log.Printf("download %s: open %s: %v", site, name, err)
-			return
+			panic(http.ErrAbortHandler)
 		}
 		h := &zip.FileHeader{Name: name, Method: zip.Deflate}
 		h.SetMode(0o644)
@@ -73,14 +74,18 @@ func (s *Server) handleSiteDownload(w http.ResponseWriter, r *http.Request) {
 		if err != nil {
 			rc.Close()
 			log.Printf("download %s: zip header %s: %v", site, name, err)
-			return
+			panic(http.ErrAbortHandler)
 		}
 		if _, err := io.Copy(dst, rc); err != nil {
 			rc.Close()
 			log.Printf("download %s: copy %s: %v", site, name, err)
-			return
+			panic(http.ErrAbortHandler)
 		}
 		rc.Close()
+	}
+	if err := zw.Close(); err != nil {
+		log.Printf("download %s: finalize zip: %v", site, err)
+		panic(http.ErrAbortHandler)
 	}
 }
 
@@ -96,6 +101,9 @@ func cleanDownloadPaths(paths []string) []string {
 }
 
 func validDownloadPath(p string) bool {
+	if strings.IndexByte(p, 0) >= 0 {
+		return false
+	}
 	if p == "" || p == "." || strings.HasPrefix(p, "/") || strings.ContainsAny(p, `\:`) {
 		return false
 	}
