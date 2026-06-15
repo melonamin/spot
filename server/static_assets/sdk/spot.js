@@ -58,8 +58,12 @@
   const retryAfterSeconds = (res) => {
     const header = res.headers.get('Retry-After');
     if (!header) return undefined;
+    // Retry-After is either delta-seconds or an HTTP-date; support both.
     const seconds = Number(header);
-    return Number.isFinite(seconds) ? seconds : undefined;
+    if (Number.isFinite(seconds)) return seconds >= 0 ? seconds : undefined;
+    const when = Date.parse(header);
+    if (Number.isNaN(when)) return undefined;
+    return Math.max(0, (when - Date.now()) / 1000);
   };
 
   // Full jitter for backoff. For an explicit Retry-After, wait at least the
@@ -122,200 +126,224 @@
     return encoded ? `?${encoded}` : '';
   };
 
-  const collection = (name) => ({
-    // list({ limit, mine }). Each document carries an `owner` (the mesh
-    // identity that created it). Pass mine:true to return only documents
-    // owned by the current visitor. Pass after:<doc id> for cursor paging.
-    // list({ limit, mine, after, where, sort, order }). `where` is an object
-    // of field -> value (equality) or field -> { op: value } where op is one
-    // of eq, ne, gt, gte, lt, lte, in (in takes an array). `sort` names a
-    // field; `order` is 'asc' or 'desc'. The `after` cursor only applies to
-    // the default newest-first order.
-    list: async ({ limit = 100, mine = false, after, where, sort, order, retry } = {}) => {
-      const params = { limit, mine, after, sort, order };
-      if (where) params.where = JSON.stringify(where);
-      return (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
-    },
-    // count({ where, mine }) -> number of matching documents.
-    count: async ({ where, mine = false, retry } = {}) => {
-      const params = { mine };
-      if (where) params.where = JSON.stringify(where);
-      return (await api(`/api/db/${name}/count${query(params)}`, { retry })).count;
-    },
-    // getMany([id, ...]) -> the documents that exist, newest first. Missing
-    // ids are omitted.
-    getMany: async (ids = [], { retry } = {}) => {
-      if (!ids.length) return [];
-      return (await api(`/api/db/${name}${query({ ids: ids.join(',') })}`, { retry })).documents;
-    },
-    // Async iterator over the whole collection, newest first, paging through
-    // the `after` cursor so a site never has to manage it by hand:
-    //   for await (const doc of posts.iterate({ pageSize })) { … }
-    iterate: async function* ({ pageSize = 100, mine = false, where, retry } = {}) {
-      let after;
-      for (;;) {
-        const params = { limit: pageSize, mine, after };
+  const collection = (name) => {
+    const c = {
+      // list({ limit, mine }). Each document carries an `owner` (the mesh
+      // identity that created it). Pass mine:true to return only documents
+      // owned by the current visitor. Pass after:<doc id> for cursor paging.
+      // list({ limit, mine, after, where, sort, order }). `where` is an object
+      // of field -> value (equality) or field -> { op: value } where op is one
+      // of eq, ne, gt, gte, lt, lte, in (in takes an array). `sort` names a
+      // field; `order` is 'asc' or 'desc'. The `after` cursor applies to the
+      // default created-at order in either direction.
+      list: async ({ limit = 100, mine = false, after, where, sort, order, retry } = {}) => {
+        const params = { limit, mine, after, sort, order };
         if (where) params.where = JSON.stringify(where);
-        const page = (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
-        for (const doc of page) yield doc;
-        if (page.length < pageSize) return;
-        after = page[page.length - 1].id;
-      }
-    },
-    create: (data, { retry } = {}) =>
-      api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data), retry }),
-    get: (id, { retry } = {}) => api(`/api/db/${name}/${id}`, { retry }),
-    update: (id, data, { mine = false, retry } = {}) =>
-      api(`/api/db/${name}/${id}${query({ mine })}`, {
-        method: 'PUT',
-        body: JSON.stringify(data),
-        retry,
-      }),
-    updateMine: (id, data, { retry } = {}) =>
-      api(`/api/db/${name}/${id}?mine=true`, { method: 'PUT', body: JSON.stringify(data), retry }),
-    delete: (id, { mine = false, retry } = {}) =>
-      api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE', retry }),
-    deleteMine: (id, { retry } = {}) =>
-      api(`/api/db/${name}/${id}?mine=true`, { method: 'DELETE', retry }),
-    // Atomically add `by` (default 1) to a numeric field, server-side, so
-    // concurrent counters never lose updates. Resolves with the updated doc.
-    increment: (id, field, by = 1, { mine = false, retry } = {}) =>
-      api(`/api/db/${name}/${id}/increment${query({ mine })}`, {
-        method: 'POST',
-        body: JSON.stringify({ field, by }),
-        retry,
-      }),
-    incrementMine: (id, field, by = 1, { retry } = {}) =>
-      api(`/api/db/${name}/${id}/increment?mine=true`, {
-        method: 'POST',
-        body: JSON.stringify({ field, by }),
-        retry,
-      }),
-    // Live changes from all visitors. Returns an unsubscribe function;
-    // reconnects automatically until unsubscribed. With { replay: true } the
-    // current documents are emitted as onCreate first (in creation order),
-    // then live changes — closing the gap between an initial list() and the
-    // subscription, with no missed or duplicated events.
-    subscribe: (handlers = {}, { replay = false, retry } = {}) => {
-      const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-      let ws;
-      let closed = false;
-      let reconnectTimer;
-      let replaying = false;
-      let replayed = false;
-      const known = new Set();
-      const pending = [];
-
-      const emit = (type, doc, id) => {
-        if (type === 'create') handlers.onCreate?.(doc);
-        else if (type === 'update') handlers.onUpdate?.(doc);
-        else if (type === 'delete') handlers.onDelete?.(id);
-      };
-
-      // In replay mode, normalize against the set of documents already seen so
-      // each one surfaces as a single onCreate; outside replay mode events pass
-      // through unchanged.
-      const dispatch = (type, doc, id) => {
-        if (!replay) {
-          emit(type, doc, id);
-          return;
+        return (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
+      },
+      // count({ where, mine }) -> number of matching documents.
+      count: async ({ where, mine = false, retry } = {}) => {
+        const params = { mine };
+        if (where) params.where = JSON.stringify(where);
+        return (await api(`/api/db/${name}/count${query(params)}`, { retry })).count;
+      },
+      // getMany([id, ...]) -> the documents that exist, newest first. Missing
+      // ids are omitted, and null/undefined ids are dropped before the request
+      // so a trailing absent id does not turn the whole batch into a 400.
+      getMany: async (ids = [], { retry } = {}) => {
+        const valid = ids.filter((id) => id !== undefined && id !== null && id !== '');
+        if (!valid.length) return [];
+        return (await api(`/api/db/${name}${query({ ids: valid.join(',') })}`, { retry })).documents;
+      },
+      // Async iterator over the whole collection, newest first, paging through
+      // the `after` cursor so a site never has to manage it by hand:
+      //   for await (const doc of posts.iterate({ pageSize })) { … }
+      iterate: async function* ({ pageSize = 100, mine = false, where, retry } = {}) {
+        let after;
+        for (;;) {
+          const params = { limit: pageSize, mine, after };
+          if (where) params.where = JSON.stringify(where);
+          const page = (await api(`/api/db/${name}${query(params)}`, { retry })).documents;
+          for (const doc of page) yield doc;
+          if (page.length < pageSize) return;
+          after = page[page.length - 1].id;
         }
-        if (type === 'delete') {
-          known.delete(id);
-          emit('delete', null, id);
-          return;
-        }
-        if (known.has(doc.id)) {
-          if (type === 'create') return;
-          emit('update', doc);
-          return;
-        }
-        known.add(doc.id);
-        emit('create', doc);
-      };
+      },
+      create: (data, { retry } = {}) =>
+        api(`/api/db/${name}`, { method: 'POST', body: JSON.stringify(data), retry }),
+      get: (id, { retry } = {}) => api(`/api/db/${name}/${id}`, { retry }),
+      update: (id, data, { mine = false, retry } = {}) =>
+        api(`/api/db/${name}/${id}${query({ mine })}`, {
+          method: 'PUT',
+          body: JSON.stringify(data),
+          retry,
+        }),
+      updateMine: (id, data, opts = {}) => c.update(id, data, { ...opts, mine: true }),
+      delete: (id, { mine = false, retry } = {}) =>
+        api(`/api/db/${name}/${id}${query({ mine })}`, { method: 'DELETE', retry }),
+      deleteMine: (id, opts = {}) => c.delete(id, { ...opts, mine: true }),
+      // Atomically add `by` (default 1) to a numeric field, server-side, so
+      // concurrent counters never lose updates. Resolves with the updated doc.
+      increment: (id, field, by = 1, { mine = false, retry } = {}) =>
+        api(`/api/db/${name}/${id}/increment${query({ mine })}`, {
+          method: 'POST',
+          body: JSON.stringify({ field, by }),
+          retry,
+        }),
+      incrementMine: (id, field, by = 1, opts = {}) =>
+        c.increment(id, field, by, { ...opts, mine: true }),
+      // Live changes from all visitors. Returns an unsubscribe function;
+      // reconnects automatically until unsubscribed. With { replay: true } the
+      // current documents are emitted as onCreate first (in creation order),
+      // then live changes. The snapshot also runs after every reconnect and
+      // reconciles against what was already delivered, so creates, updates, and
+      // deletes that happened while the socket was down are surfaced exactly
+      // once rather than missed.
+      subscribe: (handlers = {}, { replay = false, retry } = {}) => {
+        const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+        let ws;
+        let closed = false;
+        let reconnectTimer;
+        let replaying = false;
+        // Last updated_at delivered per id, so a replay after a reconnect can
+        // tell a new doc (onCreate) from a changed one (onUpdate) from one that
+        // vanished while we were offline (onDelete).
+        const seen = new Map();
+        const pending = [];
 
-      const handleEvent = (type, doc, id) => {
-        if (replaying) {
-          pending.push({ type, doc, id });
-          return;
-        }
-        dispatch(type, doc, id);
-      };
+        const emit = (type, doc, id) => {
+          if (type === 'create') handlers.onCreate?.(doc);
+          else if (type === 'update') handlers.onUpdate?.(doc);
+          else if (type === 'delete') handlers.onDelete?.(id);
+        };
 
-      const runReplay = async () => {
-        replaying = true;
-        try {
-          const pageSize = 1000;
-          const pages = [];
-          let after;
-          for (;;) {
-            const docs = (await api(`/api/db/${name}${query({ limit: pageSize, after })}`, { retry }))
-              .documents;
-            pages.push(docs);
-            if (docs.length < pageSize) break;
-            after = docs[docs.length - 1].id;
+        // In replay mode, reconcile each event against the docs already
+        // delivered so each surfaces as a single onCreate and later changes as
+        // onUpdate; outside replay mode events pass through unchanged.
+        const dispatch = (type, doc, id) => {
+          if (!replay) {
+            emit(type, doc, id);
+            return;
           }
-          // list() is newest first; replay oldest first so consumers build
-          // state in creation order.
-          for (let p = pages.length - 1; p >= 0; p--) {
-            for (let i = pages[p].length - 1; i >= 0; i--) dispatch('create', pages[p][i]);
+          if (type === 'delete') {
+            if (seen.delete(id)) emit('delete', null, id);
+            return;
           }
-        } catch (err) {
-          if (handlers.onError) handlers.onError(err);
-          else console.error('spot:', err.message || err);
-        } finally {
-          replaying = false;
-          replayed = true;
-          while (pending.length) {
-            const ev = pending.shift();
-            dispatch(ev.type, ev.doc, ev.id);
+          if (seen.has(doc.id)) {
+            seen.set(doc.id, doc.updated_at);
+            if (type === 'create') return;
+            emit('update', doc);
+            return;
           }
-        }
-      };
+          seen.set(doc.id, doc.updated_at);
+          emit('create', doc);
+        };
 
-      const connect = () => {
-        if (closed) return;
-        ws = new WebSocket(`${proto}//${location.host}/api/ws`);
-        ws.addEventListener('open', () => {
-          ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
-        });
-        ws.addEventListener('message', (e) => {
-          let msg;
+        const handleEvent = (type, doc, id) => {
+          if (replaying) {
+            pending.push({ type, doc, id });
+            return;
+          }
+          dispatch(type, doc, id);
+        };
+
+        // Snapshot the collection oldest-first and reconcile it against what we
+        // have already delivered. Pages stream as they arrive (only ids are
+        // retained, not whole documents), and the ascending cursor lets us emit
+        // in creation order without buffering the whole collection.
+        const runReplay = async () => {
+          replaying = true;
           try {
-            msg = JSON.parse(e.data);
-          } catch {
-            return;
-          }
-          if (msg.type === 'error') {
-            const err = new Error(msg.error || 'spot subscribe error');
+            const pageSize = 1000;
+            const present = new Set();
+            let after;
+            for (;;) {
+              const docs = (
+                await api(`/api/db/${name}${query({ limit: pageSize, after, order: 'asc' })}`, {
+                  retry,
+                })
+              ).documents;
+              for (const doc of docs) {
+                present.add(doc.id);
+                const prev = seen.get(doc.id);
+                if (prev === undefined) {
+                  seen.set(doc.id, doc.updated_at);
+                  emit('create', doc);
+                } else if (prev !== doc.updated_at) {
+                  seen.set(doc.id, doc.updated_at);
+                  emit('update', doc);
+                }
+              }
+              if (docs.length < pageSize) break;
+              after = docs[docs.length - 1].id;
+            }
+            // Anything we knew about that is no longer present was deleted while
+            // we were offline.
+            for (const id of [...seen.keys()]) {
+              if (!present.has(id)) {
+                seen.delete(id);
+                emit('delete', null, id);
+              }
+            }
+          } catch (err) {
             if (handlers.onError) handlers.onError(err);
-            else console.error('spot:', err.message);
-            return;
+            else console.error('spot:', err.message || err);
+          } finally {
+            replaying = false;
+            while (pending.length) {
+              const ev = pending.shift();
+              dispatch(ev.type, ev.doc, ev.id);
+            }
           }
-          if (msg.collection !== name) return;
-          if (msg.type === 'subscribed') {
-            // The server sends this only after the subscription is registered,
-            // so the snapshot cannot miss later changes; socket events that
-            // arrive during the snapshot are buffered by handleEvent.
-            if (replay && !replayed) runReplay();
-            return;
-          }
-          if (msg.type === 'create') handleEvent('create', msg.doc);
-          if (msg.type === 'update') handleEvent('update', msg.doc);
-          if (msg.type === 'delete') handleEvent('delete', null, msg.id);
-        });
-        ws.addEventListener('close', () => {
-          if (!closed) reconnectTimer = setTimeout(connect, 1000);
-        });
-      };
-      connect();
-      return () => {
-        closed = true;
-        if (reconnectTimer) clearTimeout(reconnectTimer);
-        if (ws) ws.close();
-      };
-    },
-  });
+        };
+
+        const connect = () => {
+          if (closed) return;
+          ws = new WebSocket(`${proto}//${location.host}/api/ws`);
+          ws.addEventListener('open', () => {
+            ws.send(JSON.stringify({ type: 'subscribe', collection: name }));
+          });
+          ws.addEventListener('message', (e) => {
+            let msg;
+            try {
+              msg = JSON.parse(e.data);
+            } catch {
+              return;
+            }
+            if (msg.type === 'error') {
+              const err = new Error(msg.error || 'spot subscribe error');
+              if (handlers.onError) handlers.onError(err);
+              else console.error('spot:', err.message);
+              return;
+            }
+            if (msg.collection !== name) return;
+            if (msg.type === 'subscribed') {
+              // The server sends this only after the subscription is
+              // registered, so the snapshot cannot miss later changes; socket
+              // events that arrive during it are buffered by handleEvent. Run
+              // on every (re)subscribe so a reconnect catches up on what
+              // changed while we were offline.
+              if (replay && !replaying) runReplay();
+              return;
+            }
+            if (msg.type === 'create') handleEvent('create', msg.doc);
+            if (msg.type === 'update') handleEvent('update', msg.doc);
+            if (msg.type === 'delete') handleEvent('delete', null, msg.id);
+          });
+          ws.addEventListener('close', () => {
+            if (!closed) reconnectTimer = setTimeout(connect, 1000);
+          });
+        };
+        connect();
+        return () => {
+          closed = true;
+          if (reconnectTimer) clearTimeout(reconnectTimer);
+          if (ws) ws.close();
+        };
+      },
+    };
+    return c;
+  };
 
   const realtimeRoom = (name) => {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -519,35 +547,47 @@
         const result = { text: '', model: undefined, stop_reason: undefined, usage: undefined };
         let buffer = '';
         let doneFrame = false;
-        for (;;) {
-          const { value, done } = await reader.read();
-          if (done) break;
-          buffer += decoder.decode(value, { stream: true });
-          let sep;
-          while ((sep = buffer.indexOf('\n\n')) >= 0) {
-            const frame = buffer.slice(0, sep);
-            buffer = buffer.slice(sep + 2);
-            if (!frame.startsWith('data:')) continue;
-            const payload = frame.slice(5).trim();
-            if (!payload) continue;
-            let msg;
-            try {
-              msg = JSON.parse(payload);
-            } catch {
-              continue;
-            }
-            if (msg.error) throw new SpotError(msg.error, { code: 'stream' });
-            if (msg.delta) {
-              result.text += msg.delta;
-              onToken?.(msg.delta, result.text);
-            }
-            if (msg.done) {
-              doneFrame = true;
-              result.model = msg.model;
-              result.stop_reason = msg.stop_reason;
-              result.usage = msg.usage;
+        // SSE frames are separated by a blank line; tolerate CRLF in case an
+        // intermediary rewrites the stream's line endings.
+        const frameSep = /\r?\n\r?\n/;
+        try {
+          for (;;) {
+            const { value, done } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            let match;
+            while ((match = frameSep.exec(buffer))) {
+              const frame = buffer.slice(0, match.index);
+              buffer = buffer.slice(match.index + match[0].length);
+              if (!frame.startsWith('data:')) continue;
+              const payload = frame.slice(5).trim();
+              if (!payload) continue;
+              let msg;
+              try {
+                msg = JSON.parse(payload);
+              } catch {
+                continue;
+              }
+              if (msg.error) throw new SpotError(msg.error, { code: 'stream' });
+              if (msg.delta) {
+                result.text += msg.delta;
+                onToken?.(msg.delta, result.text);
+              }
+              if (msg.done) {
+                doneFrame = true;
+                result.model = msg.model;
+                result.stop_reason = msg.stop_reason;
+                result.usage = msg.usage;
+              }
             }
           }
+        } catch (err) {
+          // Re-throw our own typed stream errors and aborts as-is; wrap anything
+          // else (a mid-stream connection drop rejects reader.read() with a raw
+          // TypeError) so callers always see a SpotError.
+          if (err instanceof SpotError) throw err;
+          if (err && err.name === 'AbortError') throw err;
+          throw new SpotError((err && err.message) || 'spot: network error', { code: 'network' });
         }
         if (!doneFrame) throw new SpotError('AI stream ended before completion', { code: 'stream' });
         return result;

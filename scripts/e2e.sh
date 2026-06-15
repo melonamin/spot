@@ -106,6 +106,10 @@ echo "$q" | grep -q '"priority":1' || fail "query returned no open tasks: $q"
 gm=$($CURL "http://demo.spot.localhost:8080/api/db/tasks?ids=$qa_id,$qb_id")
 echo "$gm" | grep -q "$qa_id" || fail "getMany missing id $qa_id: $gm"
 echo "$gm" | grep -q "$qb_id" || fail "getMany missing id $qb_id: $gm"
+# An empty operator object must not silently widen the query to everything.
+ewcode=$($CURL -o /dev/null -w '%{http_code}' \
+    "http://demo.spot.localhost:8080/api/db/tasks?where=%7B%22status%22%3A%7B%7D%7D")
+[ "$ewcode" = "400" ] || fail "where with empty operator returned $ewcode, want 400"
 
 echo "==> database API: increment is atomic and persists"
 ic=$($CURL -X POST -H 'Content-Type: application/json' -d '{"label":"counter"}' \

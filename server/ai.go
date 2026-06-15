@@ -311,6 +311,32 @@ type openAIChatMessage struct {
 	Content string `json:"content"`
 }
 
+// openAIUsage accepts either OpenAI's prompt/completion field names or the
+// input/output aliases some gateways use. Fields are pointers so an absent
+// field can be told apart from a genuine zero, and the pair is coalesced by
+// presence rather than by truthiness.
+type openAIUsage struct {
+	PromptTokens     *int64 `json:"prompt_tokens"`
+	CompletionTokens *int64 `json:"completion_tokens"`
+	InputTokens      *int64 `json:"input_tokens"`
+	OutputTokens     *int64 `json:"output_tokens"`
+}
+
+func (u openAIUsage) input() int64  { return coalesceTokens(u.PromptTokens, u.InputTokens) }
+func (u openAIUsage) output() int64 { return coalesceTokens(u.CompletionTokens, u.OutputTokens) }
+
+// coalesceTokens returns the first field that was actually present, preserving
+// a legitimate zero instead of overwriting it with the alias.
+func coalesceTokens(primary, fallback *int64) int64 {
+	if primary != nil {
+		return *primary
+	}
+	if fallback != nil {
+		return *fallback
+	}
+	return 0
+}
+
 type openAIChatResponse struct {
 	Model   string `json:"model"`
 	Choices []struct {
@@ -319,12 +345,7 @@ type openAIChatResponse struct {
 			Content string `json:"content"`
 		} `json:"message"`
 	} `json:"choices"`
-	Usage struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		InputTokens      int64 `json:"input_tokens"`
-		OutputTokens     int64 `json:"output_tokens"`
-	} `json:"usage"`
+	Usage openAIUsage `json:"usage"`
 }
 
 // buildChatPayload validates the request and assembles the upstream
@@ -382,14 +403,8 @@ func (p *AIProxy) generateChat(ctx context.Context, req aiChatRequest) (aiChatRe
 		res.Text = apiRes.Choices[0].Message.Content
 		res.StopReason = apiRes.Choices[0].FinishReason
 	}
-	res.Usage.InputTokens = apiRes.Usage.PromptTokens
-	if res.Usage.InputTokens == 0 {
-		res.Usage.InputTokens = apiRes.Usage.InputTokens
-	}
-	res.Usage.OutputTokens = apiRes.Usage.CompletionTokens
-	if res.Usage.OutputTokens == 0 {
-		res.Usage.OutputTokens = apiRes.Usage.OutputTokens
-	}
+	res.Usage.InputTokens = apiRes.Usage.input()
+	res.Usage.OutputTokens = apiRes.Usage.output()
 	return res, nil
 }
 
@@ -402,12 +417,7 @@ type openAIChatStreamChunk struct {
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
-	Usage *struct {
-		PromptTokens     int64 `json:"prompt_tokens"`
-		CompletionTokens int64 `json:"completion_tokens"`
-		InputTokens      int64 `json:"input_tokens"`
-		OutputTokens     int64 `json:"output_tokens"`
-	} `json:"usage"`
+	Usage *openAIUsage `json:"usage"`
 }
 
 // streamChat forwards a chat request to the gateway with server-sent
@@ -489,14 +499,8 @@ func (p *AIProxy) streamChat(ctx context.Context, req aiChatRequest, onDelta fun
 			}
 		}
 		if chunk.Usage != nil {
-			res.Usage.InputTokens = chunk.Usage.PromptTokens
-			if res.Usage.InputTokens == 0 {
-				res.Usage.InputTokens = chunk.Usage.InputTokens
-			}
-			res.Usage.OutputTokens = chunk.Usage.CompletionTokens
-			if res.Usage.OutputTokens == 0 {
-				res.Usage.OutputTokens = chunk.Usage.OutputTokens
-			}
+			res.Usage.InputTokens = chunk.Usage.input()
+			res.Usage.OutputTokens = chunk.Usage.output()
 		}
 	}
 	if err := scanner.Err(); err != nil {

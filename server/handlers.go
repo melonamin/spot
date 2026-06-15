@@ -267,22 +267,27 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 
 // callerKey resolves the visitor's stable identity key (lowercased email
 // or peer IP, see actorKey) without writing any error response. It returns
-// "" when no resolver is configured or the peer cannot be identified, so
-// document ownership is best-effort: stamped whenever identity is
-// available and skipped on open, resolver-less installs.
-func (s *Server) callerKey(r *http.Request) string {
+// "" with a nil error when no resolver is configured or the peer is not in
+// the mesh, so document ownership is best-effort on open, resolver-less
+// installs. A non-nil error means the resolver itself failed (a transient
+// outage); callers that stamp or filter by owner surface that rather than
+// silently treating the visitor as unattributed.
+func (s *Server) callerKey(r *http.Request) (string, error) {
 	if s.resolver == nil {
-		return ""
+		return "", nil
 	}
 	ip := s.clientIP(r)
 	id, found, err := s.resolver.Resolve(r.Context(), ip)
-	if err != nil || !found {
-		return ""
+	if err != nil {
+		return "", err
+	}
+	if !found {
+		return "", nil
 	}
 	if id.PeerIP == "" {
 		id.PeerIP = ip
 	}
-	return actorKey(id)
+	return actorKey(id), nil
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
@@ -554,6 +559,9 @@ func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) 
 	if s.siteManager == nil {
 		return false
 	}
+	// Only an owner-gated site that does not opt visitors in reaches here, so
+	// the ownership lookup runs solely when it is the only way to answer; the
+	// cheaper visitor/policy paths above short-circuit the common cases.
 	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
 	return err == nil && allowed
 }
@@ -998,6 +1006,12 @@ func parseWhere(w http.ResponseWriter, r *http.Request) ([]Filter, bool) {
 				httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q is malformed", field))
 				return nil, false
 			}
+			// An empty operator object would otherwise contribute no filter and
+			// silently widen the query to the whole collection; reject it.
+			if len(ops) == 0 {
+				httpError(w, http.StatusBadRequest, fmt.Sprintf("where filter %q must name at least one operator", field))
+				return nil, false
+			}
 			for op, rawOpVal := range ops {
 				f := Filter{Field: field, Op: op}
 				if op == "in" {
@@ -1038,7 +1052,13 @@ func (s *Server) handleCreate(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	doc, err := s.store.Create(r.Context(), scope, collection, s.callerKey(r), data)
+	owner, err := s.callerKey(r)
+	if err != nil {
+		log.Printf("create: resolve owner: %v", err)
+		httpError(w, http.StatusServiceUnavailable, "could not reach the identity resolver")
+		return
+	}
+	doc, err := s.store.Create(r.Context(), scope, collection, owner, data)
 	if err != nil {
 		s.storeError(w, err)
 		return
@@ -1117,7 +1137,12 @@ func (s *Server) mineOwner(w http.ResponseWriter, r *http.Request) (string, bool
 	if mine != "1" && mine != "true" {
 		return "", true
 	}
-	owner := s.callerKey(r)
+	owner, err := s.callerKey(r)
+	if err != nil {
+		log.Printf("mine: resolve owner: %v", err)
+		httpError(w, http.StatusServiceUnavailable, "could not reach the identity resolver")
+		return "", false
+	}
 	if owner == "" {
 		httpError(w, http.StatusBadRequest, "mine=true requires an identified visitor")
 		return "", false

@@ -531,3 +531,27 @@ func TestAIImageValidation(t *testing.T) {
 		t.Errorf("unconfigured proxy: status %d, want 503", rec.Code)
 	}
 }
+
+// TestOpenAIUsageCoalesce pins the usage mapping: a field that is present and
+// zero is preserved rather than overwritten by its alias, and an absent field
+// falls back to the alias.
+func TestOpenAIUsageCoalesce(t *testing.T) {
+	zero := int64(0)
+	seven := int64(7)
+
+	// Present zero on the primary field wins over a nonzero alias.
+	if got := (openAIUsage{PromptTokens: &zero, InputTokens: &seven}).input(); got != 0 {
+		t.Errorf("input() = %d, want 0 (a present zero is not overwritten)", got)
+	}
+	// Absent primary falls back to the alias.
+	if got := (openAIUsage{InputTokens: &seven}).input(); got != 7 {
+		t.Errorf("input() = %d, want 7 (alias fallback)", got)
+	}
+	if got := (openAIUsage{CompletionTokens: &seven}).output(); got != 7 {
+		t.Errorf("output() = %d, want 7", got)
+	}
+	// Both absent yields zero.
+	if got := (openAIUsage{}).output(); got != 0 {
+		t.Errorf("output() = %d, want 0", got)
+	}
+}

@@ -143,27 +143,31 @@ func (s *DocStore) Query(ctx context.Context, scope, collection string, q ListQu
 	sb.WriteString(whereSQL)
 	args = append(args, whereArgs...)
 
+	order, err := sortOrder(q.Order)
+	if err != nil {
+		return nil, err
+	}
 	if q.Sort != "" {
 		if !docFieldRe.MatchString(q.Sort) {
 			return nil, fmt.Errorf("%w: %q is not a valid sort field", ErrBadQuery, q.Sort)
 		}
-		order := "DESC"
-		if strings.EqualFold(q.Order, "asc") {
-			order = "ASC"
-		} else if q.Order != "" && !strings.EqualFold(q.Order, "desc") {
-			return nil, fmt.Errorf("%w: order must be asc or desc", ErrBadQuery)
-		}
 		sb.WriteString(" ORDER BY json_extract(data, ?) " + order + ", id DESC")
 		args = append(args, "$."+q.Sort)
 	} else {
+		// Default order is by creation time. Honor an explicit asc/desc and keep
+		// cursor paging working in whichever direction was requested.
+		cmp := "<"
+		if order == "ASC" {
+			cmp = ">"
+		}
 		if q.After != "" {
-			sb.WriteString(` AND (
-			created_at < (SELECT created_at FROM documents WHERE scope = ? AND collection = ? AND id = ?)
-			OR (created_at = (SELECT created_at FROM documents WHERE scope = ? AND collection = ? AND id = ?) AND id < ?)
-		)`)
+			sb.WriteString(fmt.Sprintf(` AND (
+			created_at %[1]s (SELECT created_at FROM documents WHERE scope = ? AND collection = ? AND id = ?)
+			OR (created_at = (SELECT created_at FROM documents WHERE scope = ? AND collection = ? AND id = ?) AND id %[1]s ?)
+		)`, cmp))
 			args = append(args, scope, collection, q.After, scope, collection, q.After, q.After)
 		}
-		sb.WriteString(" ORDER BY created_at DESC, id DESC")
+		sb.WriteString(" ORDER BY created_at " + order + ", id " + order)
 	}
 
 	limit := q.Limit
@@ -324,6 +328,9 @@ func buildWhere(filters []Filter) (string, []any, error) {
 			sb.WriteString(" AND json_extract(data, ?) " + filterOps[f.Op] + " ?")
 			args = append(args, path, normalizeFilterValue(f.Value))
 		case "gt", "gte", "lt", "lte":
+			if f.Value == nil {
+				return "", nil, fmt.Errorf("%w: %s on %q needs a non-null value", ErrBadQuery, f.Op, f.Field)
+			}
 			if !isFilterScalar(f.Value) {
 				return "", nil, fmt.Errorf("%w: %s on %q needs a scalar", ErrBadQuery, f.Op, f.Field)
 			}
@@ -334,6 +341,20 @@ func buildWhere(filters []Filter) (string, []any, error) {
 		}
 	}
 	return sb.String(), args, nil
+}
+
+// sortOrder maps an optional asc/desc request onto the SQL keyword, defaulting
+// to DESC (newest/highest first). An unrecognized value is a bad query so the
+// parameter is never silently ignored.
+func sortOrder(order string) (string, error) {
+	switch {
+	case order == "" || strings.EqualFold(order, "desc"):
+		return "DESC", nil
+	case strings.EqualFold(order, "asc"):
+		return "ASC", nil
+	default:
+		return "", fmt.Errorf("%w: order must be asc or desc", ErrBadQuery)
+	}
 }
 
 func isFilterScalar(v any) bool {
@@ -430,6 +451,25 @@ func (s *DocStore) increment(ctx context.Context, scope, collection, id, owner, 
 		return Document{}, fmt.Errorf("%w: increment amount must be a finite number", ErrBadQuery)
 	}
 	path := "$." + field
+	if by == 0 {
+		// A zero delta changes nothing: return the current document without a
+		// write or a realtime event, while keeping the same ownership and
+		// numeric-field guarantees as a real increment (404 / 409).
+		var doc Document
+		var raw []byte
+		err := s.db.QueryRowContext(ctx, incrementReadSQL, scope, collection, id, path, owner).
+			Scan(&doc.ID, &doc.Owner, &raw, &doc.CreatedAt, &doc.UpdatedAt)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Document{}, classifyIncrementMiss(ctx, s.db, scope, collection, id, owner, path)
+		}
+		if err != nil {
+			return Document{}, fmt.Errorf("read document: %w", err)
+		}
+		if err := json.Unmarshal(raw, &doc.Data); err != nil {
+			return Document{}, fmt.Errorf("decode document: %w", err)
+		}
+		return doc, nil
+	}
 	// Store an in-range whole amount as an integer so counters stay integers in
 	// JSON; larger finite whole numbers stay float64 to avoid int64 overflow.
 	var amount any = by
@@ -567,6 +607,13 @@ const (
 		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?6 = '' OR owner = ?6)
 		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real'))
 		RETURNING id, owner, data, created_at, updated_at`
+
+	// incrementReadSQL mirrors incrementDocumentSQL's WHERE (owner filter and
+	// numeric-field guard) but only reads, so a zero-delta increment returns the
+	// current document with the same 404/409 contract and without a write.
+	incrementReadSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
+		WHERE scope = ?1 AND collection = ?2 AND id = ?3 AND (?5 = '' OR owner = ?5)
+		  AND (json_type(data, ?4) IS NULL OR json_type(data, ?4) IN ('integer', 'real'))`
 
 	getDocumentSQL = `SELECT id, owner, data, created_at, updated_at FROM documents
 		WHERE scope = ? AND collection = ? AND id = ?`
