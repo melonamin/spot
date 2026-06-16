@@ -46,6 +46,8 @@ declare namespace SpotSDK {
     groups: string[];
     /** Whether this visitor may call spot.ai on this site. */
     ai_allowed: boolean;
+    /** Whether this visitor may call spot.slack on this site. */
+    slack_allowed: boolean;
   }
 
   interface Document<T = Record<string, unknown>> {
@@ -150,6 +152,19 @@ declare namespace SpotSDK {
 
   type ImageOptions = Record<string, unknown> & RequestOptions;
 
+  interface SlackSendOptions extends RequestOptions {
+    channel: string;
+    text?: string;
+    blocks?: unknown[];
+    mrkdwn?: boolean;
+  }
+
+  interface SlackSendResult {
+    ok: boolean;
+    channel: string;
+    ts: string;
+  }
+
   interface StoredFile {
     id: string;
     name: string;
@@ -199,6 +214,9 @@ declare namespace SpotSDK {
       chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
       stream(messages: ChatMessage[], opts?: StreamOptions): Promise<ChatResult>;
       image(prompt: string, opts?: ImageOptions): Promise<ImageResult>;
+    };
+    slack: {
+      send(opts: SlackSendOptions): Promise<SlackSendResult>;
     };
     files: {
       upload(file: File | Blob, opts?: { name?: string } & RequestOptions): Promise<StoredFile>;

@@ -105,6 +105,88 @@ func TestMeReportsAIAllowedAndGroups(t *testing.T) {
 	}
 }
 
+func TestMeReportsSlackAllowed(t *testing.T) {
+	get := func(srv *Server) meResponse {
+		t.Helper()
+		req := httptest.NewRequest(http.MethodGet, "http://demo.spot.localhost/api/me", nil)
+		rec := httptest.NewRecorder()
+		srv.handleMe(rec, req)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("me: status %d body %s, want 200", rec.Code, rec.Body)
+		}
+		var out meResponse
+		if err := json.Unmarshal(rec.Body.Bytes(), &out); err != nil {
+			t.Fatalf("decode me: %v", err)
+		}
+		return out
+	}
+
+	visitors := &Server{
+		slackAccess: slackAccessVisitors,
+		slack:       NewSlackProxy("test-token", ""),
+		sites:       newTestSiteStore(t),
+		resolver:    NewStaticResolver("v@example.com", "V", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if !get(visitors).SlackAllowed {
+		t.Error("slackAccess=visitors: slack_allowed = false, want true")
+	}
+	visitors.slack = nil
+	if get(visitors).SlackAllowed {
+		t.Error("slackAccess=visitors without configured proxy: slack_allowed = true, want false")
+	}
+
+	owner := &Server{
+		slackAccess: slackAccessOwners,
+		slack:       NewSlackProxy("test-token", ""),
+		siteManager: fakeSiteManager{allowed: true},
+		sites:       newTestSiteStore(t),
+		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if !get(owner).SlackAllowed {
+		t.Error("owner on owners-only site: slack_allowed = false, want true")
+	}
+
+	stranger := &Server{
+		slackAccess: slackAccessOwners,
+		slack:       NewSlackProxy("test-token", ""),
+		siteManager: fakeSiteManager{allowed: false},
+		sites:       newTestSiteStore(t),
+		resolver:    NewStaticResolver("stranger@example.com", "Stranger", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if get(stranger).SlackAllowed {
+		t.Error("stranger on owners-only site: slack_allowed = true, want false")
+	}
+
+	restrictedSites := newTestSiteStore(t)
+	if err := restrictedSites.Put(context.Background(), "demo", accessFileName, "application/json",
+		[]byte(`{"allow":["owner@example.com"],"slack":"visitors"}`)); err != nil {
+		t.Fatalf("write restricted policy: %v", err)
+	}
+	restrictedOwner := &Server{
+		slackAccess: slackAccessOwners,
+		slack:       NewSlackProxy("test-token", ""),
+		sites:       restrictedSites,
+		resolver:    NewStaticResolver("owner@example.com", "Owner", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if !get(restrictedOwner).SlackAllowed {
+		t.Error("allowed viewer on site with slack=visitors: slack_allowed = false, want true")
+	}
+	restrictedStranger := &Server{
+		slackAccess: slackAccessOwners,
+		slack:       NewSlackProxy("test-token", ""),
+		sites:       restrictedSites,
+		resolver:    NewStaticResolver("stranger@example.com", "Stranger", nil),
+		spotDomain:  "spot.localhost",
+	}
+	if get(restrictedStranger).SlackAllowed {
+		t.Error("restricted-site stranger with slack=visitors: slack_allowed = true, want false")
+	}
+}
+
 func TestSameOriginOnly(t *testing.T) {
 	srv := &Server{spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t)}
 

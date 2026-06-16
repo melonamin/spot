@@ -443,7 +443,7 @@ const publicSites = await spot.sites.public();
 await spot.sites.delete('old-demo');
 ```
 
-## Files, Text AI, and Image Generation
+## Files, Text AI, Image Generation, and Slack
 
 Uploads go through Spot, so browsers never see storage credentials:
 
@@ -493,6 +493,33 @@ By default only the site owner and platform admins may call it. Set
 ```json
 { "allow": ["team-payments"], "ai": "visitors" }
 ```
+
+The Slack proxy holds a single workspace bot token server-side and lets sites
+post notifications without exposing that token:
+
+```env
+SLACK_BOT_TOKEN=xoxb-...
+SPOT_SLACK_ACCESS=owners
+```
+
+```js
+await spot.slack.send({
+  channel: '#signups',
+  text: '*New signup* from the guestbook',
+});
+```
+
+Set `SLACK_BASE_URL` only when routing to a compatible test or proxy upstream.
+By default only the site owner and platform admins may send Slack messages.
+Set `SPOT_SLACK_ACCESS=visitors` globally, or opt in a restricted site:
+
+```json
+{ "allow": ["team-payments"], "slack": "visitors" }
+```
+
+`spot.slack.send` passes Slack mrkdwn and `blocks` through unchanged. External
+public image URLs in blocks work; Spot file URLs are private to the mesh and
+cannot be fetched by Slack's servers.
 
 ## Tests
 

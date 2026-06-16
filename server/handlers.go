@@ -36,6 +36,8 @@ type Server struct {
 	siteManager    SiteManager
 	ai             *AIProxy
 	aiAccess       string
+	slack          *SlackProxy
+	slackAccess    string
 	maxUpload      int64
 	spotDomain     string
 	trustedProxies *TrustedProxies
@@ -46,6 +48,7 @@ type Server struct {
 	dbLimit       *RateLimiter
 	fileLimit     *RateLimiter
 	aiLimit       *RateLimiter
+	slackLimit    *RateLimiter
 	deployLimit   *RateLimiter
 	realtimeLimit *RateLimiter
 }
@@ -134,6 +137,9 @@ func (s *Server) routes() http.Handler {
 	if s.aiLimit == nil {
 		s.aiLimit = NewRateLimiter(0.5, 10)
 	}
+	if s.slackLimit == nil {
+		s.slackLimit = NewRateLimiter(1, 5)
+	}
 	if s.deployLimit == nil {
 		s.deployLimit = NewRateLimiter(0.5, 3)
 	}
@@ -175,6 +181,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
 	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChatStream)))
 	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIImage)))
+	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limited(s.slackLimit, s.handleSlackSend)))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
 	if s.serveStatic {
@@ -548,7 +555,8 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 // stay at the top level.
 type meResponse struct {
 	Identity
-	AIAllowed bool `json:"ai_allowed"`
+	AIAllowed    bool `json:"ai_allowed"`
+	SlackAllowed bool `json:"slack_allowed"`
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
@@ -558,8 +566,9 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	writeJSON(w, http.StatusOK, meResponse{
-		Identity:  id,
-		AIAllowed: s.aiAllowedFor(r.Context(), site, id),
+		Identity:     id,
+		AIAllowed:    s.aiAllowedFor(r.Context(), site, id),
+		SlackAllowed: s.slackAllowedFor(r.Context(), site, id),
 	})
 }
 
@@ -591,6 +600,27 @@ func (s *Server) aiAllowedFor(ctx context.Context, site string, actor Identity) 
 	// cheaper visitor/policy paths above short-circuit the common cases. This
 	// is one indexed sites-table read per /api/me call in the default owners
 	// mode — acceptable for a per-page-load capability check, so it is not cached.
+	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
+	return err == nil && allowed
+}
+
+func (s *Server) slackAllowedFor(ctx context.Context, site string, actor Identity) bool {
+	if site == "" || s.slack == nil || !s.slack.configured() {
+		return false
+	}
+	policy, err := s.policyForSite(ctx, site)
+	if err != nil {
+		return false
+	}
+	if policy != nil && policy.RestrictsAccess() && !policy.Allows(actor) {
+		return false
+	}
+	if s.slackVisitorsAllowed(policy) {
+		return true
+	}
+	if s.siteManager == nil {
+		return false
+	}
 	allowed, err := s.siteManager.CanManageSite(ctx, site, actor)
 	return err == nil && allowed
 }
