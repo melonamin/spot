@@ -151,6 +151,33 @@ func TestRejectsForwardedHeadersFromUntrustedRemote(t *testing.T) {
 	}
 }
 
+func TestForwardAuthSecretTrustsForwardedHeaders(t *testing.T) {
+	const secret = "super-secret-proxy-key-1234"
+	srv := &Server{
+		spotDomain:  "spot.localhost",
+		forwardAuth: NewForwardAuth("", "", "", ""),
+	}
+	srv.forwardAuth.Secret = secret
+
+	req := httptest.NewRequest(http.MethodGet, "http://spot-api/api/me", nil)
+	req.RemoteAddr = "198.51.100.9:12345"
+	req.Header.Set(forwardAuthSecretHeader, secret)
+	req.Header.Set("Remote-Email", "alice@corp.com")
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	req.Header.Set("X-Forwarded-Host", "demo.spot.localhost")
+	req.Header.Set("X-Forwarded-Proto", "https")
+	req.Header.Set("Origin", "https://demo.spot.localhost")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("secret-auth forwarded headers = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	if got := srv.clientIP(req); got != "100.64.0.7" {
+		t.Fatalf("secret-auth clientIP = %q, want forwarded client", got)
+	}
+}
+
 func TestRejectsUnknownHost(t *testing.T) {
 	srv := &Server{
 		spotDomain:  "spot.localhost",

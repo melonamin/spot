@@ -30,10 +30,11 @@ const forwardAuthSecretHeader = "X-Spot-Forward-Auth-Secret"
 // session.
 //
 // Trust is enforced by the caller, not here: Server.forwardAuthIdentity only
-// consults a ForwardAuth when the request's socket peer is a trusted proxy,
-// so an untrusted client cannot assert an identity by sending Remote-*
-// headers. The proxy is responsible for stripping any client-supplied
-// Remote-* headers before injecting its own.
+// consults a ForwardAuth when the request's socket peer is a trusted proxy or
+// the request presents the configured shared secret, so an untrusted client
+// cannot assert an identity by sending Remote-* headers. The proxy is
+// responsible for stripping any client-supplied Remote-* headers before
+// injecting its own.
 type ForwardAuth struct {
 	UserHeader   string
 	EmailHeader  string

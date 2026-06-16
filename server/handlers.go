@@ -54,7 +54,7 @@ type Server struct {
 // X-Forwarded-Host on every proxied request; it is only trustworthy when
 // the socket peer is one of the configured front proxies.
 func (s *Server) requestHost(r *http.Request) string {
-	if s.trustsRemote(r) {
+	if s.trustsForwardedHeaders(r) {
 		if vals := r.Header.Values("X-Forwarded-Host"); len(vals) > 0 {
 			if host := strings.TrimSpace(vals[len(vals)-1]); host != "" {
 				return host
@@ -65,7 +65,7 @@ func (s *Server) requestHost(r *http.Request) string {
 }
 
 func (s *Server) requestScheme(r *http.Request) string {
-	if s.trustsRemote(r) {
+	if s.trustsForwardedHeaders(r) {
 		if vals := r.Header.Values("X-Forwarded-Proto"); len(vals) > 0 {
 			if proto := lastForwardedProto(vals[len(vals)-1]); proto != "" {
 				return proto
@@ -95,9 +95,16 @@ func (s *Server) trustsRemote(r *http.Request) bool {
 	return trusted.ContainsRemote(r.RemoteAddr)
 }
 
+func (s *Server) trustsForwardedHeaders(r *http.Request) bool {
+	if s.trustsRemote(r) {
+		return true
+	}
+	return s.forwardAuth != nil && s.forwardAuth.authorized(r, false)
+}
+
 func (s *Server) rejectUntrustedForwardedHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.trustsRemote(r) && hasForwardedHeaders(r) {
+		if !s.trustsForwardedHeaders(r) && hasForwardedHeaders(r) {
 			httpError(w, http.StatusBadRequest, "forwarded headers are only accepted from trusted proxies")
 			return
 		}
