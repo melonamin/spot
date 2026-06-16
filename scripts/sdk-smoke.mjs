@@ -17,6 +17,7 @@ const startedAt = Date.now();
 let tmp;
 let apiProc;
 let fakeAI;
+let fakeSlack;
 
 const fail = (message) => {
   throw new Error(message);
@@ -145,6 +146,50 @@ const startFakeAI = async () => {
   };
 };
 
+const startFakeSlack = async () => {
+  let lastRequest;
+  const server = createServer(async (req, res) => {
+    try {
+      if (req.method !== 'POST' || req.url !== '/chat.postMessage') {
+        res.writeHead(404).end();
+        return;
+      }
+      const body = await readJSON(req);
+      lastRequest = {
+        authorization: req.headers.authorization,
+        contentType: req.headers['content-type'],
+        body,
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(
+        JSON.stringify({
+          ok: true,
+          channel: 'CSDKSMOKE',
+          ts: '1503435956.000247',
+        }),
+      );
+    } catch (err) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: false, error: String(err.message || err) }));
+    }
+  });
+
+  await new Promise((resolve, reject) => {
+    server.once('error', reject);
+    server.listen(0, '127.0.0.1', resolve);
+  });
+  const { port } = server.address();
+  return {
+    url: `http://127.0.0.1:${port}`,
+    lastRequest: () => lastRequest,
+    close: () =>
+      new Promise((resolve) => {
+        server.closeAllConnections?.();
+        server.close(resolve);
+      }),
+  };
+};
+
 const getFreePort = () =>
   new Promise((resolve, reject) => {
     const server = createServer();
@@ -189,7 +234,7 @@ const run = (cmd, args, opts = {}) =>
     });
   });
 
-const startSpot = async (port, aiURL) => {
+const startSpot = async (port, aiURL, slackURL) => {
   const dataDir = join(tmp, 'data');
   await mkdir(dataDir, { recursive: true });
   const binary = join(tmp, 'spot-api');
@@ -216,6 +261,9 @@ const startSpot = async (port, aiURL) => {
       SPOT_AI_ALLOWED_MODELS: 'fake-chat',
       SPOT_AI_IMAGE_MODEL: 'fake-image',
       SPOT_AI_ALLOWED_IMAGE_MODELS: 'fake-image',
+      SLACK_BOT_TOKEN: 'sdk-smoke-slack-token',
+      SLACK_BASE_URL: slackURL,
+      SPOT_SLACK_ACCESS: 'visitors',
       SPOT_DEV_IDENTITY_EMAIL: 'sdk-smoke@localhost',
       SPOT_DEV_IDENTITY_NAME: 'SDK Smoke',
       SPOT_DEV_IDENTITY_GROUPS: 'sdk-testers',
@@ -342,6 +390,7 @@ const testSiteSDK = async (port) => {
   const me = await spot.me();
   assert(me.email === 'sdk-smoke@localhost', `me.email=${me.email}`);
   assert(me.ai_allowed === true, 'me.ai_allowed should be true for the site owner');
+  assert(me.slack_allowed === true, 'me.slack_allowed should be true for visitors-mode Slack');
 
   const suffix = String(Date.now());
   const notes = spot.db.collection(`sdk-smoke-notes-${suffix}`);
@@ -473,6 +522,14 @@ const testSiteSDK = async (port) => {
   });
   assert(image.images.length === 1 && image.images[0].data_url.startsWith('data:image/png;base64,'), 'ai.image() failed');
 
+  const slack = await spot.slack.send({ channel: '#sdk-smoke', text: 'hello from smoke' });
+  assert(slack.ok === true && slack.channel === 'CSDKSMOKE' && slack.ts, 'slack.send() failed');
+  const slackRequest = fakeSlack.lastRequest();
+  assert(slackRequest, 'fake Slack did not receive a request');
+  assert(slackRequest.authorization === 'Bearer sdk-smoke-slack-token', 'Slack Authorization header missing');
+  assert(slackRequest.body.channel === '#sdk-smoke', 'Slack gateway received wrong channel');
+  assert(slackRequest.body.text === 'hello from smoke', 'Slack gateway received wrong text');
+
   const firstFile = await spot.files.upload(new File(['hello sdk'], 'hello.txt', { type: 'text/plain' }));
   assert(firstFile.url && firstFile.name === 'hello.txt', 'files.upload() failed');
   const files = await spot.files.list();
@@ -504,12 +561,14 @@ const testApexSDK = async (port) => {
 const main = async () => {
   tmp = await mkdtemp(join(tmpdir(), 'spot-sdk-smoke-'));
   fakeAI = await startFakeAI();
+  fakeSlack = await startFakeSlack();
   const port = process.env.SPOT_SDK_SMOKE_PORT
     ? Number(process.env.SPOT_SDK_SMOKE_PORT)
     : await getFreePort();
   console.log(`==> starting fake AI at ${fakeAI.url}`);
+  console.log(`==> starting fake Slack at ${fakeSlack.url}`);
   console.log(`==> starting spot-api on http://spot.localhost:${port}`);
-  await startSpot(port, fakeAI.url);
+  await startSpot(port, fakeAI.url, fakeSlack.url);
 
   console.log('==> deploying SDK smoke sites');
   await deploySite(port, 'sdksmoke', {
@@ -537,6 +596,7 @@ const cleanup = async () => {
     ]);
   }
   if (fakeAI) await fakeAI.close();
+  if (fakeSlack) await fakeSlack.close();
   if (tmp) await rm(tmp, { recursive: true, force: true });
 };
 

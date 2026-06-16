@@ -45,6 +45,9 @@ type config struct {
 	AIImageModel         string
 	AIAllowedImageModels []string
 	AIAccess             string
+	SlackBotToken        string
+	SlackBaseURL         string
+	SlackAccess          string
 	TrustedProxies       string
 	ForwardAuth          bool
 	ForwardAuthUser      string
@@ -101,6 +104,9 @@ func loadConfigFrom(args []string) (config, error) {
 		AIImageModel:         os.Getenv("SPOT_AI_IMAGE_MODEL"),
 		AIAllowedImageModels: splitList(os.Getenv("SPOT_AI_ALLOWED_IMAGE_MODELS")),
 		AIAccess:             envOr("SPOT_AI_ACCESS", aiAccessOwners),
+		SlackBotToken:        os.Getenv("SLACK_BOT_TOKEN"),
+		SlackBaseURL:         os.Getenv("SLACK_BASE_URL"),
+		SlackAccess:          envOr("SPOT_SLACK_ACCESS", slackAccessOwners),
 		TrustedProxies:       envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
 		ForwardAuth:          envBool("SPOT_FORWARD_AUTH"),
 		ForwardAuthUser:      os.Getenv("SPOT_FORWARD_AUTH_USER_HEADER"),
@@ -133,6 +139,9 @@ func loadConfigFrom(args []string) (config, error) {
 	}
 	if cfg.AIAccess != aiAccessOwners && cfg.AIAccess != aiAccessVisitors {
 		return cfg, fmt.Errorf("SPOT_AI_ACCESS must be %q or %q", aiAccessOwners, aiAccessVisitors)
+	}
+	if cfg.SlackAccess != slackAccessOwners && cfg.SlackAccess != slackAccessVisitors {
+		return cfg, fmt.Errorf("SPOT_SLACK_ACCESS must be %q or %q", slackAccessOwners, slackAccessVisitors)
 	}
 	if err := validateDeploymentSafety(cfg); err != nil {
 		return cfg, err
@@ -397,6 +406,18 @@ func main() {
 		log.Printf("ai: OPENAI_API_KEY not set, /api/ai/chat and /api/ai/image will return 503")
 	}
 
+	var slack *SlackProxy
+	if cfg.SlackBotToken != "" {
+		slack = NewSlackProxy(cfg.SlackBotToken, cfg.SlackBaseURL)
+		upstream := cfg.SlackBaseURL
+		if upstream == "" {
+			upstream = "the Slack API"
+		}
+		log.Printf("slack: proxying to %s", upstream)
+	} else {
+		log.Printf("slack: SLACK_BOT_TOKEN not set, /api/slack/send will return 503")
+	}
+
 	trustedProxies, err := NewTrustedProxies(cfg.TrustedProxies)
 	if err != nil {
 		log.Fatalf("trusted proxies: %v", err)
@@ -435,6 +456,8 @@ func main() {
 		siteManager:    registry,
 		ai:             ai,
 		aiAccess:       cfg.AIAccess,
+		slack:          slack,
+		slackAccess:    cfg.SlackAccess,
 		spotDomain:     cfg.SpotDomain,
 		trustedProxies: trustedProxies,
 		serveStatic:    true,

@@ -517,9 +517,10 @@
     // (smart auto-retry, the default), false (never), or a max-retry count.
     configure,
     // Who is visiting, according to the mesh, plus per-site capabilities:
-    // { email, name, peer_name, peer_ip, groups, ai_allowed }. ai_allowed
-    // reports whether this visitor may call spot.ai on this site, so a page
-    // can show or hide AI features without provoking a 403.
+    // { email, name, peer_name, peer_ip, groups, ai_allowed, slack_allowed }.
+    // Capability flags report whether this visitor may call gated server-side
+    // integrations on this site, so a page can show or hide features without
+    // provoking a 403.
     me: ({ retry } = {}) => api('/api/me', { retry }),
     db: { collection },
     realtime: {
@@ -617,6 +618,24 @@
           retry,
         });
       },
+    },
+    slack: {
+      // send({ channel, text, blocks, mrkdwn }) -> { ok, channel, ts }
+      //
+      // channel is passed to Slack as-is: use a name like '#signups', a channel
+      // ID like 'C0123', or a user ID like 'U0123' for a DM. text uses Slack's
+      // native mrkdwn dialect by default; pass mrkdwn:false for literal text.
+      // blocks are forwarded unchanged for rich layouts and can reference
+      // public external image URLs. Files served by Spot are internal to the
+      // mesh and Slack's servers cannot fetch them, so use public image URLs
+      // in blocks until a future upload API exists. The server enforces the
+      // deployment token and the site's _access.json slack gate.
+      send: ({ channel, text, blocks, mrkdwn, retry } = {}) =>
+        api('/api/slack/send', {
+          method: 'POST',
+          body: JSON.stringify({ channel, text, blocks, mrkdwn }),
+          retry,
+        }),
     },
     files: {
       // upload(File|Blob) -> { id, name, size, content_type, url }

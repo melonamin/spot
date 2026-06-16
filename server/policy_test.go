@@ -128,6 +128,41 @@ func TestAccessPolicyAIValues(t *testing.T) {
 	}
 }
 
+func TestAccessPolicySlackValues(t *testing.T) {
+	tests := []struct {
+		raw                  string
+		wantAllowsVisitors   bool
+		wantParseErr         bool
+		wantDuplicateErrCase bool
+	}{
+		{raw: `{}`},
+		{raw: `{"slack":"owners"}`},
+		{raw: `{"slack":"visitors"}`, wantAllowsVisitors: true},
+		{raw: `{"slack":"visitor"}`, wantParseErr: true},
+		{raw: `{"slack":"owners","Slack":"visitors"}`, wantParseErr: true, wantDuplicateErrCase: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.raw, func(t *testing.T) {
+			policy, err := parseAccessPolicy("demo", []byte(tt.raw))
+			if tt.wantParseErr {
+				if err == nil {
+					t.Fatal("parseAccessPolicy succeeded, want fail-closed error")
+				}
+				if tt.wantDuplicateErrCase && err.Error() == "" {
+					t.Fatal("parseAccessPolicy returned empty duplicate-field error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("parseAccessPolicy: %v", err)
+			}
+			if got := policy.AllowsSlackVisitors(); got != tt.wantAllowsVisitors {
+				t.Fatalf("AllowsSlackVisitors = %v, want %v", got, tt.wantAllowsVisitors)
+			}
+		})
+	}
+}
+
 func writeSiteFile(t *testing.T, dir, site, name, content string) {
 	t.Helper()
 	full := filepath.Join(dir, site, name)

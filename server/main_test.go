@@ -167,6 +167,23 @@ func TestLoadConfigFromCLIFlagsRejectsUnexpectedArgs(t *testing.T) {
 	}
 }
 
+func TestLoadConfigRejectsUnknownSlackAccess(t *testing.T) {
+	t.Setenv("SPOT_DOMAIN", "spot.localhost")
+	t.Setenv("SPOT_STORAGE_MODE", "local")
+	t.Setenv("SPOT_AUTH_MODE", "single-user")
+	t.Setenv("SPOT_SLACK_ACCESS", "everyone")
+	t.Setenv("NETBIRD_API_URL", "")
+	t.Setenv("NETBIRD_API_TOKEN", "")
+	t.Setenv("TAILSCALE_API_URL", "")
+	t.Setenv("TAILSCALE_API_TOKEN", "")
+	t.Setenv("TAILSCALE_OAUTH_CLIENT_ID", "")
+	t.Setenv("TAILSCALE_OAUTH_CLIENT_SECRET", "")
+
+	if _, err := loadConfigFrom(nil); err == nil || !strings.Contains(err.Error(), "SPOT_SLACK_ACCESS") {
+		t.Fatalf("SPOT_SLACK_ACCESS error = %v, want rejection", err)
+	}
+}
+
 func TestValidateDeploymentSafetyRejectsUnknownStorageMode(t *testing.T) {
 	cfg := config{
 		SpotDomain:  "spot.localhost",

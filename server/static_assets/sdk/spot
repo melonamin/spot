@@ -421,7 +421,7 @@ render_skill() {
     cat <<EOF
 ---
 name: spot
-description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs identity, database, realtime, file uploads, text AI, or AI image generation.
+description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs identity, database, realtime, file uploads, text AI, AI image generation, or Slack notifications.
 ---
 
 # Spot
@@ -463,9 +463,9 @@ same-origin and zero-config — no API keys, no auth code.
 
 \`\`\`js
 const me = await spot.me();
-// { email, name, peer_name, peer_ip, groups, ai_allowed } — from the mesh.
-// ai_allowed reports whether this visitor may call spot.ai on this site, so a
-// page can show or hide AI features without provoking a 403.
+// { email, name, peer_name, peer_ip, groups, ai_allowed, slack_allowed } — from the mesh.
+// ai_allowed and slack_allowed report whether this visitor may call spot.ai or
+// spot.slack on this site, so a page can show/hide features without provoking a 403.
 \`\`\`
 
 ### Database (schemaless document collections, private to this site)
@@ -581,6 +581,30 @@ document.body.append(img);
 // the deployment's LiteLLM alias, such as gemini-3.1-flash-image-preview.
 \`\`\`
 
+### Slack notifications
+
+Post Slack notifications through Spot's server-side bot token. By default this
+is limited to the site owner or platform admins; authorized visitors can use it
+only when the deployment sets SPOT_SLACK_ACCESS=visitors or the site opts in
+with \`"slack":"visitors"\` in \`_access.json\`.
+
+\`\`\`js
+await spot.slack.send({
+  channel: '#signups', // Slack channel name, channel ID, or user ID for a DM
+  text: '*New signup* from the guestbook',
+});
+
+await spot.slack.send({
+  channel: 'C0123',
+  blocks: [{ type: 'section', text: { type: 'mrkdwn', text: '*Ready*' } }],
+});
+\`\`\`
+
+Slack text uses Slack mrkdwn, not CommonMark; pass \`mrkdwn:false\` for literal
+text. \`blocks\` are forwarded unchanged. Public external image URLs work in
+Slack image blocks; Spot file URLs are private to the mesh and Slack cannot
+fetch them.
+
 ### File uploads
 
 \`\`\`js
@@ -605,7 +629,7 @@ These platform APIs work from the Spot root, not from site subdomains.
 ### Errors and rate limits
 
 Per-visitor: database 25 req/s, realtime room sends 30 req/s, uploads
-2 req/s, AI 1 request per 2s (burst 10). A 429 means slow down — do
+2 req/s, AI 1 request per 2s (burst 10), Slack 1 req/s (burst 5). A 429 means slow down — do
 not hammer APIs in loops.
 
 Every call rejects with a \`spot.SpotError\` carrying \`status\`, a coarse
@@ -633,6 +657,8 @@ group name. The file applies to the whole site including its database
 API. It is an allowlist, not a secret — permitted visitors can read it.
 Add \`"ai":"visitors"\` only when those permitted visitors should be
 allowed to spend the deployment's server-side AI key.
+Add \`"slack":"visitors"\` only when those permitted visitors should be
+allowed to spend the deployment's server-side Slack bot token.
 Add \`"download":false\` to opt out of source ZIP downloads while keeping
 normal page access unchanged.
 

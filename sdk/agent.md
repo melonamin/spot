@@ -30,4 +30,20 @@ building or deploying Spot sites. It is written to
 `<agent>/skills/spot/SKILL.md`, for example `.claude/skills/spot/SKILL.md`
 or `.codex/skills/spot/SKILL.md`; `spot init` prints the exact path(s) it
 wrote. The skill documents identity, database, realtime, text AI, AI image
-generation, file uploads, access control, and deployment conventions.
+generation, Slack notifications, file uploads, access control, and deployment
+conventions.
+
+Use `spot.slack.send({ channel, text, blocks, mrkdwn })` to post to Slack
+through Spot's server-side bot token. `channel` is passed through as a Slack
+channel name (`#signups`), channel ID (`C0123`), or user ID (`U0123`) for a DM.
+`text` uses Slack mrkdwn, not CommonMark; pass `mrkdwn:false` for literal text.
+`blocks` are forwarded unchanged, including image blocks that reference public
+external image URLs. Spot file URLs are private to the mesh and Slack cannot
+fetch them.
+
+Slack sends are gated like AI. Set `SPOT_SLACK_ACCESS=visitors` globally, or
+opt a restricted site in with `_access.json`:
+
+```json
+{ "allow": ["team-payments"], "slack": "visitors" }
+```

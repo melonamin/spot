@@ -18,6 +18,11 @@ import (
 // default and the platform norm.
 const accessFileName = "_access.json"
 
+const (
+	slackAccessOwners   = "owners"
+	slackAccessVisitors = "visitors"
+)
+
 // AccessPolicy restricts a site only when "allow" is present. Entries
 // containing "@" match the visitor's email, all other entries match a
 // mesh group name; both case-insensitive. An omitted allow keeps the
@@ -25,6 +30,7 @@ const accessFileName = "_access.json"
 type AccessPolicy struct {
 	Allow    []string `json:"allow,omitempty"`
 	AI       string   `json:"ai,omitempty"`
+	Slack    string   `json:"slack,omitempty"`
 	Download *bool    `json:"download,omitempty"`
 
 	restrictAccess bool
@@ -39,7 +45,7 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 
-	var allowRaw, aiRaw, downloadRaw *json.RawMessage
+	var allowRaw, aiRaw, slackRaw, downloadRaw *json.RawMessage
 	for key, value := range fields {
 		value := value
 		switch strings.ToLower(key) {
@@ -53,6 +59,11 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 				return errors.New("duplicate ai field")
 			}
 			aiRaw = &value
+		case "slack":
+			if slackRaw != nil {
+				return errors.New("duplicate slack field")
+			}
+			slackRaw = &value
 		case "download":
 			if downloadRaw != nil {
 				return errors.New("duplicate download field")
@@ -86,6 +97,18 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 		case "", aiAccessOwners, aiAccessVisitors:
 		default:
 			return fmt.Errorf("ai must be one of %q, %q, or empty, got %q", aiAccessOwners, aiAccessVisitors, p.AI)
+		}
+	}
+	if slackRaw != nil {
+		if err := json.Unmarshal(*slackRaw, &p.Slack); err != nil {
+			return fmt.Errorf("slack must be a string: %w", err)
+		}
+		// Only "", "owners", and "visitors" carry meaning. Reject anything
+		// else so a typo fails closed instead of silently behaving owner-only.
+		switch strings.ToLower(strings.TrimSpace(p.Slack)) {
+		case "", slackAccessOwners, slackAccessVisitors:
+		default:
+			return fmt.Errorf("slack must be one of %q, %q, or empty, got %q", slackAccessOwners, slackAccessVisitors, p.Slack)
 		}
 	}
 	if downloadRaw != nil {
@@ -130,6 +153,10 @@ func (p *AccessPolicy) AllowsDownload() bool {
 
 func (p *AccessPolicy) AllowsAIVisitors() bool {
 	return p != nil && strings.EqualFold(strings.TrimSpace(p.AI), aiAccessVisitors)
+}
+
+func (p *AccessPolicy) AllowsSlackVisitors() bool {
+	return p != nil && strings.EqualFold(strings.TrimSpace(p.Slack), slackAccessVisitors)
 }
 
 // PolicyStore reads site access policies from local site storage and
