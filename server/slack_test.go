@@ -157,6 +157,12 @@ func TestSlackSendValidation(t *testing.T) {
 	if rec := postSlack(t, srv, `{"channel":"#signups"}`); rec.Code != http.StatusBadRequest {
 		t.Errorf("missing text and blocks: status %d, want 400", rec.Code)
 	}
+	if rec := postSlack(t, srv, `{"channel":"#signups","blocks":[]}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("empty blocks array: status %d, want 400", rec.Code)
+	}
+	if rec := postSlack(t, srv, `{"channel":"#signups","blocks":"oops"}`); rec.Code != http.StatusBadRequest {
+		t.Errorf("non-array blocks: status %d, want 400", rec.Code)
+	}
 	if rec := postSlack(t, srv, `not json`); rec.Code != http.StatusBadRequest {
 		t.Errorf("bad json: status %d, want 400", rec.Code)
 	}
@@ -219,6 +225,16 @@ func TestSlackSendUpstreamErrors(t *testing.T) {
 			if got := rec.Header().Get("Retry-After"); got != tt.wantRetryAfter {
 				t.Fatalf("Retry-After = %q, want %q", got, tt.wantRetryAfter)
 			}
+			// 5xx (credential/server-class) errors must not leak the raw Slack
+			// error to the browser; caller-actionable 4xx errors keep it.
+			body := rec.Body.String()
+			if tt.wantStatus >= 500 {
+				if strings.Contains(body, tt.slackErr) {
+					t.Errorf("5xx response leaks raw Slack error %q: %s", tt.slackErr, body)
+				}
+			} else if !strings.Contains(body, tt.slackErr) {
+				t.Errorf("4xx response should retain Slack error %q: %s", tt.slackErr, body)
+			}
 		})
 	}
 }
@@ -227,25 +243,22 @@ func TestSlackErrorStatus(t *testing.T) {
 	tests := []struct {
 		slackErr   string
 		wantStatus int
-		wantCode   string
 	}{
-		{"channel_not_found", http.StatusNotFound, "not_found"},
-		{"not_in_channel", http.StatusBadRequest, "bad_request"},
-		{"msg_too_long", http.StatusBadRequest, "bad_request"},
-		{"no_text", http.StatusBadRequest, "bad_request"},
-		{"is_archived", http.StatusBadRequest, "bad_request"},
-		{"rate_limited", http.StatusTooManyRequests, "rate_limited"},
-		{"invalid_auth", http.StatusBadGateway, "server"},
-		{"token_revoked", http.StatusBadGateway, "server"},
-		{"account_inactive", http.StatusBadGateway, "server"},
-		{"something_new", http.StatusBadGateway, "server"},
+		{"channel_not_found", http.StatusNotFound},
+		{"not_in_channel", http.StatusBadRequest},
+		{"msg_too_long", http.StatusBadRequest},
+		{"no_text", http.StatusBadRequest},
+		{"is_archived", http.StatusBadRequest},
+		{"rate_limited", http.StatusTooManyRequests},
+		{"invalid_auth", http.StatusBadGateway},
+		{"token_revoked", http.StatusBadGateway},
+		{"account_inactive", http.StatusBadGateway},
+		{"something_new", http.StatusBadGateway},
 	}
 	for _, tt := range tests {
 		t.Run(tt.slackErr, func(t *testing.T) {
-			status, code := slackErrorStatus(tt.slackErr)
-			if status != tt.wantStatus || code != tt.wantCode {
-				t.Fatalf("slackErrorStatus(%q) = %d, %q; want %d, %q",
-					tt.slackErr, status, code, tt.wantStatus, tt.wantCode)
+			if status := slackErrorStatus(tt.slackErr); status != tt.wantStatus {
+				t.Fatalf("slackErrorStatus(%q) = %d; want %d", tt.slackErr, status, tt.wantStatus)
 			}
 		})
 	}
@@ -288,8 +301,8 @@ func TestSlackPostMessageHTTPRateLimit(t *testing.T) {
 	if !errors.As(err, &slackErr) {
 		t.Fatalf("postMessage error = %#v, want slackError", err)
 	}
-	if slackErr.status != http.StatusTooManyRequests || slackErr.code != "rate_limited" || slackErr.retryAfter != "7" {
-		t.Fatalf("slackError = %+v, want 429/rate_limited/Retry-After 7", slackErr)
+	if slackErr.status != http.StatusTooManyRequests || slackErr.retryAfter != "7" {
+		t.Fatalf("slackError = %+v, want 429/Retry-After 7", slackErr)
 	}
 }
 
@@ -306,7 +319,7 @@ func TestSlackPostMessageHTTPRateLimitWithoutJSON(t *testing.T) {
 	if !errors.As(err, &slackErr) {
 		t.Fatalf("postMessage error = %#v, want slackError", err)
 	}
-	if slackErr.status != http.StatusTooManyRequests || slackErr.code != "rate_limited" || slackErr.retryAfter != "11" {
-		t.Fatalf("slackError = %+v, want 429/rate_limited/Retry-After 11", slackErr)
+	if slackErr.status != http.StatusTooManyRequests || slackErr.retryAfter != "11" {
+		t.Fatalf("slackError = %+v, want 429/Retry-After 11", slackErr)
 	}
 }

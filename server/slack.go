@@ -60,7 +60,6 @@ type slackAPIResponse struct {
 type slackError struct {
 	slackErr   string
 	status     int
-	code       string
 	retryAfter string
 }
 
@@ -85,15 +84,36 @@ func decodeSlackRequest(w http.ResponseWriter, r *http.Request) (slackSendReques
 		httpError(w, http.StatusBadRequest, "channel is required")
 		return slackSendRequest{}, false
 	}
-	if strings.TrimSpace(req.Text) == "" && emptySlackBlocks(req.Blocks) {
+	hasBlocks, err := slackBlocksPresent(req.Blocks)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, "blocks must be a non-empty array")
+		return slackSendRequest{}, false
+	}
+	if strings.TrimSpace(req.Text) == "" && !hasBlocks {
 		httpError(w, http.StatusBadRequest, "text or blocks is required")
 		return slackSendRequest{}, false
 	}
 	return req, true
 }
 
-func emptySlackBlocks(blocks json.RawMessage) bool {
-	return len(bytes.TrimSpace(blocks)) == 0 || bytes.Equal(bytes.TrimSpace(blocks), []byte("null"))
+// slackBlocksPresent reports whether blocks carries at least one block. An
+// absent or null value is simply not present (no error), so the caller must
+// then supply text. A value that is set but is not a non-empty JSON array — a
+// bare string, an object, or an empty array — is malformed and returns an
+// error so the request fails fast as a 400 instead of confusing Slack.
+func slackBlocksPresent(blocks json.RawMessage) (bool, error) {
+	trimmed := bytes.TrimSpace(blocks)
+	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
+		return false, nil
+	}
+	var arr []json.RawMessage
+	if err := json.Unmarshal(trimmed, &arr); err != nil {
+		return false, err
+	}
+	if len(arr) == 0 {
+		return false, errors.New("blocks must not be empty")
+	}
+	return true, nil
 }
 
 func (p *SlackProxy) postMessage(ctx context.Context, req slackSendRequest) (slackSendResponse, error) {
@@ -118,7 +138,6 @@ func (p *SlackProxy) postMessage(ctx context.Context, req slackSendRequest) (sla
 		return slackSendResponse{}, slackError{
 			slackErr:   "rate_limited",
 			status:     http.StatusTooManyRequests,
-			code:       "rate_limited",
 			retryAfter: res.Header.Get("Retry-After"),
 		}
 	}
@@ -131,16 +150,13 @@ func (p *SlackProxy) postMessage(ctx context.Context, req slackSendRequest) (sla
 		return slackSendResponse{}, slackError{
 			slackErr:   apiRes.Error,
 			status:     http.StatusBadGateway,
-			code:       "server",
 			retryAfter: res.Header.Get("Retry-After"),
 		}
 	}
 	if !apiRes.OK {
-		status, code := slackErrorStatus(apiRes.Error)
 		return slackSendResponse{}, slackError{
 			slackErr:   apiRes.Error,
-			status:     status,
-			code:       code,
+			status:     slackErrorStatus(apiRes.Error),
 			retryAfter: res.Header.Get("Retry-After"),
 		}
 	}
@@ -148,21 +164,22 @@ func (p *SlackProxy) postMessage(ctx context.Context, req slackSendRequest) (sla
 }
 
 // slackErrorStatus maps Slack chat.postMessage error strings to the HTTP status
-// and coarse SDK error code the browser should see. Caller-actionable request
-// problems stay in the 4xx range; deployment credential and unknown failures
-// fail closed as a server-side 502.
-func slackErrorStatus(slackErr string) (status int, code string) {
+// the browser should see. Caller-actionable request problems stay in the 4xx
+// range; deployment credential and unknown failures fail closed as a 502. The
+// SDK derives its coarse error code from this status (codeForStatus in
+// spot.js), so only the status is returned here.
+func slackErrorStatus(slackErr string) int {
 	switch slackErr {
 	case "channel_not_found":
-		return http.StatusNotFound, "not_found"
+		return http.StatusNotFound
 	case "not_in_channel", "msg_too_long", "no_text", "is_archived":
-		return http.StatusBadRequest, "bad_request"
+		return http.StatusBadRequest
 	case "rate_limited":
-		return http.StatusTooManyRequests, "rate_limited"
+		return http.StatusTooManyRequests
 	case "invalid_auth", "token_revoked", "account_inactive":
-		return http.StatusBadGateway, "server"
+		return http.StatusBadGateway
 	default:
-		return http.StatusBadGateway, "server"
+		return http.StatusBadGateway
 	}
 }
 
@@ -246,6 +263,15 @@ func (s *Server) handleSlackSend(w http.ResponseWriter, r *http.Request) {
 		if errors.As(err, &slackErr) {
 			if slackErr.retryAfter != "" {
 				w.Header().Set("Retry-After", slackErr.retryAfter)
+			}
+			// A 5xx is a Slack-side or credential failure the caller cannot act
+			// on; log the detail and return a generic message so raw Slack
+			// errors (e.g. invalid_auth) are not leaked to visitors. 4xx errors
+			// are caller-actionable, so keep their detail.
+			if slackErr.status >= http.StatusInternalServerError {
+				log.Printf("slack: %v", slackErr)
+				httpError(w, slackErr.status, "could not deliver the Slack message")
+				return
 			}
 			httpError(w, slackErr.status, slackErr.Error())
 			return
