@@ -67,6 +67,20 @@ func TestValidateDeploymentSafetyAcceptsTailscaleOAuthSharedConfig(t *testing.T)
 	}
 }
 
+func TestValidateDeploymentSafetyAcceptsForwardAuthSharedConfig(t *testing.T) {
+	cfg := config{
+		SpotDomain:       "spot.example.com",
+		S3Endpoint:       "rustfs:9000",
+		S3AccessKey:      "real-access",
+		S3SecretKey:      "real-secret",
+		ForwardAuth:      true,
+		DevIdentityEmail: "dev@spot.local",
+	}
+	if err := validateDeploymentSafety(cfg); err != nil {
+		t.Fatalf("forward-auth shared config rejected: %v", err)
+	}
+}
+
 func TestValidateDeploymentSafetyAcceptsSingleUserNonLocalDefaults(t *testing.T) {
 	cfg := config{
 		SpotDomain:       "spot.home.arpa",
@@ -299,6 +313,11 @@ func TestNewResolver(t *testing.T) {
 			name: "single user",
 			cfg:  config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
 			want: "*main.StaticResolver",
+		},
+		{
+			name: "forward auth ignores dev fallback",
+			cfg:  config{ForwardAuth: true, DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
+			want: "<nil>",
 		},
 		{
 			name: "none",

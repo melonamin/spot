@@ -25,6 +25,7 @@ var roomEventRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 type Server struct {
 	store          *DocStore
 	resolver       IdentityResolver
+	forwardAuth    *ForwardAuth
 	policies       *PolicyStore
 	hub            *Hub
 	roomHub        *RoomHub
@@ -53,7 +54,7 @@ type Server struct {
 // X-Forwarded-Host on every proxied request; it is only trustworthy when
 // the socket peer is one of the configured front proxies.
 func (s *Server) requestHost(r *http.Request) string {
-	if s.trustsRemote(r) {
+	if s.trustsForwardedHeaders(r) {
 		if vals := r.Header.Values("X-Forwarded-Host"); len(vals) > 0 {
 			if host := strings.TrimSpace(vals[len(vals)-1]); host != "" {
 				return host
@@ -64,7 +65,7 @@ func (s *Server) requestHost(r *http.Request) string {
 }
 
 func (s *Server) requestScheme(r *http.Request) string {
-	if s.trustsRemote(r) {
+	if s.trustsForwardedHeaders(r) {
 		if vals := r.Header.Values("X-Forwarded-Proto"); len(vals) > 0 {
 			if proto := lastForwardedProto(vals[len(vals)-1]); proto != "" {
 				return proto
@@ -94,9 +95,16 @@ func (s *Server) trustsRemote(r *http.Request) bool {
 	return trusted.ContainsRemote(r.RemoteAddr)
 }
 
+func (s *Server) trustsForwardedHeaders(r *http.Request) bool {
+	if s.trustsRemote(r) {
+		return true
+	}
+	return s.forwardAuth != nil && s.forwardAuth.authorized(r, false)
+}
+
 func (s *Server) rejectUntrustedForwardedHeaders(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if !s.trustsRemote(r) && hasForwardedHeaders(r) {
+		if !s.trustsForwardedHeaders(r) && hasForwardedHeaders(r) {
 			httpError(w, http.StatusBadRequest, "forwarded headers are only accepted from trusted proxies")
 			return
 		}
@@ -239,6 +247,19 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
+// forwardAuthIdentity returns the identity asserted by a trusted auth proxy
+// via forward-auth headers. The proxy proves itself with a shared secret
+// (SPOT_FORWARD_AUTH_SECRET) or, when none is set, by its source IP being a
+// trusted proxy. An unproven request is ignored, so a client cannot assert an
+// identity by sending Remote-* headers. ok is false when no proxy identity
+// applies, so callers fall through to the mesh resolver.
+func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
+	if s.forwardAuth == nil || !s.forwardAuth.authorized(r, s.trustsRemote(r)) {
+		return Identity{}, false
+	}
+	return s.forwardAuth.identityFrom(r.Header, s.clientIP(r))
+}
+
 // resolvePeer looks up the visitor's mesh identity by client IP, filling
 // PeerIP from the request when the resolver omits it. It returns found=false
 // with a nil error when no resolver is configured or the peer is not in the
@@ -246,6 +267,9 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	if id, ok := s.forwardAuthIdentity(r); ok {
+		return id, true, nil
+	}
 	if s.resolver == nil {
 		return Identity{}, false, nil
 	}
@@ -264,9 +288,9 @@ func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil {
 		httpError(w, http.StatusServiceUnavailable,
-			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
 	id, found, err := s.resolvePeer(r)
@@ -318,20 +342,16 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"site is restricted but the identity resolver is not configured")
 		return false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(r.Context(), ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("authz: resolve %s: %v", ip, err)
+		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
 		return false
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	if !found || !policy.Allows(id) {
 		httpError(w, http.StatusForbidden,
@@ -803,9 +823,12 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 }
 
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
+	if id, ok := s.forwardAuthIdentity(r); ok {
+		return id, true
+	}
 	if s.resolver == nil {
 		writeWSError(ctx, conn,
-			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or explicit dev identity")
+			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
 	ip := s.clientIP(r)

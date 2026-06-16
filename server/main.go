@@ -46,6 +46,12 @@ type config struct {
 	AIAllowedImageModels []string
 	AIAccess             string
 	TrustedProxies       string
+	ForwardAuth          bool
+	ForwardAuthUser      string
+	ForwardAuthEmail     string
+	ForwardAuthName      string
+	ForwardAuthGroups    string
+	ForwardAuthSecret    string
 	AdminAllow           []string
 	DevIdentityEmail     string
 	DevIdentityName      string
@@ -96,6 +102,12 @@ func loadConfigFrom(args []string) (config, error) {
 		AIAllowedImageModels: splitList(os.Getenv("SPOT_AI_ALLOWED_IMAGE_MODELS")),
 		AIAccess:             envOr("SPOT_AI_ACCESS", aiAccessOwners),
 		TrustedProxies:       envOr("SPOT_TRUSTED_PROXIES", "127.0.0.1/32,::1/128"),
+		ForwardAuth:          envBool("SPOT_FORWARD_AUTH"),
+		ForwardAuthUser:      os.Getenv("SPOT_FORWARD_AUTH_USER_HEADER"),
+		ForwardAuthEmail:     os.Getenv("SPOT_FORWARD_AUTH_EMAIL_HEADER"),
+		ForwardAuthName:      os.Getenv("SPOT_FORWARD_AUTH_NAME_HEADER"),
+		ForwardAuthGroups:    os.Getenv("SPOT_FORWARD_AUTH_GROUPS_HEADER"),
+		ForwardAuthSecret:    os.Getenv("SPOT_FORWARD_AUTH_SECRET"),
 		AdminAllow: append(
 			splitList(os.Getenv("SPOT_ADMIN_EMAILS")),
 			splitList(os.Getenv("SPOT_ADMIN_GROUPS"))...,
@@ -176,6 +188,15 @@ func validateDeploymentSafety(cfg config) error {
 	}
 	netbird := netbirdConfigured(cfg)
 	tailscale := tailscaleConfigured(cfg)
+	forwardAuth := cfg.ForwardAuth
+	if cfg.ForwardAuthSecret != "" {
+		if !forwardAuth {
+			return errors.New("SPOT_FORWARD_AUTH_SECRET requires SPOT_FORWARD_AUTH=1")
+		}
+		if len(cfg.ForwardAuthSecret) < 16 {
+			return errors.New("SPOT_FORWARD_AUTH_SECRET must be at least 16 characters")
+		}
+	}
 	if netbird && tailscale {
 		return errors.New("configure exactly one mesh identity provider: NETBIRD_* or TAILSCALE_*")
 	}
@@ -186,26 +207,26 @@ func validateDeploymentSafety(cfg config) error {
 		return errors.New("Tailscale OAuth requires TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET")
 	}
 	if mode == authModeSingleUser {
-		if netbird || tailscale {
-			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_* or TAILSCALE_*")
+		if netbird || tailscale || forwardAuth {
+			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_*, TAILSCALE_*, or SPOT_FORWARD_AUTH")
 		}
 		if strings.TrimSpace(cfg.SingleUserEmail) == "" {
 			return errors.New("SPOT_SINGLE_USER_EMAIL is required when SPOT_AUTH_MODE=single-user")
 		}
 		return nil
 	}
-	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale
+	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale || forwardAuth
 	if !shared {
 		return nil
 	}
-	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) {
+	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) && !forwardAuth {
 		return errors.New("SPOT_DEV_IDENTITY_EMAIL is only allowed for .localhost deployments")
 	}
 	if netbird && (cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "") {
 		return errors.New("NetBird deployments require NETBIRD_API_URL and NETBIRD_API_TOKEN")
 	}
-	if !netbird && !tailscale {
-		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET")
+	if !netbird && !tailscale && !forwardAuth {
+		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or SPOT_FORWARD_AUTH")
 	}
 	if storageMode == storageModeS3 && cfg.S3Endpoint != "" && (cfg.S3AccessKey == "rustfsadmin" || cfg.S3SecretKey == "rustfsadmin") {
 		return errors.New("shared deployments must replace the default RustFS credentials")
@@ -259,6 +280,14 @@ func envOr(key, fallback string) string {
 	return fallback
 }
 
+func envBool(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv(key))) {
+	case "1", "true", "yes", "on":
+		return true
+	}
+	return false
+}
+
 func splitList(raw string) []string {
 	var out []string
 	for _, part := range strings.Split(raw, ",") {
@@ -287,7 +316,7 @@ func newResolver(cfg config) (IdentityResolver, string) {
 		return NewTailscaleOAuthResolver(cfg.TailscaleAPIURL, cfg.TailscaleOAuthID, cfg.TailscaleOAuthSecret, cfg.TailscaleTailnet, 30*time.Second),
 			"resolving via Tailscale API with OAuth"
 	}
-	if cfg.DevIdentityEmail != "" {
+	if cfg.DevIdentityEmail != "" && !cfg.ForwardAuth {
 		return NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups),
 			fmt.Sprintf("using explicit dev identity %s", cfg.DevIdentityEmail)
 	}
@@ -317,7 +346,14 @@ func main() {
 	defer db.Close()
 
 	resolver, resolverLog := newResolver(cfg)
-	log.Printf("identity: %s", resolverLog)
+	switch {
+	case resolver != nil:
+		log.Printf("identity: %s", resolverLog)
+	case cfg.ForwardAuth:
+		log.Printf("identity: resolving from forward-auth headers only")
+	default:
+		log.Printf("identity: %s", resolverLog)
+	}
 
 	hub := NewHub()
 	store := &DocStore{db: db, hub: hub}
@@ -365,6 +401,17 @@ func main() {
 	if err != nil {
 		log.Fatalf("trusted proxies: %v", err)
 	}
+	var forwardAuth *ForwardAuth
+	if cfg.ForwardAuth {
+		forwardAuth = NewForwardAuth(cfg.ForwardAuthUser, cfg.ForwardAuthEmail, cfg.ForwardAuthName, cfg.ForwardAuthGroups)
+		forwardAuth.Secret = cfg.ForwardAuthSecret
+		proof := fmt.Sprintf("trusted proxies (%s)", cfg.TrustedProxies)
+		if forwardAuth.Secret != "" {
+			proof = "shared secret " + forwardAuthSecretHeader
+		}
+		log.Printf("identity: forward auth trusting %s/%s/%s/%s via %s",
+			forwardAuth.UserHeader, forwardAuth.EmailHeader, forwardAuth.NameHeader, forwardAuth.GroupsHeader, proof)
+	}
 	var adminPolicy *AccessPolicy
 	if len(cfg.AdminAllow) > 0 {
 		adminPolicy = &AccessPolicy{Allow: cfg.AdminAllow}
@@ -378,6 +425,7 @@ func main() {
 	srv := &Server{
 		store:          store,
 		resolver:       resolver,
+		forwardAuth:    forwardAuth,
 		policies:       policies,
 		hub:            hub,
 		files:          files,

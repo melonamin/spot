@@ -163,6 +163,62 @@ If you put another TLS proxy in front, preserve the real source IP and
 add only that proxy to `SPOT_TRUSTED_PROXIES` so Spot can trust
 `X-Forwarded-Proto` and `X-Forwarded-For`.
 
+### Forward-Auth Identity (Pangolin / SSO proxy)
+
+Use this when an authenticating reverse proxy fronts Spot and asserts who
+the caller is via HTTP headers — for example
+[Pangolin](https://pangolin.net), Authelia, Authentik, or a bespoke proxy
+in front of agent sandboxes that deploy on a user's behalf. The proxy
+handles login (SSO/OIDC); Spot reads the asserted identity in place of a
+mesh peer lookup:
+
+| Proxy header | Spot identity field | Default name |
+| --- | --- | --- |
+| user id | `peer_name` | `Remote-User` |
+| email | `email` (ownership + `_access.json`) | `Remote-Email` |
+| full name | `name` | `Remote-Name` |
+| groups / role | `groups` (`_access.json`) | `Remote-Groups` |
+
+1. Enable forward auth, overriding header names if your proxy differs:
+
+   ```env
+   SPOT_FORWARD_AUTH=1
+   # Pangolin asserts a single Remote-Role:
+   SPOT_FORWARD_AUTH_GROUPS_HEADER=Remote-Role
+   ```
+
+2. Trust only the proxy. Spot honors `Remote-*` solely from the immediate
+   socket peer, so set this to the proxy's IP/CIDR:
+
+   ```env
+   SPOT_TRUSTED_PROXIES=10.0.0.0/24
+   ```
+
+Forward auth can run alongside a mesh provider (proxy identity wins when
+its headers are present, otherwise the mesh resolves by IP) or as the only
+identity source.
+
+Notes:
+
+- The trusted proxy MUST strip any client-supplied `Remote-*` before
+  injecting its own. Spot believes whatever a trusted peer sends; the same
+  headers from an untrusted socket are ignored.
+- To run the proxy off-mesh (where its source IP isn't a reliable identifier),
+  set `SPOT_FORWARD_AUTH_SECRET` to a long random value and have the proxy send
+  it in the `X-Spot-Forward-Auth-Secret` header. When set, the secret is
+  required and replaces the source-IP check.
+- Pangolin only emits identity headers under SSO. PIN, password, and
+  shareable links authenticate but carry no identity, so restricted sites
+  behind Pangolin require SSO.
+- If a TLS proxy (Caddy) sits between Pangolin and `spot-api`, that hop
+  must be private to Pangolin. Do not expose a pass-through Caddy listener
+  directly to clients after adding Caddy to `SPOT_TRUSTED_PROXIES`: Caddy
+  forwards request headers by default, so Spot would trust spoofed
+  `Remote-*` from anyone who can reach it. Make the auth proxy the public
+  entrypoint, or strip and re-inject identity headers only after auth.
+- Email is the principal: a user keeps the same site ownership whether they
+  arrive via the proxy or the mesh, as long as the email matches.
+
 ### Single-User Homelab
 
 Use this when LAN/VPN/firewall access is the boundary and everyone who

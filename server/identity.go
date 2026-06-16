@@ -256,11 +256,11 @@ func (r *StaticResolver) Resolve(_ context.Context, ip string) (Identity, bool, 
 
 // clientIP returns the address the request originated from. Identity
 // hangs off this value, so it must not be spoofable: forwarded headers
-// are only read when the socket peer is a trusted proxy. When present,
-// the LAST X-Forwarded-For entry wins because Caddy overwrites it with
-// the connection's address.
+// are only read when the socket peer is a trusted proxy or the request has
+// proven a forward-auth shared secret. When present, the LAST X-Forwarded-For
+// entry wins because Caddy overwrites it with the connection's address.
 func (s *Server) clientIP(r *http.Request) string {
-	if s.trustsRemote(r) {
+	if s.trustsForwardedHeaders(r) {
 		if vals := r.Header.Values("X-Forwarded-For"); len(vals) > 0 {
 			entries := strings.Split(vals[len(vals)-1], ",")
 			return strings.TrimSpace(entries[len(entries)-1])
