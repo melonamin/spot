@@ -240,24 +240,25 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 	}
 }
 
+// forwardAuthIdentity returns the identity asserted by a trusted auth proxy
+// via forward-auth headers. The proxy proves itself with a shared secret
+// (SPOT_FORWARD_AUTH_SECRET) or, when none is set, by its source IP being a
+// trusted proxy. An unproven request is ignored, so a client cannot assert an
+// identity by sending Remote-* headers. ok is false when no proxy identity
+// applies, so callers fall through to the mesh resolver.
+func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
+	if s.forwardAuth == nil || !s.forwardAuth.authorized(r, s.trustsRemote(r)) {
+		return Identity{}, false
+	}
+	return s.forwardAuth.identityFrom(r.Header, s.clientIP(r))
+}
+
 // resolvePeer looks up the visitor's mesh identity by client IP, filling
 // PeerIP from the request when the resolver omits it. It returns found=false
 // with a nil error when no resolver is configured or the peer is not in the
 // mesh, and a non-nil error for a resolver outage. It writes no response, so
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
-// forwardAuthIdentity returns the identity asserted by a trusted auth proxy
-// via forward-auth headers. It is only honored when forward auth is enabled
-// and the socket peer is a trusted proxy, so an untrusted client cannot
-// assert an identity by sending Remote-* headers. ok is false when no proxy
-// identity applies, so callers fall through to the mesh resolver.
-func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
-	if s.forwardAuth == nil || !s.trustsRemote(r) {
-		return Identity{}, false
-	}
-	return s.forwardAuth.identityFrom(r.Header, s.clientIP(r))
-}
-
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
 	if id, ok := s.forwardAuthIdentity(r); ok {
 		return id, true, nil

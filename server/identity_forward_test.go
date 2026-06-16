@@ -70,12 +70,7 @@ func TestForwardAuthIdentityFrom(t *testing.T) {
 		{
 			name:    "user only, no email",
 			headers: map[string]string{"Remote-User": "svc-deployer"},
-			wantOK:  true,
-			want: Identity{
-				PeerName: "svc-deployer",
-				PeerIP:   "100.64.0.5",
-				Groups:   []string{},
-			},
+			wantOK:  false,
 		},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -109,6 +104,46 @@ func TestForwardAuthCustomHeaders(t *testing.T) {
 	if id.Email != "bob@corp.com" {
 		t.Fatalf("email = %q, want bob@corp.com (custom header only)", id.Email)
 	}
+}
+
+// TestForwardAuthSecret covers the shared-secret proof: a correct secret is
+// honored from any source IP (the off-mesh case), while a wrong or missing
+// secret is rejected even from a trusted-proxy IP.
+func TestForwardAuthSecret(t *testing.T) {
+	const secret = "super-secret-proxy-key-1234"
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = secret
+	srv := &Server{forwardAuth: fa, trustedProxies: testTrustedProxies(t)}
+
+	newReq := func(remoteAddr, sec string) *http.Request {
+		req := httptest.NewRequest(http.MethodPost, "http://spot-api/api/deploy", nil)
+		req.RemoteAddr = remoteAddr
+		req.Header.Set("Remote-Email", "alice@corp.com")
+		if sec != "" {
+			req.Header.Set("X-Spot-Forward-Auth-Secret", sec)
+		}
+		return req
+	}
+
+	t.Run("correct secret from untrusted IP is honored", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		id, ok := srv.resolveIdentity(rec, newReq("198.51.100.9:443", secret), "test")
+		if !ok || id.Email != "alice@corp.com" {
+			t.Fatalf("correct secret off-mesh: ok=%v code=%d", ok, rec.Code)
+		}
+	})
+	t.Run("wrong secret is rejected even from trusted IP", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		if _, ok := srv.resolveIdentity(rec, newReq("192.0.2.10:443", "wrong"), "test"); ok {
+			t.Fatal("wrong secret accepted, want rejected")
+		}
+	})
+	t.Run("missing secret is rejected even from trusted IP", func(t *testing.T) {
+		rec := httptest.NewRecorder()
+		if _, ok := srv.resolveIdentity(rec, newReq("192.0.2.10:443", ""), "test"); ok {
+			t.Fatal("missing secret accepted, want rejected")
+		}
+	})
 }
 
 // TestForwardAuthTrustGate is the security-critical case: forward-auth

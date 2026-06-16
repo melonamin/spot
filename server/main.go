@@ -51,6 +51,7 @@ type config struct {
 	ForwardAuthEmail     string
 	ForwardAuthName      string
 	ForwardAuthGroups    string
+	ForwardAuthSecret    string
 	AdminAllow           []string
 	DevIdentityEmail     string
 	DevIdentityName      string
@@ -106,6 +107,7 @@ func loadConfigFrom(args []string) (config, error) {
 		ForwardAuthEmail:     os.Getenv("SPOT_FORWARD_AUTH_EMAIL_HEADER"),
 		ForwardAuthName:      os.Getenv("SPOT_FORWARD_AUTH_NAME_HEADER"),
 		ForwardAuthGroups:    os.Getenv("SPOT_FORWARD_AUTH_GROUPS_HEADER"),
+		ForwardAuthSecret:    os.Getenv("SPOT_FORWARD_AUTH_SECRET"),
 		AdminAllow: append(
 			splitList(os.Getenv("SPOT_ADMIN_EMAILS")),
 			splitList(os.Getenv("SPOT_ADMIN_GROUPS"))...,
@@ -187,6 +189,14 @@ func validateDeploymentSafety(cfg config) error {
 	netbird := netbirdConfigured(cfg)
 	tailscale := tailscaleConfigured(cfg)
 	forwardAuth := cfg.ForwardAuth
+	if cfg.ForwardAuthSecret != "" {
+		if !forwardAuth {
+			return errors.New("SPOT_FORWARD_AUTH_SECRET requires SPOT_FORWARD_AUTH=1")
+		}
+		if len(cfg.ForwardAuthSecret) < 16 {
+			return errors.New("SPOT_FORWARD_AUTH_SECRET must be at least 16 characters")
+		}
+	}
 	if netbird && tailscale {
 		return errors.New("configure exactly one mesh identity provider: NETBIRD_* or TAILSCALE_*")
 	}
@@ -209,7 +219,7 @@ func validateDeploymentSafety(cfg config) error {
 	if !shared {
 		return nil
 	}
-	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) {
+	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) && !forwardAuth {
 		return errors.New("SPOT_DEV_IDENTITY_EMAIL is only allowed for .localhost deployments")
 	}
 	if netbird && (cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "") {
@@ -306,7 +316,7 @@ func newResolver(cfg config) (IdentityResolver, string) {
 		return NewTailscaleOAuthResolver(cfg.TailscaleAPIURL, cfg.TailscaleOAuthID, cfg.TailscaleOAuthSecret, cfg.TailscaleTailnet, 30*time.Second),
 			"resolving via Tailscale API with OAuth"
 	}
-	if cfg.DevIdentityEmail != "" {
+	if cfg.DevIdentityEmail != "" && !cfg.ForwardAuth {
 		return NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups),
 			fmt.Sprintf("using explicit dev identity %s", cfg.DevIdentityEmail)
 	}
@@ -394,8 +404,13 @@ func main() {
 	var forwardAuth *ForwardAuth
 	if cfg.ForwardAuth {
 		forwardAuth = NewForwardAuth(cfg.ForwardAuthUser, cfg.ForwardAuthEmail, cfg.ForwardAuthName, cfg.ForwardAuthGroups)
-		log.Printf("identity: forward auth trusting %s/%s/%s/%s from trusted proxies (%s)",
-			forwardAuth.UserHeader, forwardAuth.EmailHeader, forwardAuth.NameHeader, forwardAuth.GroupsHeader, cfg.TrustedProxies)
+		forwardAuth.Secret = cfg.ForwardAuthSecret
+		proof := fmt.Sprintf("trusted proxies (%s)", cfg.TrustedProxies)
+		if forwardAuth.Secret != "" {
+			proof = "shared secret " + forwardAuthSecretHeader
+		}
+		log.Printf("identity: forward auth trusting %s/%s/%s/%s via %s",
+			forwardAuth.UserHeader, forwardAuth.EmailHeader, forwardAuth.NameHeader, forwardAuth.GroupsHeader, proof)
 	}
 	var adminPolicy *AccessPolicy
 	if len(cfg.AdminAllow) > 0 {

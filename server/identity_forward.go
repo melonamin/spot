@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/subtle"
 	"net/http"
 	"strings"
 )
@@ -15,6 +16,11 @@ const (
 	defaultForwardNameHeader   = "Remote-Name"
 	defaultForwardGroupsHeader = "Remote-Groups"
 )
+
+// forwardAuthSecretHeader carries the shared secret a forward-auth proxy
+// presents to prove itself when SPOT_FORWARD_AUTH_SECRET is set. This lets the
+// proxy run off-mesh, where its source IP is not a reliable identifier.
+const forwardAuthSecretHeader = "X-Spot-Forward-Auth-Secret"
 
 // ForwardAuth resolves visitor identity from headers injected by a trusted
 // authentication proxy (forward auth). It is the integration seam for an
@@ -33,6 +39,22 @@ type ForwardAuth struct {
 	EmailHeader  string
 	NameHeader   string
 	GroupsHeader string
+	// Secret, when non-empty, is required in forwardAuthSecretHeader and
+	// replaces the source-IP trust check (see authorized).
+	Secret string
+}
+
+// authorized reports whether the request proves it comes from the trusted
+// proxy. With a shared secret configured, the request must present it in the
+// X-Spot-Forward-Auth-Secret header (constant-time compared), and the source
+// IP is not required — so the proxy can run off-mesh. Without a secret, trust
+// falls back to the source IP being in SPOT_TRUSTED_PROXIES.
+func (f *ForwardAuth) authorized(r *http.Request, trustedIP bool) bool {
+	if f.Secret == "" {
+		return trustedIP
+	}
+	got := r.Header.Get(forwardAuthSecretHeader)
+	return got != "" && subtle.ConstantTimeCompare([]byte(got), []byte(f.Secret)) == 1
 }
 
 // NewForwardAuth returns a ForwardAuth, falling back to the default Remote-*
@@ -54,13 +76,13 @@ func headerOr(name, fallback string) string {
 }
 
 // identityFrom builds an Identity from forward-auth headers. ok is false when
-// no identifying header (email or user) is present, so the caller falls
-// through to the mesh resolver. Email is lowercased to match actorKey, so the
-// same user owns the same sites however they arrive (proxy or mesh).
+// no email is present, so the caller falls through to the mesh resolver. Email
+// is required because Spot keys ownership by email before peer IP; proxy user
+// IDs are descriptive, not stable authorization keys.
 func (f *ForwardAuth) identityFrom(h http.Header, ip string) (Identity, bool) {
 	email := strings.ToLower(strings.TrimSpace(h.Get(f.EmailHeader)))
 	user := strings.TrimSpace(h.Get(f.UserHeader))
-	if email == "" && user == "" {
+	if email == "" {
 		return Identity{}, false
 	}
 	return Identity{

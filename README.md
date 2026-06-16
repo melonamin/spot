@@ -203,12 +203,19 @@ Notes:
 - The trusted proxy MUST strip any client-supplied `Remote-*` before
   injecting its own. Spot believes whatever a trusted peer sends; the same
   headers from an untrusted socket are ignored.
+- To run the proxy off-mesh (where its source IP isn't a reliable identifier),
+  set `SPOT_FORWARD_AUTH_SECRET` to a long random value and have the proxy send
+  it in the `X-Spot-Forward-Auth-Secret` header. When set, the secret is
+  required and replaces the source-IP check.
 - Pangolin only emits identity headers under SSO. PIN, password, and
   shareable links authenticate but carry no identity, so restricted sites
   behind Pangolin require SSO.
-- If a TLS proxy (Caddy) sits between Pangolin and `spot-api`, it must
-  forward `Remote-*` through and it becomes the trusted peer Spot sees —
-  add its IP to `SPOT_TRUSTED_PROXIES`, not Pangolin's.
+- If a TLS proxy (Caddy) sits between Pangolin and `spot-api`, that hop
+  must be private to Pangolin. Do not expose a pass-through Caddy listener
+  directly to clients after adding Caddy to `SPOT_TRUSTED_PROXIES`: Caddy
+  forwards request headers by default, so Spot would trust spoofed
+  `Remote-*` from anyone who can reach it. Make the auth proxy the public
+  entrypoint, or strip and re-inject identity headers only after auth.
 - Email is the principal: a user keeps the same site ownership whether they
   arrive via the proxy or the mesh, as long as the email matches.
 
