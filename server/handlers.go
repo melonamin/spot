@@ -34,6 +34,8 @@ type Server struct {
 	deployAuth     DeployAuthorizer
 	siteAdmin      SiteAdmin
 	siteManager    SiteManager
+	cloudflare     *CloudflarePublisher
+	cloudflarePubs *CloudflarePublicationStore
 	ai             *AIProxy
 	aiAccess       string
 	slack          *SlackProxy
@@ -178,6 +180,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/stats", s.sameOriginOnly(s.limited(s.dbLimit, s.handleSiteStats)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
+	mux.HandleFunc("GET /api/sites/{name}/cloudflare", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCloudflareStatus)))
+	mux.HandleFunc("POST /api/sites/{name}/cloudflare/publish", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflarePublish)))
+	mux.HandleFunc("DELETE /api/sites/{name}/cloudflare", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflareUnpublish)))
 	mux.HandleFunc("DELETE /api/sites/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeleteSite)))
 	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileList)))
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))

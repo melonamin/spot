@@ -19,10 +19,12 @@ browser / CLI / deployed site
         |
         |- embedded platform UI and SDK assets
         |- deployed site static serving
-        |- deploy, site admin, database, files, realtime, and AI APIs
+        |- deploy, site admin, optional Cloudflare publish, database,
+        |  files, realtime, and AI APIs
         |- mesh identity resolution
         |
-        |- SQLite metadata: documents, site registry, deploy audit
+        |- SQLite metadata: documents, site registry, deploy audit,
+        |  optional Cloudflare publications
         |
         `- site and upload storage:
              - S3-compatible storage, usually RustFS locally
@@ -61,7 +63,11 @@ Startup flow:
    - `SiteStore` and `FileStore` for S3-compatible storage.
    - `LocalSiteStore` and `LocalFileStore` for filesystem storage.
 6. Optional `AIProxy` is created when `OPENAI_API_KEY` is set.
-7. `Server.routes()` builds the HTTP mux and wraps it with forwarded-header and
+7. Optional Cloudflare Pages publishing is enabled only when all
+   `SPOT_CLOUDFLARE_*` runtime variables are present. Missing variables disable
+   it without failing startup; partial config is logged and reported by status
+   APIs as `partial`.
+8. `Server.routes()` builds the HTTP mux and wraps it with forwarded-header and
    host validation.
 
 Most code remains in package `main`. Prefer extending the existing narrow
@@ -138,6 +144,9 @@ Tables:
   is added to existing databases by an idempotent migration in `server/db.go`.
 - `sites`: site ownership records.
 - `site_deploy_audit`: deploy and delete audit history.
+- `site_cloudflare_publications`: optional Cloudflare Pages publication
+  metadata, including project name, hostname, latest deployment, content hash,
+  status, and last error.
 
 The document store is implemented in `server/docstore.go`. It stores JSON blobs,
 publishes realtime document events after successful mutations, and can purge a
@@ -184,7 +193,10 @@ Deploy and upload storage are intentionally separate:
   `/api/files/<site>/<id>/<name>`.
 
 Deleting a site purges deployed files, uploads, and private document scope
-before freeing the site registry row.
+before freeing the site registry row. If a Cloudflare publication row exists,
+the site delete API returns `409 Conflict`; the owner or a platform admin must
+unpublish first so the public Cloudflare copy, custom domain, and DNS record are
+removed deliberately.
 
 ## Deploy Flow
 
@@ -216,6 +228,47 @@ Deploy invariants:
 The deploy API only answers on the apex. Combined with same-origin checks, this
 prevents JavaScript running on a deployed site from redeploying another site
 using a visitor's ambient mesh identity.
+
+## Optional Cloudflare Pages Publish Flow
+
+Cloudflare publishing is implemented in `server/cloudflare.go` and exposed from
+`server/sites.go` through apex-only, same-origin routes:
+
+- `GET /api/sites/{name}/cloudflare`
+- `POST /api/sites/{name}/cloudflare/publish`
+- `DELETE /api/sites/{name}/cloudflare`
+
+Each route uses `SiteManager.CanManageSite`, so site owners can publish their
+own sites and platform admins can publish any manageable site. Deployed site
+subdomains cannot call these endpoints because the existing sites API apex
+guard rejects them.
+
+The publish flow:
+
+1. Take the per-site mutation lock.
+2. Snapshot current `SiteStorage` files into memory.
+3. Release the lock before making Cloudflare API calls.
+4. Recheck eligibility server-side. Sites are rejected if they contain
+   `_access.json`, root `/spot.js`, Spot SDK/runtime references, same-origin
+   `/api/` usage, Pages Functions or Worker files, `_routes.json`, or files
+   over 25 MiB.
+5. Create only the Spot-owned Pages project name
+   `<SPOT_CLOUDFLARE_PROJECT_PREFIX><site>`. If that project already exists
+   without Spot publication metadata, publishing fails as an unmanaged project
+   conflict.
+6. Use the Wrangler-compatible direct-upload sequence: upload token,
+   missing-hash check, asset upload, hash upsert, and deployment manifest.
+7. Attach `<site>.<SPOT_CLOUDFLARE_BASE_DOMAIN>`.
+8. Create a CNAME to `<project>.pages.dev` only when no conflicting DNS record
+   exists.
+9. Upsert `site_cloudflare_publications` with the latest deployment metadata.
+
+Unpublish removes the matching DNS record, removes the Pages custom domain,
+deletes the Spot-owned Pages project, and deletes the publication row. Spot does
+not use the `CF_API_TOKEN` intended for Caddy DNS-01 TLS. Cloudflare API tokens
+cannot precisely express "only create new subdomains under this base domain",
+so Spot enforces project names, hostname shape, DNS conflict checks, and
+publication ownership in server code.
 
 ## Identity Model
 

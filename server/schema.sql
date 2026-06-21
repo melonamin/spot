@@ -43,3 +43,21 @@ CREATE TABLE IF NOT EXISTS site_deploy_audit (
 
 CREATE INDEX IF NOT EXISTS site_deploy_audit_site_created_idx
     ON site_deploy_audit (site, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS site_cloudflare_publications (
+    site text PRIMARY KEY,
+    project_name text NOT NULL,
+    hostname text NOT NULL,
+    deployment_id text NOT NULL DEFAULT '',
+    deployment_url text NOT NULL DEFAULT '',
+    content_hash text NOT NULL DEFAULT '',
+    file_count integer NOT NULL DEFAULT 0,
+    total_bytes integer NOT NULL DEFAULT 0,
+    status text NOT NULL DEFAULT '',
+    last_error text NOT NULL DEFAULT '',
+    created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+
+CREATE INDEX IF NOT EXISTS site_cloudflare_publications_updated_idx
+    ON site_cloudflare_publications (updated_at DESC);

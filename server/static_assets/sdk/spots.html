@@ -222,6 +222,13 @@
       color: var(--mutedink);
     }
     .sitemeta b { color: var(--ink); }
+    .cfmeta {
+      margin: 10px 0 0;
+      font: 700 11px/1.7 var(--font-mono);
+      color: var(--mutedink);
+    }
+    .cfmeta a { color: var(--accent); text-underline-offset: 3px; }
+    .cfmeta.error { color: var(--bad); }
 
     .actions {
       display: flex;
@@ -846,6 +853,50 @@
         armed = null;
       };
 
+      const cloudflareActionLabel = (site) => {
+        const cf = site.cloudflare || {};
+        if (!cf.publication) return 'Publish to Cloudflare';
+        if (cf.content_hash && cf.publication.content_hash === cf.content_hash) return 'Published';
+        return 'Publish update';
+      };
+
+      const refreshCloudflare = async (site) => {
+        const body = await api('/api/sites/' + encodeURIComponent(site.name) + '/cloudflare');
+        site.cloudflare = body;
+        renderDeploys();
+      };
+
+      const publishCloudflare = async (site, button) => {
+        button.disabled = true;
+        button.textContent = 'Publishing…';
+        try {
+          const body = await api('/api/sites/' + encodeURIComponent(site.name) + '/cloudflare/publish', { method: 'POST' });
+          site.cloudflare = body;
+          renderDeploys();
+          toast('Published to Cloudflare');
+        } catch (err) {
+          toast(err.message);
+          try { await refreshCloudflare(site); } catch {}
+        } finally {
+          button.disabled = false;
+          button.textContent = cloudflareActionLabel(site);
+        }
+      };
+
+      const unpublishCloudflare = async (site, button) => {
+        button.disabled = true;
+        button.textContent = 'Unpublishing…';
+        try {
+          await api('/api/sites/' + encodeURIComponent(site.name) + '/cloudflare', { method: 'DELETE' });
+          await refreshCloudflare(site);
+          toast('Unpublished from Cloudflare');
+        } catch (err) {
+          button.disabled = false;
+          button.textContent = 'Unpublish';
+          toast(err.message);
+        }
+      };
+
       const deleteSite = async (site, row, button) => {
         disarm();
         button.disabled = true;
@@ -915,6 +966,25 @@
           info.append(head, url, meta);
           if ((site.tags || []).length) info.append(tagList(site.tags));
 
+          const cf = site.cloudflare || {};
+          if (cf.enabled) {
+            const cfmeta = document.createElement('p');
+            cfmeta.className = 'cfmeta';
+            if (cf.eligibility && cf.eligibility.eligible === false) {
+              cfmeta.classList.add('error');
+              cfmeta.textContent = 'Cloudflare blocked: ' + (cf.eligibility.reasons || []).slice(0, 2).join('; ');
+            } else if (cf.publication) {
+              const published = cf.content_hash && cf.publication.content_hash === cf.content_hash;
+              const link = document.createElement('a');
+              link.href = 'https://' + cf.hostname + '/';
+              link.target = '_blank';
+              link.rel = 'noopener';
+              link.textContent = cf.hostname;
+              cfmeta.append(published ? 'Cloudflare live: ' : 'Cloudflare needs update: ', link);
+            }
+            if (cfmeta.textContent || cfmeta.childNodes.length) info.append(cfmeta);
+          }
+
           const actions = document.createElement('div');
           actions.className = 'actions';
 
@@ -940,6 +1010,22 @@
           download.textContent = 'Download ZIP';
           download.setAttribute('download', site.name + '.zip');
 
+          const cfPublish = document.createElement('button');
+          cfPublish.type = 'button';
+          cfPublish.className = 'btn';
+          cfPublish.textContent = cloudflareActionLabel(site);
+          cfPublish.disabled = cf.enabled && (
+            (cf.eligibility && cf.eligibility.eligible === false) ||
+            (cf.publication && cf.content_hash && cf.publication.content_hash === cf.content_hash)
+          );
+          cfPublish.addEventListener('click', () => publishCloudflare(site, cfPublish));
+
+          const cfUnpublish = document.createElement('button');
+          cfUnpublish.type = 'button';
+          cfUnpublish.className = 'btn btn-delete';
+          cfUnpublish.textContent = 'Unpublish';
+          cfUnpublish.addEventListener('click', () => unpublishCloudflare(site, cfUnpublish));
+
           const del = document.createElement('button');
           del.type = 'button';
           del.className = 'btn btn-delete';
@@ -960,6 +1046,10 @@
 
           actions.append(open, copy);
           if (site.download_allowed !== false) actions.append(download);
+          if (cf.enabled) {
+            actions.append(cfPublish);
+            if (cf.publication) actions.append(cfUnpublish);
+          }
           actions.append(del);
           row.append(info, actions);
           siteList.appendChild(row);

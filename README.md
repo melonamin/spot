@@ -522,6 +522,11 @@ Important APIs:
 - `POST /api/deploy` deploys a site from the apex only.
 - `GET /api/sites/mine` lists the caller's sites.
 - `GET /api/sites/public` lists unrestricted sites.
+- `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
+  publication status.
+- `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site
+  to Cloudflare Pages.
+- `DELETE /api/sites/{name}/cloudflare` unpublishes it from Cloudflare.
 - `DELETE /api/sites/{name}` deletes a site, its uploads, private docs,
   and registry claim.
 - `GET /api/download` on a site subdomain downloads a source ZIP,
@@ -534,6 +539,75 @@ const mine = await spot.sites.mine();
 const publicSites = await spot.sites.public();
 await spot.sites.delete('old-demo');
 ```
+
+## Optional Cloudflare Pages Publishing
+
+Spot can publish eligible owner-managed sites from `/spots` to Cloudflare
+Pages at:
+
+```text
+https://<site>.<SPOT_CLOUDFLARE_BASE_DOMAIN>/
+```
+
+Spot still serves the internal copy at `<site>.<SPOT_DOMAIN>`. Cloudflare
+publishing is disabled unless all required `SPOT_CLOUDFLARE_*` variables
+are present. A partial Cloudflare config disables the feature, logs the
+missing keys, and reports `config_status: "partial"` from the status API.
+
+Cloudflare publishing rejects sites that depend on Spot runtime behavior:
+`_access.json`, root `/spot.js`, `window.spot`, `spot.`, same-origin
+`/api/` references, Pages Functions files, Workers files, `_routes.json`,
+or any file over 25 MiB.
+
+Configure it:
+
+1. In Cloudflare, choose the account and zone that owns
+   `SPOT_CLOUDFLARE_BASE_DOMAIN`.
+2. Find and record the Account ID, Zone ID, and public base domain, for
+   example `pages.example.com`.
+3. Create a temporary bootstrap token:
+   - For an account-owned token, use Cloudflare dashboard
+     `Manage Account` -> `Account API Tokens` -> `Create Token`.
+   - For a user token, use Cloudflare dashboard
+     `My Profile` -> `API Tokens` -> `Create Token`.
+   - Use the `Create additional tokens` template. Cloudflare documents
+     that this template is required for API token creation via API.
+   - Add a short TTL or IP restriction if practical.
+   - Copy the token once; Cloudflare only shows the secret once.
+4. Run the setup script locally:
+
+   ```sh
+   scripts/setup-cloudflare-pages-token.sh \
+     --bootstrap-token "$CLOUDFLARE_BOOTSTRAP_TOKEN" \
+     --account-id "$CLOUDFLARE_ACCOUNT_ID" \
+     --zone-id "$CLOUDFLARE_ZONE_ID" \
+     --base-domain pages.example.com
+   ```
+
+5. Add the printed env vars to Spot:
+
+   ```env
+   SPOT_CLOUDFLARE_API_TOKEN=...
+   SPOT_CLOUDFLARE_ACCOUNT_ID=...
+   SPOT_CLOUDFLARE_ZONE_ID=...
+   SPOT_CLOUDFLARE_BASE_DOMAIN=pages.example.com
+   SPOT_CLOUDFLARE_PROJECT_PREFIX=spot-
+   ```
+
+6. Restart Spot, open `/spots`, and use `Publish to Cloudflare` on an
+   eligible site. Use `Publish update` after redeploying the Spot site.
+   Use `Unpublish` before deleting the Spot site.
+
+Cloudflare tokens cannot precisely enforce "only new subdomains under this
+base domain". Spot enforces the project prefix, project ownership metadata,
+hostname shape, DNS conflict checks, and delete blocking server-side. The
+existing `CF_API_TOKEN` remains only for Caddy DNS-01 TLS; it is not used by
+Spot's Cloudflare Pages publisher.
+
+Cloudflare references: [create API tokens](https://developers.cloudflare.com/fundamentals/api/get-started/create-token/),
+[create tokens via API](https://developers.cloudflare.com/fundamentals/api/how-to/create-via-api/),
+[account-owned tokens](https://developers.cloudflare.com/fundamentals/api/get-started/account-owned-tokens/),
+and [Pages REST API](https://developers.cloudflare.com/pages/configuration/api/).
 
 ## Files, Text AI, Image Generation, and Slack
 

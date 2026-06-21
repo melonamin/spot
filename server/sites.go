@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"net"
 	"net/http"
@@ -37,6 +38,7 @@ type ownedSiteJSON struct {
 	TotalBytes      int64     `json:"total_bytes"`
 	Restricted      bool      `json:"restricted"`
 	AllowCount      int       `json:"allow_count"`
+	Cloudflare      any       `json:"cloudflare,omitempty"`
 }
 
 type publicSiteJSON struct {
@@ -144,6 +146,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			TotalBytes:      site.TotalBytes,
 			Restricted:      restricted,
 			AllowCount:      allowCount,
+			Cloudflare:      s.cloudflareSummaryForSite(r.Context(), site.Name),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
@@ -455,6 +458,15 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	// so the owner can retry instead of freeing a partially purged name.
 	removedFiles := 0
 	purge := func(ctx context.Context) error {
+		if s.cloudflarePubs != nil {
+			published, err := s.cloudflarePubs.Has(ctx, site)
+			if err != nil {
+				return fmt.Errorf("check cloudflare publication: %w", err)
+			}
+			if published {
+				return errCloudflarePublicationExists
+			}
+		}
 		paths, err := s.sites.List(ctx, site)
 		if err != nil {
 			return err
@@ -488,6 +500,8 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 			Message: "actor is not the site owner or a platform admin",
 		})
 		httpError(w, http.StatusForbidden, "only the site owner or a platform admin can delete this site")
+	case errors.Is(err, errCloudflarePublicationExists):
+		httpError(w, http.StatusConflict, "unpublish this site from Cloudflare before deleting it")
 	case err != nil:
 		log.Printf("delete site %s: %v", site, err)
 		s.recordDeployAudit(r, DeployAuditEvent{
@@ -516,4 +530,158 @@ func ownerDisplay(site SiteRecord) string {
 		return site.OwnerEmail
 	}
 	return site.OwnerPeerIP
+}
+
+type cloudflareStatusJSON struct {
+	ConfigStatus string                 `json:"config_status"`
+	Enabled      bool                   `json:"enabled"`
+	Site         string                 `json:"site,omitempty"`
+	Hostname     string                 `json:"hostname,omitempty"`
+	ContentHash  string                 `json:"content_hash,omitempty"`
+	Publication  *cloudflarePublication `json:"publication,omitempty"`
+	Eligibility  *cloudflareEligibility `json:"eligibility,omitempty"`
+}
+
+func (s *Server) cloudflareSummaryForSite(ctx context.Context, site string) any {
+	status := cloudflareConfigDisabled
+	enabled := false
+	hostname := ""
+	if s.cloudflare != nil {
+		status = s.cloudflare.status()
+		enabled = s.cloudflare.cfg.Enabled()
+		hostname = s.cloudflare.cfg.Hostname(site)
+	}
+	out := cloudflareStatusJSON{
+		ConfigStatus: status,
+		Enabled:      enabled,
+		Site:         site,
+		Hostname:     hostname,
+	}
+	if s.cloudflarePubs != nil {
+		pub, err := s.cloudflarePubs.Get(ctx, site)
+		if err == nil {
+			out.Publication = pub
+		}
+	}
+	if !enabled || s.sites == nil {
+		return out
+	}
+	snap, err := s.snapshotCloudflareSite(ctx, site)
+	if err == nil {
+		eligibility := checkCloudflareEligibility(snap)
+		out.ContentHash = snap.ContentHash
+		out.Eligibility = &eligibility
+	}
+	return out
+}
+
+func (s *Server) requireCloudflareSite(w http.ResponseWriter, r *http.Request) (string, Identity, bool) {
+	if !s.requireSitesAPI(w, r) {
+		return "", Identity{}, false
+	}
+	if s.siteManager == nil {
+		httpError(w, http.StatusServiceUnavailable, "site manager not configured")
+		return "", Identity{}, false
+	}
+	site := r.PathValue("name")
+	if !siteNameRe.MatchString(site) {
+		httpError(w, http.StatusBadRequest, "invalid site name")
+		return "", Identity{}, false
+	}
+	actor, ok := s.requireDeployIdentity(w, r)
+	if !ok {
+		return "", Identity{}, false
+	}
+	allowed, err := s.siteManager.CanManageSite(r.Context(), site, actor)
+	switch {
+	case errors.Is(err, ErrSiteNotFound):
+		httpError(w, http.StatusNotFound, "no site named "+site)
+		return "", Identity{}, false
+	case err != nil:
+		log.Printf("cloudflare %s: authorize: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not authorize Cloudflare action")
+		return "", Identity{}, false
+	case !allowed:
+		httpError(w, http.StatusForbidden, "only the site owner or a platform admin can manage this Cloudflare publication")
+		return "", Identity{}, false
+	}
+	return site, actor, true
+}
+
+func (s *Server) handleCloudflareStatus(w http.ResponseWriter, r *http.Request) {
+	site, _, ok := s.requireCloudflareSite(w, r)
+	if !ok {
+		return
+	}
+	out := s.cloudflareSummaryForSite(r.Context(), site)
+	writeJSON(w, http.StatusOK, out)
+}
+
+func (s *Server) handleCloudflarePublish(w http.ResponseWriter, r *http.Request) {
+	site, _, ok := s.requireCloudflareSite(w, r)
+	if !ok {
+		return
+	}
+	if s.cloudflare == nil || !s.cloudflare.cfg.Enabled() {
+		httpError(w, http.StatusServiceUnavailable, "Cloudflare publishing is not configured")
+		return
+	}
+	if s.sites == nil {
+		httpError(w, http.StatusServiceUnavailable, "site store not configured")
+		return
+	}
+
+	siteLock := s.siteMutationLock(site)
+	siteLock.Lock()
+	snap, err := s.snapshotCloudflareSite(r.Context(), site)
+	siteLock.Unlock()
+	if err != nil {
+		log.Printf("cloudflare publish %s: snapshot: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not read the site's current files")
+		return
+	}
+	eligibility := checkCloudflareEligibility(snap)
+	if !eligibility.Eligible {
+		writeJSON(w, http.StatusBadRequest, map[string]any{
+			"error":       "site is not eligible for Cloudflare Pages publishing",
+			"eligibility": eligibility,
+		})
+		return
+	}
+	pub, err := s.cloudflare.publish(r.Context(), site, snap)
+	if err != nil {
+		log.Printf("cloudflare publish %s: %v", site, err)
+		httpError(w, http.StatusBadGateway, "could not publish to Cloudflare: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, cloudflareStatusJSON{
+		ConfigStatus: s.cloudflare.status(),
+		Enabled:      true,
+		Site:         site,
+		Hostname:     s.cloudflare.cfg.Hostname(site),
+		ContentHash:  snap.ContentHash,
+		Publication:  &pub,
+		Eligibility:  &eligibility,
+	})
+}
+
+func (s *Server) handleCloudflareUnpublish(w http.ResponseWriter, r *http.Request) {
+	site, _, ok := s.requireCloudflareSite(w, r)
+	if !ok {
+		return
+	}
+	if s.cloudflare == nil || !s.cloudflare.cfg.Enabled() {
+		httpError(w, http.StatusServiceUnavailable, "Cloudflare publishing is not configured")
+		return
+	}
+	if err := s.cloudflare.unpublish(r.Context(), site); err != nil {
+		if errors.Is(err, ErrSiteNotFound) {
+			httpError(w, http.StatusNotFound, "this site is not published to Cloudflare")
+			return
+		}
+		log.Printf("cloudflare unpublish %s: %v", site, err)
+		httpError(w, http.StatusBadGateway, "could not unpublish from Cloudflare: "+err.Error())
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"site": site, "unpublished": true})
 }

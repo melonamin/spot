@@ -62,6 +62,7 @@ type config struct {
 	SingleUserEmail      string
 	SingleUserName       string
 	SingleUserGroups     []string
+	Cloudflare           cloudflareConfig
 }
 
 const (
@@ -135,6 +136,7 @@ func defaultConfigFromEnv() config {
 		SingleUserEmail:   envOr("SPOT_SINGLE_USER_EMAIL", "owner@spot.local"),
 		SingleUserName:    envOr("SPOT_SINGLE_USER_NAME", "Spot Owner"),
 		SingleUserGroups:  splitList(os.Getenv("SPOT_SINGLE_USER_GROUPS")),
+		Cloudflare:        loadCloudflareConfigFromEnv(),
 	}
 }
 
@@ -364,6 +366,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	logCloudflareConfig(cfg.Cloudflare)
 
 	var db *sql.DB
 	db, err = openSQLiteDB(ctx, cfg.SQLitePath)
@@ -457,6 +460,17 @@ func main() {
 	}
 
 	registry := NewSiteRegistry(db, adminPolicy)
+	cloudflarePubs := NewCloudflarePublicationStore(db)
+	var cloudflarePublisher *CloudflarePublisher
+	if cfg.Cloudflare.Enabled() {
+		cloudflarePublisher = &CloudflarePublisher{
+			cfg:    cfg.Cloudflare,
+			repo:   cloudflarePubs,
+			client: NewCloudflareClient(cfg.Cloudflare.APIToken),
+		}
+	} else {
+		cloudflarePublisher = &CloudflarePublisher{cfg: cfg.Cloudflare, repo: cloudflarePubs}
+	}
 	var policies *PolicyStore
 	if cfg.StorageMode == storageModeLocal {
 		policies = NewPolicyStore(cfg.SitesDir, 5*time.Second)
@@ -472,6 +486,8 @@ func main() {
 		deployAuth:     registry,
 		siteAdmin:      registry,
 		siteManager:    registry,
+		cloudflare:     cloudflarePublisher,
+		cloudflarePubs: cloudflarePubs,
 		ai:             ai,
 		aiAccess:       cfg.AIAccess,
 		slack:          slack,
