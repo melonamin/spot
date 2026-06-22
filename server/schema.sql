@@ -19,6 +19,9 @@ CREATE TABLE IF NOT EXISTS sites (
     owner_email text NOT NULL DEFAULT '',
     owner_peer_ip text NOT NULL DEFAULT '',
     owner_name text NOT NULL DEFAULT '',
+    title text NOT NULL DEFAULT '',
+    description text NOT NULL DEFAULT '',
+    tags text NOT NULL DEFAULT '[]',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );

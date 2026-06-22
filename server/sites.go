@@ -26,6 +26,9 @@ type SiteManager interface {
 type ownedSiteJSON struct {
 	Name            string    `json:"name"`
 	URL             string    `json:"url"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	Tags            []string  `json:"tags"`
 	DownloadAllowed bool      `json:"download_allowed"`
 	CreatedAt       time.Time `json:"created_at"`
 	UpdatedAt       time.Time `json:"updated_at"`
@@ -38,6 +41,9 @@ type ownedSiteJSON struct {
 type publicSiteJSON struct {
 	Name            string    `json:"name"`
 	URL             string    `json:"url"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	Tags            []string  `json:"tags"`
 	DownloadAllowed bool      `json:"download_allowed"`
 	Owner           string    `json:"owner"`
 	Yours           bool      `json:"yours"`
@@ -82,6 +88,9 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 		out = append(out, ownedSiteJSON{
 			Name:            site.Name,
 			URL:             s.siteURL(r, site.Name),
+			Title:           site.Title,
+			Description:     site.Description,
+			Tags:            cloneSiteTags(site.Tags),
 			DownloadAllowed: downloadAllowed,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
@@ -125,6 +134,9 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 		out = append(out, publicSiteJSON{
 			Name:            site.Name,
 			URL:             s.siteURL(r, site.Name),
+			Title:           site.Title,
+			Description:     site.Description,
+			Tags:            cloneSiteTags(site.Tags),
 			DownloadAllowed: downloadAllowed,
 			Owner:           ownerDisplay(site),
 			Yours:           site.OwnedBy(viewer),

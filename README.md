@@ -419,6 +419,21 @@ Sites can disable source downloads without becoming private:
 { "download": false }
 ```
 
+Sites can also describe themselves for `/gallery` with `_spot.json`:
+
+```json
+{
+  "title": "Sketch Pad",
+  "description": "Draw quick ideas in the browser.",
+  "tags": ["creative", "drawing", "tool"]
+}
+```
+
+Tags are optional, normalized to lowercase chips, and searchable/filterable in
+Gallery. If tags are omitted and the server AI proxy is configured, Spot may
+suggest tags from the public site's title, description, headings, and filenames.
+Restricted sites are not auto-tagged.
+
 ## Platform Pages
 
 - `/` is the browser deployer.

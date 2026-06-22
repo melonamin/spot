@@ -280,15 +280,17 @@ refill_deploy_budget() { sleep 4; }
 refill_deploy_budget
 echo "==> web deploy: multipart deploy through the apex /api/deploy"
 webdir=$(mktemp -d)
-printf '<h1>spot web deploy</h1>' > "$webdir/index.html"
+printf '<title>Web Deploy</title><meta name="description" content="Browser deploy smoke test"><h1>spot web deploy</h1>' > "$webdir/index.html"
 printf 'p{color:red}' > "$webdir/app.css"
+printf '{"title":"Web Deploy","description":"Browser deploy smoke test","tags":["tools","e2e"]}' > "$webdir/_spot.json"
 # Filenames carry site-relative paths, wrapped in a folder like a
 # browser folder pick — the API must strip the wrapping.
 deployed=$($CURL -F 'site=webdeploy' \
     -F "files=@$webdir/index.html;filename=site/index.html" \
     -F "files=@$webdir/app.css;filename=site/css/app.css" \
+    -F "files=@$webdir/_spot.json;filename=site/_spot.json" \
     http://spot.localhost:8080/api/deploy)
-echo "$deployed" | grep -q '"files":2' || fail "web deploy failed: $deployed"
+echo "$deployed" | grep -q '"files":3' || fail "web deploy failed: $deployed"
 echo "$deployed" | grep -q '"url":"http://webdeploy.spot.localhost:8080/"' \
     || fail "web deploy returned wrong live URL: $deployed"
 ok=""
@@ -304,6 +306,10 @@ done
 css=$(curl -s --resolve webdeploy.spot.localhost:8080:127.0.0.1 \
     http://webdeploy.spot.localhost:8080/css/app.css)
 [ "$css" = "p{color:red}" ] || fail "nested file not served: $css"
+public=$($CURL http://spot.localhost:8080/api/sites/public)
+echo "$public" | grep -q '"name":"webdeploy"' || fail "gallery metadata missing webdeploy: $public"
+echo "$public" | grep -q '"title":"Web Deploy"' || fail "gallery metadata missing title: $public"
+echo "$public" | grep -q '"tags":\["tools","e2e"\]' || fail "gallery metadata missing tags: $public"
 echo "    web-deployed site is live"
 
 refill_deploy_budget

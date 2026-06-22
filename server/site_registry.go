@@ -39,11 +39,18 @@ type SiteRegistry struct {
 	admins *AccessPolicy
 }
 
+type siteMetadataUpdater interface {
+	UpdateSiteMetadata(ctx context.Context, site string, meta SiteMetadata) error
+}
+
 type SiteRecord struct {
 	Name        string
 	OwnerEmail  string
 	OwnerPeerIP string
 	OwnerName   string
+	Title       string
+	Description string
+	Tags        []string
 	CreatedAt   time.Time
 	UpdatedAt   time.Time
 }
@@ -109,8 +116,7 @@ func (r *SiteRegistry) DeleteClaim(ctx context.Context, site string) error {
 
 func (r *SiteRegistry) readSiteForUpdate(ctx context.Context, tx *sql.Tx, site string) (SiteRecord, error) {
 	var record SiteRecord
-	err := tx.QueryRowContext(ctx, readSiteSQL, site).
-		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	err := scanSiteRecord(tx.QueryRowContext(ctx, readSiteSQL, site), &record)
 	return record, err
 }
 
@@ -161,10 +167,13 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 	var owned []OwnedSite
 	for rows.Next() {
 		var site OwnedSite
+		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
-			&site.CreatedAt, &site.UpdatedAt, &site.FileCount, &site.TotalBytes); err != nil {
+			&site.Title, &site.Description, &rawTags, &site.CreatedAt, &site.UpdatedAt,
+			&site.FileCount, &site.TotalBytes); err != nil {
 			return nil, fmt.Errorf("scan owned site: %w", err)
 		}
+		site.Tags = decodeSiteTags(rawTags)
 		owned = append(owned, site)
 	}
 	if err := rows.Err(); err != nil {
@@ -177,7 +186,7 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 // Callers filter out restricted sites before showing the list.
 func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+		`SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, created_at, updated_at
 		 FROM sites
 		 ORDER BY updated_at DESC`)
 	if err != nil {
@@ -188,8 +197,7 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	var sites []SiteRecord
 	for rows.Next() {
 		var site SiteRecord
-		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
-			&site.CreatedAt, &site.UpdatedAt); err != nil {
+		if err := scanSiteRecord(rows, &site); err != nil {
 			return nil, fmt.Errorf("scan site: %w", err)
 		}
 		sites = append(sites, site)
@@ -202,8 +210,7 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 
 func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Identity) (bool, error) {
 	var record SiteRecord
-	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
-		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, ErrSiteNotFound
 	}
@@ -217,8 +224,7 @@ func (r *SiteRegistry) CanManageSite(ctx context.Context, site string, actor Ide
 // failed purge leaves the site claimed so its owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) error {
 	var record SiteRecord
-	err := r.db.QueryRowContext(ctx, readSiteSQL, site).
-		Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.CreatedAt, &record.UpdatedAt)
+	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)
 	if errors.Is(err, sql.ErrNoRows) {
 		return ErrSiteNotFound
 	}
@@ -239,13 +245,40 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 	return nil
 }
 
+func (r *SiteRegistry) UpdateSiteMetadata(ctx context.Context, site string, meta SiteMetadata) error {
+	res, err := r.db.ExecContext(ctx, updateSiteMetadataSQL,
+		meta.Title, meta.Description, encodeSiteTags(meta.Tags), site)
+	if err != nil {
+		return fmt.Errorf("update site metadata for %s: %w", site, err)
+	}
+	rows, err := res.RowsAffected()
+	if err == nil && rows == 0 {
+		return ErrSiteNotFound
+	}
+	return nil
+}
+
+type siteRecordScanner interface {
+	Scan(dest ...any) error
+}
+
+func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
+	var rawTags string
+	if err := row.Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName,
+		&record.Title, &record.Description, &rawTags, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		return err
+	}
+	record.Tags = decodeSiteTags(rawTags)
+	return nil
+}
+
 const (
 	insertSiteSQL = `INSERT INTO sites (name, owner_email, owner_peer_ip, owner_name)
 		VALUES (?, ?, ?, ?)`
 
 	touchSiteSQL = `UPDATE sites SET updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now') WHERE name = ?`
 
-	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, created_at, updated_at
+	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, created_at, updated_at
 		FROM sites
 		WHERE name = ?`
 
@@ -255,7 +288,7 @@ const (
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
-			s.created_at, s.updated_at,
+			s.title, s.description, s.tags, s.created_at, s.updated_at,
 			COALESCE((SELECT file_count FROM site_deploy_audit
 				WHERE site = s.name AND status = 'success'
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
@@ -268,6 +301,8 @@ const (
 		ORDER BY s.updated_at DESC`
 
 	deleteSiteSQL = `DELETE FROM sites WHERE name = ?`
+
+	updateSiteMetadataSQL = `UPDATE sites SET title = ?, description = ?, tags = ? WHERE name = ?`
 )
 
 func (r SiteRecord) OwnedBy(actor Identity) bool {

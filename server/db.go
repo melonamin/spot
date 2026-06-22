@@ -53,6 +53,18 @@ func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE documents ADD COLUMN owner text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "sites", "title",
+		`ALTER TABLE sites ADD COLUMN title text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "sites", "description",
+		`ALTER TABLE sites ADD COLUMN description text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "sites", "tags",
+		`ALTER TABLE sites ADD COLUMN tags text NOT NULL DEFAULT '[]'`); err != nil {
+		return err
+	}
 	// documents_scope_collection_cursor_idx (scope, collection, created_at DESC,
 	// id DESC) serves every lookup the older 3-column documents_scope_collection_idx
 	// did, so the latter is redundant write amplification. Drop it on existing

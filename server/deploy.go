@@ -206,6 +206,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
+	metadata, err := metadataForDeploy(site, files)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	restricted := deployRestrictsAccess(site, files)
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
@@ -294,6 +300,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		FileCount:  len(files),
 		TotalBytes: totalDeployBytes(files),
 	})
+	if updater, ok := s.deployAuth.(siteMetadataUpdater); ok {
+		completed := s.completeSiteMetadata(r.Context(), site, files, metadata, restricted)
+		if err := updater.UpdateSiteMetadata(r.Context(), site, completed); err != nil {
+			log.Printf("deploy %s: update site metadata: %v", site, err)
+		}
+	}
 	s.updatePolicyCacheFromDeploy(site, files)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,
