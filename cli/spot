@@ -442,6 +442,32 @@ work) at the site root and the gallery uses it; without one the site
 falls back to a generated placeholder. After building a site, capture it
 at a desktop size (about 1280x800) and include the image in the deploy.
 
+## Gallery metadata
+
+For public sites, ship \`_spot.json\` at the site root so the gallery can
+show useful copy and filters. Write it by hand as part of the site, next
+to \`index.html\`:
+
+\`\`\`json
+{
+  "title": "Sketch Pad",
+  "description": "Draw quick ideas in the browser.",
+  "tags": ["creative", "drawing", "tool"]
+}
+\`\`\`
+
+Use a short human title, one sentence of description, and 3-5 tags. Tags
+should be lowercase, generic, and useful for filtering: \`ai\`, \`games\`,
+\`tools\`, \`dashboard\`, \`education\`, \`personal\`, \`music\`,
+\`creative\`, \`work\`, \`finance\`, etc. Use hyphens for multi-word tags
+and avoid names, emails, team secrets, or overly specific project labels.
+
+If \`tags\` is omitted and the deployment has AI configured, Spot may
+suggest tags for public sites from the title, description, headings, and
+filenames. Prefer explicit tags when you know the intent. Restricted
+sites are not auto-tagged; still avoid putting private information in
+\`_spot.json\` because permitted visitors can download deployed source.
+
 ## Source downloads
 
 Every site exposes its deployed source as a ZIP at \`/api/download\` on
