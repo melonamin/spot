@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Browser SDK and server proxy support for `spot.slack.send`, backed by a server-side Slack bot token and per-site visitor opt-in.
 - Forward-auth identity support for deployments behind an authenticating reverse proxy. (#7)
+- Gallery metadata support via `_spot.json`, HTML title/description extraction, public site tag chips, and tag-aware gallery search/filtering.
+- Optional AI tag suggestions for public sites that do not provide explicit gallery tags.
+
+### Fixed
+
+- Hardened deploys that add, remove, or broaden `_access.json` policies so metadata and policy caches remain fail-closed if storage updates fail.
+- Fixed gallery title sorting and source-download controls for titled sites and touch devices.
 
 ## [0.2.0] - 2026-06-15
 

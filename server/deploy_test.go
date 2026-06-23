@@ -259,6 +259,34 @@ func (f failingSiteStore) Open(context.Context, string, string) (io.ReadCloser, 
 }
 func (f failingSiteStore) Remove(context.Context, string, string) error { return io.ErrUnexpectedEOF }
 
+type failAfterPutSiteStore struct {
+	SiteStorage
+	maxPuts int
+	puts    int
+}
+
+func (s *failAfterPutSiteStore) Put(ctx context.Context, site, path, contentType string, data []byte) error {
+	s.puts++
+	if s.puts > s.maxPuts {
+		return io.ErrUnexpectedEOF
+	}
+	return s.SiteStorage.Put(ctx, site, path, contentType, data)
+}
+
+type failAfterRemoveSiteStore struct {
+	SiteStorage
+	maxRemoves int
+	removes    int
+}
+
+func (s *failAfterRemoveSiteStore) Remove(ctx context.Context, site, path string) error {
+	s.removes++
+	if s.removes > s.maxRemoves {
+		return io.ErrUnexpectedEOF
+	}
+	return s.SiteStorage.Remove(ctx, site, path)
+}
+
 type failingFileStore struct{}
 
 func (f failingFileStore) Put(context.Context, string, string, string, io.Reader, int64) (StoredFile, error) {
@@ -277,6 +305,15 @@ func (f failingFileStore) RemoveSite(context.Context, string) error { return io.
 
 func deployRequest(t *testing.T, host, site string, files map[string]string) *http.Request {
 	t.Helper()
+	var ordered [][2]string
+	for path, content := range files {
+		ordered = append(ordered, [2]string{path, content})
+	}
+	return deployRequestOrdered(t, host, site, ordered)
+}
+
+func deployRequestOrdered(t *testing.T, host, site string, files [][2]string) *http.Request {
+	t.Helper()
 	var form bytes.Buffer
 	writer := multipart.NewWriter(&form)
 	if site != "" {
@@ -284,7 +321,8 @@ func deployRequest(t *testing.T, host, site string, files map[string]string) *ht
 			t.Fatal(err)
 		}
 	}
-	for path, content := range files {
+	for _, file := range files {
+		path, content := file[0], file[1]
 		header := make(textproto.MIMEHeader)
 		header.Set("Content-Disposition", `form-data; name="files"; filename="`+path+`"`)
 		part, err := writer.CreatePart(header)
@@ -349,6 +387,11 @@ func TestDeployValidation(t *testing.T) {
 		map[string]string{"index.html": "<h1>hi</h1>", accessFileName: `{not json`})); code != http.StatusBadRequest ||
 		!strings.Contains(body, accessFileName) {
 		t.Errorf("broken %s = %d %s, want 400 %s", accessFileName, code, body, accessFileName)
+	}
+	if code, body := call(deployRequest(t, "spot.localhost", "demo",
+		map[string]string{"index.html": "<h1>hi</h1>", accessFileName + "/policy.json": `{}`})); code != http.StatusBadRequest ||
+		!strings.Contains(body, accessFileName) {
+		t.Errorf("nested %s = %d %s, want 400 %s", accessFileName, code, body, accessFileName)
 	}
 
 	plain := httptest.NewRequest(http.MethodPost, "http://spot-api/api/deploy",
@@ -445,6 +488,291 @@ func TestDeployStorageFailureIsAudited(t *testing.T) {
 	}
 }
 
+func TestDeployStorageFailureInvalidatesPolicyCache(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "create"}
+	srv := &Server{
+		sites:          &failAfterPutSiteStore{SiteStorage: sites, maxPuts: 2},
+		policies:       NewPolicyStore(filepath.Join(root, "sites"), time.Hour),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	req := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>secret</h1>"},
+		{accessFileName, `{"allow":["alice@example.com"]}`},
+		{"later.txt", "this write fails"},
+	})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("deploy with partial restricted write = %d, want 500", rec.Code)
+	}
+	policy, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.RestrictsAccess() {
+		t.Fatalf("policy after failed restricted deploy = %#v, want restricted from stored %s", policy, accessFileName)
+	}
+}
+
+func TestRestrictedCreateCachesIncomingPolicyBeforeWrites(t *testing.T) {
+	store := NewPolicyStore(t.TempDir(), time.Hour)
+	srv := &Server{policies: store}
+	policy, err := parseAccessPolicy("secret", []byte(`{"allow":["alice@example.com"],"ai":"visitors","slack":"visitors"}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.cacheIncomingPolicyForCreate("secret", policy, true, nil)
+
+	got, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got == nil || !got.RestrictsAccess() || !got.Allows(Identity{Email: "alice@example.com"}) {
+		t.Fatalf("cached create policy = %#v, want restricted incoming policy", got)
+	}
+	if got.AllowsAIVisitors() || got.AllowsSlackVisitors() {
+		t.Fatalf("cached create policy = %#v; want visitor AI and Slack held closed", got)
+	}
+}
+
+func TestFailedRestrictedCreateKeepsIncomingPolicyWhenAccessWriteFails(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "create"}
+	srv := &Server{
+		sites:          &failAfterPutSiteStore{SiteStorage: sites, maxPuts: 1},
+		policies:       NewPolicyStore(filepath.Join(root, "sites"), time.Hour),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	req := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>secret</h1>"},
+		{accessFileName, `{"allow":["alice@example.com"],"ai":"visitors","slack":"visitors"}`},
+	})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("deploy with failed access write = %d, want 500", rec.Code)
+	}
+	policy, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.RestrictsAccess() || !policy.Allows(Identity{Email: "alice@example.com"}) {
+		t.Fatalf("policy after failed access write = %#v, want cached incoming restricted policy", policy)
+	}
+	if policy.AllowsAIVisitors() || policy.AllowsSlackVisitors() {
+		t.Fatalf("policy after failed access write = %#v; want visitor AI and Slack held closed", policy)
+	}
+}
+
+func TestRestrictedCreateWithoutPolicyCacheWritesAccessBeforeContent(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "create"}
+	srv := &Server{
+		sites:          &failAfterPutSiteStore{SiteStorage: sites, maxPuts: 1},
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	req := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>secret</h1>"},
+		{accessFileName, `{"allow":["alice@example.com"]}`},
+	})
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("deploy with failed content write = %d, want 500", rec.Code)
+	}
+	policy, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.RestrictsAccess() || !policy.Allows(Identity{Email: "alice@example.com"}) {
+		t.Fatalf("policy after failed no-cache create = %#v, want stored incoming restricted policy", policy)
+	}
+}
+
+func TestFailedPublicRedeployKeepsRestrictedPolicyCache(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "update"}
+	srv := &Server{
+		sites:          sites,
+		policies:       NewPolicyStore(filepath.Join(root, "sites"), time.Hour),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	first := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>secret</h1>"},
+		{accessFileName, `{"allow":["alice@example.com"]}`},
+		{"old.txt", "stale"},
+	})
+	first.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, first)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial restricted deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	srv.sites = &failAfterRemoveSiteStore{SiteStorage: sites, maxRemoves: 1}
+	second := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>public attempt</h1>"},
+	})
+	second.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, second)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed public redeploy = %d, want 500", rec.Code)
+	}
+
+	policy, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.RestrictsAccess() {
+		t.Fatalf("policy after failed public redeploy = %#v, want cached restricted policy", policy)
+	}
+}
+
+func TestFailedVisitorProxyRedeployKeepsPreviousOpenPolicyCache(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "update"}
+	srv := &Server{
+		sites:          sites,
+		policies:       NewPolicyStore(filepath.Join(root, "sites"), time.Hour),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	first := deployRequestOrdered(t, "spot.localhost", "open", [][2]string{
+		{"index.html", "<h1>open</h1>"},
+	})
+	first.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, first)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial public deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	srv.sites = &failAfterPutSiteStore{SiteStorage: sites, maxPuts: 2}
+	second := deployRequestOrdered(t, "spot.localhost", "open", [][2]string{
+		{"index.html", "<h1>visitor proxy attempt</h1>"},
+		{accessFileName, `{"ai":"visitors","slack":"visitors"}`},
+		{"later.txt", "this write fails"},
+	})
+	second.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, second)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed visitor proxy redeploy = %d, want 500", rec.Code)
+	}
+
+	policy, err := srv.policyForSite(context.Background(), "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy != nil {
+		t.Fatalf("policy after failed visitor proxy redeploy = %#v, want previous open policy", policy)
+	}
+}
+
+func TestFailedBroaderRedeployKeepsPreviousPolicyCache(t *testing.T) {
+	root := t.TempDir()
+	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	auth := &recordingDeployAuth{action: "update"}
+	srv := &Server{
+		sites:          sites,
+		policies:       NewPolicyStore(filepath.Join(root, "sites"), time.Hour),
+		deployAuth:     auth,
+		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	first := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>secret</h1>"},
+		{accessFileName, `{"allow":["alice@example.com"]}`},
+	})
+	first.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, first)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial restricted deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	srv.sites = &failAfterPutSiteStore{SiteStorage: sites, maxPuts: 2}
+	second := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>broader attempt</h1>"},
+		{accessFileName, `{"allow":["alice@example.com","bob@example.com"]}`},
+		{"later.txt", "this write fails"},
+	})
+	second.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, second)
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("failed broader redeploy = %d, want 500", rec.Code)
+	}
+
+	policy, err := srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.Allows(Identity{Email: "bob@example.com"}) {
+		t.Fatalf("policy after failed broader redeploy = %#v, want previous alice-only policy", policy)
+	}
+	srv.policies.Invalidate("secret")
+	policy, err = srv.policyForSite(context.Background(), "secret")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if policy == nil || !policy.Allows(Identity{Email: "alice@example.com"}) || policy.Allows(Identity{Email: "bob@example.com"}) {
+		t.Fatalf("stored policy after failed broader redeploy = %#v, want previous alice-only policy", policy)
+	}
+}
+
 func TestDeployHandlesLocalPathShapeConflicts(t *testing.T) {
 	root := t.TempDir()
 	sites, err := NewLocalSiteStore(filepath.Join(root, "sites"))
@@ -489,21 +817,21 @@ func TestDeployHandlesLocalPathShapeConflicts(t *testing.T) {
 
 func TestUpdatePolicyCacheFromDeploy(t *testing.T) {
 	dir := t.TempDir()
-	writeSiteFile(t, dir, "demo", accessFileName, `{"allow":["alice@example.com"],"ai":"visitors"}`)
+	writeSiteFile(t, dir, "demo", accessFileName, `{"allow":["alice@example.com"],"ai":"visitors","slack":"visitors"}`)
 	store := NewPolicyStore(dir, time.Hour)
 	srv := &Server{policies: store}
 
 	store.Set("demo", nil, nil)
 	srv.updatePolicyCacheFromDeploy("demo", []deployFile{
 		{path: "index.html", data: []byte("<h1>hi</h1>")},
-		{path: accessFileName, data: []byte(`{"allow":["alice@example.com"],"ai":"visitors"}`)},
+		{path: accessFileName, data: []byte(`{"allow":["alice@example.com"],"ai":"visitors","slack":"visitors"}`)},
 	})
 	policy, err := store.For("demo")
 	if err != nil || policy == nil {
 		t.Fatalf("cached policy = %v, %v; want policy", policy, err)
 	}
-	if !policy.Allows(Identity{Email: "alice@example.com"}) || policy.AllowsAIVisitors() {
-		t.Fatalf("cached policy = %+v; want alice without early AI visitor opt-in", policy)
+	if !policy.Allows(Identity{Email: "alice@example.com"}) || policy.AllowsAIVisitors() || policy.AllowsSlackVisitors() {
+		t.Fatalf("cached policy = %+v; want alice without early visitor proxy opt-ins", policy)
 	}
 
 	store.Set("demo", nil, nil)

@@ -175,6 +175,10 @@ declare namespace SpotSDK {
 
   interface SiteInfo {
     name: string;
+    url?: string;
+    title?: string;
+    description?: string;
+    tags?: string[];
     [key: string]: unknown;
   }
 

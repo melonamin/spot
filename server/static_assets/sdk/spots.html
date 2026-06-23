@@ -298,6 +298,36 @@
     }
     #search::placeholder { color: var(--mutedink); opacity: .7; }
 
+    .tagbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 11px;
+      margin: -14px 0 34px;
+    }
+    .tagfilter,
+    .tag {
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 7px 10px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .tagfilter {
+      cursor: pointer;
+      box-shadow: 3px 4px 0 var(--ink);
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease;
+    }
+    .tagfilter:hover,
+    .tagfilter.active {
+      transform: translate(-1px, -1px);
+      box-shadow: 4px 5px 0 var(--ink);
+      background: var(--ink);
+      color: #fff;
+    }
+
     .sortbox { position: relative; }
     #sort {
       appearance: none;
@@ -329,6 +359,7 @@
     }
 
     .tile {
+      position: relative;
       display: block;
       background: var(--card);
       border: 3px solid var(--ink);
@@ -381,10 +412,11 @@
     .preview.ready .shot { opacity: 1; }
     .preview.ready .glyph { opacity: 0; }
 
-    .visit {
+    .visit,
+    .download-float {
       position: absolute;
       z-index: 2;
-      top: 11px; right: 11px;
+      top: 11px;
       border: 2px solid var(--ink);
       border-radius: 999px;
       background: var(--paper);
@@ -392,11 +424,26 @@
       font: 700 10px/1 var(--font-mono);
       letter-spacing: .12em;
       text-transform: uppercase;
+      text-decoration: none;
+      color: var(--ink);
       opacity: 0;
+      pointer-events: none;
       transform: translateY(-4px);
-      transition: opacity .15s ease, transform .15s ease;
+      transition: opacity .15s ease, transform .15s ease, background .12s ease, color .12s ease;
     }
-    .tile:hover .visit, .tile:focus-within .visit { opacity: 1; transform: none; }
+    .visit { right: 11px; }
+    .download-float { left: 11px; }
+    .download-float:hover,
+    .download-float:focus-visible,
+    .tile-link:hover .visit,
+    .tile-link:focus-visible .visit { background: var(--ink); color: #fff; }
+    .tile:hover .visit,
+    .tile:hover .download-float,
+    .tile:focus-within .visit,
+    .tile:focus-within .download-float { opacity: 1; pointer-events: auto; transform: none; }
+    @media (hover: none), (pointer: coarse) {
+      .download-float { opacity: 1; pointer-events: auto; transform: none; }
+    }
 
     .tinfo { padding: 15px 17px 17px; }
     .tname {
@@ -424,25 +471,25 @@
       text-transform: uppercase;
       color: var(--mutedink);
     }
-    .tactions {
-      display: flex;
-      gap: 10px;
-      border-top: 3px solid var(--ink);
-      padding: 13px 17px 15px;
-    }
-    .tbtn {
-      border: 2px solid var(--ink);
-      border-radius: 999px;
-      background: var(--paper);
+    .tdesc {
+      margin: 9px 0 0;
+      font: 700 11px/1.55 var(--font-mono);
       color: var(--ink);
-      padding: 8px 11px;
-      font: 700 10px/1 var(--font-mono);
-      letter-spacing: .12em;
-      text-transform: uppercase;
-      text-decoration: none;
     }
-    .tbtn:hover { background: var(--ink); color: #fff; }
-
+    .tags {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 11px 0 0;
+    }
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      text-decoration: none;
+      background: #e9f8ff;
+    }
+    .tag[role="button"] { cursor: pointer; }
+    .tag[role="button"]:hover { background: var(--ink); color: #fff; }
     .tally {
       margin: 36px 0 0;
       font: 700 12px/1.7 var(--font-mono);
@@ -517,7 +564,7 @@
             <path d="m20 20-3.5-3.5"/>
           </svg>
           <input id="search" type="search" autocomplete="off" spellcheck="false"
-                 placeholder="Search spots or people">
+                 placeholder="Search spots, people, or tags">
         </label>
         <div class="sortbox">
           <select id="sort" aria-label="Sort gallery">
@@ -527,6 +574,7 @@
           </select>
         </div>
       </div>
+      <div class="tagbar" id="tagbar" hidden aria-label="Popular tags"></div>
       <div class="grid" id="grid"></div>
       <div class="empty" id="gallery-note" hidden>
         <h2></h2>
@@ -577,6 +625,33 @@
         return (bytes / 1024 / 1024).toFixed(1) + ' MB';
       };
       const downloadURL = (site) => site.url.replace(/\/$/, '') + '/api/download';
+      const tagList = (tags, onPick) => {
+        const wrap = document.createElement('div');
+        wrap.className = 'tags';
+        for (const value of tags || []) {
+          const tag = document.createElement('span');
+          tag.className = 'tag';
+          tag.textContent = value;
+          if (onPick) {
+            tag.setAttribute('role', 'button');
+            tag.tabIndex = 0;
+            tag.addEventListener('click', (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              onPick(value);
+            });
+            tag.addEventListener('keydown', (e) => {
+              if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                e.stopPropagation();
+                onPick(value);
+              }
+            });
+          }
+          wrap.appendChild(tag);
+        }
+        return wrap;
+      };
 
       const toastEl = $('toast');
       let toastTimer = null;
@@ -746,6 +821,7 @@
           slots[3].textContent = rel(site.updated_at);
 
           info.append(head, url, meta);
+          if ((site.tags || []).length) info.append(tagList(site.tags));
 
           const actions = document.createElement('div');
           actions.className = 'actions';
@@ -819,26 +895,71 @@
 
       // ─── gallery ──────────────────────────────────────────────
       let gallery = [];
+      let activeTag = '';
       const grid = $('grid');
+      const tagbar = $('tagbar');
+
+      const chooseTag = (tag) => {
+        activeTag = activeTag === tag ? '' : tag;
+        renderGallery();
+      };
+
+      const renderTagFilters = () => {
+        const counts = new Map();
+        for (const site of gallery) {
+          for (const tag of site.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
+        }
+        const tags = [...counts.entries()]
+          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+          .slice(0, 18);
+        tagbar.replaceChildren();
+        if (!tags.length) {
+          activeTag = '';
+          tagbar.hidden = true;
+          return;
+        }
+        tagbar.hidden = false;
+        const all = document.createElement('button');
+        all.type = 'button';
+        all.className = 'tagfilter' + (activeTag ? '' : ' active');
+        all.textContent = 'all';
+        all.addEventListener('click', () => { activeTag = ''; renderGallery(); });
+        tagbar.appendChild(all);
+        for (const [tag, count] of tags) {
+          const btn = document.createElement('button');
+          btn.type = 'button';
+          btn.className = 'tagfilter' + (activeTag === tag ? ' active' : '');
+          btn.textContent = tag + ' · ' + count;
+          btn.addEventListener('click', () => chooseTag(tag));
+          tagbar.appendChild(btn);
+        }
+      };
 
       // Ordering is the gallery's editorial voice: strict recency
       // turns it into a changelog, where one busy person's redeploys
       // crowd out everything else. A variety boost (e.g. cap
       // consecutive tiles per owner) would keep the wall communal.
+      const siteLabel = (site) => site.title || site.name;
       const rankGallery = (sites, mode) => {
         const ranked = [...sites];
-        if (mode === 'name') ranked.sort((a, b) => a.name.localeCompare(b.name));
+        if (mode === 'name') ranked.sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
         else if (mode === 'created') ranked.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
         else ranked.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
         return ranked;
       };
 
       const renderGallery = () => {
+        renderTagFilters();
         const query = $('search').value.trim().toLowerCase();
         const mode = $('sort').value;
-        const shown = rankGallery(gallery, mode).filter((site) =>
-          !query || site.name.includes(query) || site.owner.toLowerCase().includes(query)
-        );
+        const shown = rankGallery(gallery, mode).filter((site) => {
+          const tags = site.tags || [];
+          if (activeTag && !tags.includes(activeTag)) return false;
+          if (!query) return true;
+          const haystack = [site.name, site.title || '', site.description || '', site.owner || '', ...tags]
+            .join(' ').toLowerCase();
+          return haystack.includes(query);
+        });
 
         grid.replaceChildren();
         if (!gallery.length) {
@@ -890,7 +1011,7 @@
           info.className = 'tinfo';
           const name = document.createElement('h2');
           name.className = 'tname';
-          name.textContent = site.name;
+          name.textContent = siteLabel(site);
           if (site.yours) {
             const chip = document.createElement('span');
             chip.className = 'yours';
@@ -899,28 +1020,36 @@
           }
           const meta = document.createElement('p');
           meta.className = 'tmeta';
-          meta.textContent = 'by ' + site.owner + ' · ' + rel(site.updated_at);
+          meta.textContent = (site.title && site.title !== site.name ? site.name + ' · ' : '') + 'by ' + site.owner + ' · ' + rel(site.updated_at);
           info.append(name, meta);
+          if (site.description) {
+            const desc = document.createElement('p');
+            desc.className = 'tdesc';
+            desc.textContent = site.description;
+            info.appendChild(desc);
+          }
+          if ((site.tags || []).length) info.append(tagList(site.tags, chooseTag));
 
-          link.append(preview, info);
-          tile.appendChild(link);
+          // Keep the interactive tag chips out of the tile's navigational
+          // <a>: an anchor may not contain buttons. The preview is the link;
+          // the info block (title, meta, description, tags) sits beside it.
+          link.append(preview);
+          tile.append(link, info);
           if (site.download_allowed !== false) {
-            const actions = document.createElement('div');
-            actions.className = 'tactions';
             const download = document.createElement('a');
-            download.className = 'tbtn';
+            download.className = 'download-float';
             download.href = downloadURL(site);
-            download.textContent = 'Download ZIP';
+            download.textContent = 'ZIP ↓';
             download.setAttribute('download', site.name + '.zip');
-            actions.appendChild(download);
-            tile.appendChild(actions);
+            download.setAttribute('aria-label', 'Download ' + site.name + ' as ZIP');
+            tile.appendChild(download);
           }
           grid.appendChild(tile);
         }
 
-        $('tally').textContent = shown.length === gallery.length
+        $('tally').textContent = shown.length === gallery.length && !activeTag
           ? gallery.length + ' public spot' + (gallery.length === 1 ? '' : 's') + ' on the mesh'
-          : shown.length + ' of ' + gallery.length + ' public spots';
+          : shown.length + ' of ' + gallery.length + ' public spots' + (activeTag ? ' tagged ' + activeTag : '');
       };
 
       $('search').addEventListener('input', renderGallery);
