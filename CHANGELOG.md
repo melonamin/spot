@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-06-23
+
 ### Added
 
 - Browser SDK and server proxy support for `spot.slack.send`, backed by a server-side Slack bot token and per-site visitor opt-in.
@@ -40,5 +42,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/melonamin/spot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/melonamin/spot/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/melonamin/spot/releases/tag/v0.1.0
