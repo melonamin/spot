@@ -45,6 +45,10 @@ type Server struct {
 	siteLocksMu    sync.Mutex
 	siteLocks      map[string]*sync.Mutex
 
+	// bgTasks tracks detached post-deploy work (AI auto-tagging) so shutdown
+	// and tests can wait for it to drain.
+	bgTasks sync.WaitGroup
+
 	dbLimit       *RateLimiter
 	fileLimit     *RateLimiter
 	aiLimit       *RateLimiter

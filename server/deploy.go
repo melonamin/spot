@@ -324,11 +324,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	var existingSiteTags []string
+	if reader, ok := s.deployAuth.(siteMetadataReader); ok {
+		if prev, err := reader.SiteMetadata(r.Context(), site); err == nil {
+			existingSiteTags = prev.Tags
+		}
+	}
 	metadataUpdated := false
-	updateMetadata := func(metadataRestricted bool) error {
+	updateMetadata := func() error {
 		if updater, ok := s.deployAuth.(siteMetadataUpdater); ok {
-			completed := s.completeSiteMetadata(r.Context(), site, files, metadata, metadataRestricted)
-			if err := updater.UpdateSiteMetadata(r.Context(), site, completed); err != nil {
+			resolved := resolveSiteMetadata(metadata, existingSiteTags)
+			if err := updater.UpdateSiteMetadata(r.Context(), site, resolved); err != nil {
 				return err
 			}
 		}
@@ -370,7 +376,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				}
 			}
 		}
-		if err := updateMetadata(true); err != nil {
+		if err := updateMetadata(); err != nil {
 			log.Printf("deploy %s: update site metadata: %v", site, err)
 			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not update site metadata")
 			httpError(w, http.StatusInternalServerError, "could not update site metadata")
@@ -408,9 +414,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		TotalBytes: totalDeployBytes(files),
 	})
 	if !metadataUpdated {
-		if err := updateMetadata(restricted); err != nil {
+		if err := updateMetadata(); err != nil {
 			log.Printf("deploy %s: update site metadata: %v", site, err)
 		}
+	}
+	if s.shouldAutoTag(metadata, existingSiteTags, restricted) {
+		s.scheduleAutoTag(site, files, resolveSiteMetadata(metadata, existingSiteTags))
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,

@@ -480,4 +480,7 @@ func main() {
 	if err := httpSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server: %v", err)
 	}
+	// Let detached post-deploy work (AI auto-tagging) finish; each task is
+	// bounded by its own timeout.
+	srv.bgTasks.Wait()
 }

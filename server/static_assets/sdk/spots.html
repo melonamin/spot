@@ -487,9 +487,9 @@
       align-items: center;
       text-decoration: none;
       background: #e9f8ff;
-      cursor: pointer;
     }
-    .tag:hover { background: var(--ink); color: #fff; }
+    .tag[role="button"] { cursor: pointer; }
+    .tag[role="button"]:hover { background: var(--ink); color: #fff; }
     .tally {
       margin: 36px 0 0;
       font: 700 12px/1.7 var(--font-mono);
@@ -1020,7 +1020,7 @@
           }
           const meta = document.createElement('p');
           meta.className = 'tmeta';
-          meta.textContent = (site.title ? site.name + ' · ' : '') + 'by ' + site.owner + ' · ' + rel(site.updated_at);
+          meta.textContent = (site.title && site.title !== site.name ? site.name + ' · ' : '') + 'by ' + site.owner + ' · ' + rel(site.updated_at);
           info.append(name, meta);
           if (site.description) {
             const desc = document.createElement('p');
@@ -1030,8 +1030,11 @@
           }
           if ((site.tags || []).length) info.append(tagList(site.tags, chooseTag));
 
-          link.append(preview, info);
-          tile.appendChild(link);
+          // Keep the interactive tag chips out of the tile's navigational
+          // <a>: an anchor may not contain buttons. The preview is the link;
+          // the info block (title, meta, description, tags) sits beside it.
+          link.append(preview);
+          tile.append(link, info);
           if (site.download_allowed !== false) {
             const download = document.createElement('a');
             download.className = 'download-float';

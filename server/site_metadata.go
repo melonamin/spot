@@ -13,6 +13,7 @@ import (
 	"sort"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -50,6 +51,7 @@ var (
 	headingRe        = regexp.MustCompile(`(?is)<h[1-2][^>]*>(.*?)</h[1-2]>`)
 	stripTagsRe      = regexp.MustCompile(`(?is)<[^>]+>`)
 	jsonObjectBounds = regexp.MustCompile(`(?s)\{.*\}`)
+	tagHyphenRunRe   = regexp.MustCompile(`-+`)
 )
 
 func metadataForDeploy(site string, files []deployFile) (deploySiteMetadata, error) {
@@ -142,6 +144,14 @@ func parseSiteMetadataFile(data []byte) (deploySiteMetadata, error) {
 }
 
 func normalizeSiteTags(tags []string) ([]string, error) {
+	return collectSiteTags(tags, false)
+}
+
+// collectSiteTags normalizes, dedupes, and caps a tag list. When lenient it
+// skips entries that fail validation; otherwise the first bad entry is an
+// error. The strict mode guards writes; the lenient mode keeps reads robust so
+// one malformed stored tag cannot wipe an otherwise valid list.
+func collectSiteTags(tags []string, lenient bool) ([]string, error) {
 	seen := map[string]struct{}{}
 	out := make([]string, 0, min(len(tags), maxSiteTagCount))
 	for _, tag := range tags {
@@ -150,6 +160,9 @@ func normalizeSiteTags(tags []string) ([]string, error) {
 			continue
 		}
 		if len(normalized) > maxSiteTagLength || !siteTagRe.MatchString(normalized) {
+			if lenient {
+				continue
+			}
 			return nil, fmt.Errorf("tag %q must be 1-%d lowercase letters, digits, or hyphens", tag, maxSiteTagLength)
 		}
 		if _, ok := seen[normalized]; ok {
@@ -168,7 +181,7 @@ func normalizeSiteTag(tag string) string {
 	tag = strings.ToLower(strings.TrimSpace(tag))
 	tag = strings.ReplaceAll(tag, "_", "-")
 	tag = strings.Join(strings.Fields(tag), "-")
-	tag = regexp.MustCompile(`-+`).ReplaceAllString(tag, "-")
+	tag = tagHyphenRunRe.ReplaceAllString(tag, "-")
 	return strings.Trim(tag, "-")
 }
 
@@ -197,6 +210,15 @@ func firstHTMLMatch(body string, res ...*regexp.Regexp) string {
 
 func cleanText(text string, maxLen int) string {
 	text = strings.Join(strings.Fields(html.UnescapeString(text)), " ")
+	// Drop C0/C1 control codes and bidi overrides that survive whitespace
+	// folding: they are invisible in the gallery yet can carry through to
+	// the stored value and spoof or corrupt the rendered title/description.
+	text = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) || unicode.Is(unicode.Bidi_Control, r) {
+			return -1
+		}
+		return r
+	}, text)
 	if len([]rune(text)) <= maxLen {
 		return text
 	}
@@ -204,18 +226,71 @@ func cleanText(text string, maxLen int) string {
 	return strings.TrimSpace(string(runes[:maxLen]))
 }
 
-func (s *Server) completeSiteMetadata(ctx context.Context, site string, files []deployFile, meta deploySiteMetadata, restricted bool) SiteMetadata {
-	out := meta.SiteMetadata
-	if !meta.TagsSpecified && len(out.Tags) == 0 && !restricted {
-		if tags := s.suggestSiteTags(ctx, site, files, out); len(tags) > 0 {
-			out.Tags = tags
-		}
+// resolveSiteMetadata builds the metadata to persist synchronously during a
+// deploy. AI tag suggestion is deliberately excluded — it runs in the
+// background after the deploy responds (scheduleAutoTag) so the network round
+// trip never blocks the response or the per-site lock. When a deploy declares
+// no tags the site's existing tags are kept, so an unrelated content update
+// neither drops them nor re-rolls AI-suggested ones.
+func resolveSiteMetadata(meta deploySiteMetadata, existingTags []string) SiteMetadata {
+	tags := meta.Tags
+	if !meta.TagsSpecified {
+		tags = existingTags
 	}
 	return SiteMetadata{
-		Title:       cleanText(out.Title, maxSiteTitleLength),
-		Description: cleanText(out.Description, maxSiteDescLength),
-		Tags:        cloneSiteTags(out.Tags),
+		Title:       cleanText(meta.Title, maxSiteTitleLength),
+		Description: cleanText(meta.Description, maxSiteDescLength),
+		Tags:        cloneSiteTags(tags),
 	}
+}
+
+// shouldAutoTag reports whether a just-deployed site is eligible for background
+// AI tagging: it must be public, have declared no tags and have none stored, and
+// the AI proxy must be configured.
+func (s *Server) shouldAutoTag(meta deploySiteMetadata, existingTags []string, restricted bool) bool {
+	return !restricted && !meta.TagsSpecified && len(existingTags) == 0 &&
+		s.ai != nil && s.ai.configured()
+}
+
+// scheduleAutoTag suggests gallery tags for a freshly deployed public site off
+// the request path. The AI call runs without holding the per-site lock; the
+// worker then takes the lock, re-reads the row, and only writes tags if the
+// site still has none, so a concurrent deploy that sets tags or metadata wins.
+func (s *Server) scheduleAutoTag(site string, files []deployFile, base SiteMetadata) {
+	updater, ok := s.deployAuth.(siteMetadataUpdater)
+	if !ok {
+		return
+	}
+	reader, _ := s.deployAuth.(siteMetadataReader)
+	s.bgTasks.Add(1)
+	go func() {
+		defer s.bgTasks.Done()
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		tags := s.suggestSiteTags(ctx, site, files, base)
+		if len(tags) == 0 {
+			return
+		}
+		lock := s.siteMutationLock(site)
+		lock.Lock()
+		defer lock.Unlock()
+		current := base
+		if reader != nil {
+			meta, err := reader.SiteMetadata(ctx, site)
+			if err != nil {
+				log.Printf("auto-tag %s: read metadata: %v", site, err)
+				return
+			}
+			current = meta
+		}
+		if len(current.Tags) > 0 {
+			return
+		}
+		current.Tags = tags
+		if err := updater.UpdateSiteMetadata(ctx, site, current); err != nil {
+			log.Printf("auto-tag %s: update metadata: %v", site, err)
+		}
+	}()
 }
 
 func (s *Server) suggestSiteTags(ctx context.Context, site string, files []deployFile, meta SiteMetadata) []string {
@@ -311,10 +386,7 @@ func decodeSiteTags(raw string) []string {
 	if err := json.Unmarshal([]byte(raw), &tags); err != nil {
 		return []string{}
 	}
-	valid, err := normalizeSiteTags(tags)
-	if err != nil {
-		return []string{}
-	}
+	valid, _ := collectSiteTags(tags, true)
 	return valid
 }
 

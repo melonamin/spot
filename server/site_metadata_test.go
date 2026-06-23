@@ -72,6 +72,36 @@ func TestMetadataFromIndexHTMLKeepsQuotedDescriptionText(t *testing.T) {
 	}
 }
 
+func TestCleanTextStripsControlAndBidiCharacters(t *testing.T) {
+	// Control codes and bidi overrides survive whitespace folding and would
+	// otherwise reach the stored value and the gallery render.
+	if got := cleanText("Hello\x00\x07World", maxSiteTitleLength); got != "HelloWorld" {
+		t.Fatalf("control strip = %q, want %q", got, "HelloWorld")
+	}
+	bidi := "admin" + string(rune(0x202e)) + "madmin" // U+202E RIGHT-TO-LEFT OVERRIDE
+	if got := cleanText(bidi, maxSiteTitleLength); got != "adminmadmin" {
+		t.Fatalf("bidi strip = %q, want %q", got, "adminmadmin")
+	}
+	// Newlines and tabs still fold to single spaces.
+	if got := cleanText("one\ntwo\tthree", maxSiteTitleLength); got != "one two three" {
+		t.Fatalf("whitespace fold = %q, want %q", got, "one two three")
+	}
+	// A title of only control characters collapses to empty so the
+	// site-name fallback in metadataForDeploy still fires.
+	if got := cleanText("\x00\x01", maxSiteTitleLength); got != "" {
+		t.Fatalf("control-only title = %q, want empty", got)
+	}
+}
+
+func TestDecodeSiteTagsSkipsInvalidStoredTag(t *testing.T) {
+	// A single malformed stored tag must not wipe the valid ones.
+	got := decodeSiteTags(`["ok-tag","BAD/TAG","another"]`)
+	want := []string{"ok-tag", "another"}
+	if len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("decodeSiteTags = %v, want %v", got, want)
+	}
+}
+
 func TestDeployStoresManualSiteMetadata(t *testing.T) {
 	srv, db := newMetadataDeployServer(t, nil)
 	defer db.Close()
@@ -132,6 +162,7 @@ func TestDeployAutoTagsPublicSiteWithAI(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("deploy = %d %s, want 200", rec.Code, rec.Body.String())
 	}
+	srv.bgTasks.Wait() // auto-tagging runs in the background off the deploy path
 
 	var tagsRaw string
 	if err := db.QueryRow(`SELECT tags FROM sites WHERE name = ?`, "sketch").Scan(&tagsRaw); err != nil {
@@ -154,6 +185,52 @@ func TestSiteTagPromptCapsFileList(t *testing.T) {
 	}
 	if strings.Contains(prompt, strings.Repeat("deep/", 30)) {
 		t.Fatalf("prompt includes an uncapped deep path:\n%s", prompt)
+	}
+}
+
+func TestTaglessRedeployKeepsExistingTagsWithoutReTagging(t *testing.T) {
+	aiCalls := 0
+	aiUpstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		aiCalls++
+		writeJSON(w, http.StatusOK, map[string]any{
+			"choices": []map[string]any{{
+				"message": map[string]string{"content": `{"tags":["alpha","beta"]}`},
+			}},
+		})
+	}))
+	defer aiUpstream.Close()
+	srv, db := newMetadataDeployServer(t, NewAIProxy("test-key", aiUpstream.URL, "tagger", nil, nil))
+	defer db.Close()
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo", map[string]string{
+		"index.html": `<title>Demo</title><h1>First</h1>`,
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("first deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	srv.bgTasks.Wait()
+	if aiCalls != 1 {
+		t.Fatalf("AI calls after first deploy = %d, want 1", aiCalls)
+	}
+
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo", map[string]string{
+		"index.html": `<title>Demo</title><h1>Second</h1>`,
+	}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("tagless redeploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	srv.bgTasks.Wait()
+	if aiCalls != 1 {
+		t.Fatalf("AI calls after tagless redeploy = %d, want 1 (no re-tag)", aiCalls)
+	}
+	var tagsRaw string
+	if err := db.QueryRow(`SELECT tags FROM sites WHERE name = ?`, "demo").Scan(&tagsRaw); err != nil {
+		t.Fatal(err)
+	}
+	if tags := decodeSiteTags(tagsRaw); len(tags) != 2 || tags[0] != "alpha" || tags[1] != "beta" {
+		t.Fatalf("tags after tagless redeploy = %v, want [alpha beta]", tags)
 	}
 }
 
@@ -203,13 +280,19 @@ func TestPublicRedeployDefersAITaggingUntilAfterAccessRemoval(t *testing.T) {
 	defer db.Close()
 
 	rec := httptest.NewRecorder()
+	// First deploy is restricted and declares no tags, so the site starts
+	// untagged: a later public redeploy is then eligible for auto-tagging.
 	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "secret", map[string]string{
 		"index.html":   `<title>Old</title>`,
-		"_spot.json":   `{"title":"Old title","tags":["old"]}`,
+		"_spot.json":   `{"title":"Old title"}`,
 		"_access.json": `{"allow":["alice@example.com"]}`,
 	}))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("initial deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	srv.bgTasks.Wait() // restricted deploy must not auto-tag
+	if called {
+		t.Fatal("AI tagger called for restricted site")
 	}
 	called = false
 
@@ -236,6 +319,7 @@ func TestPublicRedeployDefersAITaggingUntilAfterAccessRemoval(t *testing.T) {
 	if !removedAccess {
 		t.Fatal("access policy was not removed")
 	}
+	srv.bgTasks.Wait() // AI tagging is deferred to the background after the response
 	if !called {
 		t.Fatal("AI tagger was not called after access removal")
 	}
