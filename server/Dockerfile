@@ -12,6 +12,6 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
 
 FROM alpine:3.22
 COPY --from=build /spot-api /usr/local/bin/spot-api
-RUN apk add --no-cache chromium && mkdir -p /data && chown nobody:nobody /data
+RUN mkdir -p /data && chown nobody:nobody /data
 USER nobody
 ENTRYPOINT ["spot-api"]
