@@ -445,14 +445,29 @@
       .download-float { opacity: 1; pointer-events: auto; transform: none; }
     }
 
-    .tinfo { padding: 15px 17px 17px; }
+    /* A fixed content height — paired with the fixed-ratio preview above —
+       keeps every tile the same total size so the gallery rows line up.
+       Title, meta and description are each clamped and the tag row is
+       pinned to the bottom, so variable content can't change the height. */
+    .tinfo {
+      padding: 15px 17px 17px;
+      height: 176px;
+      display: flex;
+      flex-direction: column;
+    }
     .tname {
       display: flex;
-      align-items: center;
+      align-items: flex-start;
       gap: 9px;
       margin: 0;
       font: 700 15px/1.3 var(--font-mono);
-      word-break: break-all;
+    }
+    .tname .txt {
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
+      overflow-wrap: anywhere;
     }
     .yours {
       flex: 0 0 auto;
@@ -470,11 +485,18 @@
       letter-spacing: .12em;
       text-transform: uppercase;
       color: var(--mutedink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
     .tdesc {
       margin: 9px 0 0;
       font: 700 11px/1.55 var(--font-mono);
       color: var(--ink);
+      display: -webkit-box;
+      -webkit-line-clamp: 2;
+      -webkit-box-orient: vertical;
+      overflow: hidden;
     }
     .tags {
       display: flex;
@@ -482,7 +504,35 @@
       gap: 8px;
       margin: 11px 0 0;
     }
+    /* In a gallery tile the tags become a single horizontally-scrollable
+       row pinned to the bottom edge, so the tag count never changes the
+       tile height. The scrollbar is hidden; a fade appears on whichever
+       side still has chips out of view (toggled by .more-left/.more-right
+       as the row scrolls). The deploy view keeps the wrapping .tags. */
+    .tinfo .tags {
+      flex-wrap: nowrap;
+      margin-top: auto;
+      padding-top: 11px;
+      overflow-x: auto;
+      overflow-y: hidden;
+      scrollbar-width: none;          /* Firefox */
+      overscroll-behavior-x: contain;
+    }
+    .tinfo .tags::-webkit-scrollbar { display: none; }  /* WebKit */
+    .tinfo .tags.more-right {
+      -webkit-mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+      mask-image: linear-gradient(90deg, #000 calc(100% - 24px), transparent);
+    }
+    .tinfo .tags.more-left {
+      -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px);
+      mask-image: linear-gradient(90deg, transparent, #000 24px);
+    }
+    .tinfo .tags.more-left.more-right {
+      -webkit-mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+      mask-image: linear-gradient(90deg, transparent, #000 24px, #000 calc(100% - 24px), transparent);
+    }
     .tag {
+      flex: 0 0 auto;
       display: inline-flex;
       align-items: center;
       text-decoration: none;
@@ -935,6 +985,21 @@
         }
       };
 
+      // A tile's tag row scrolls horizontally; fade whichever edge still
+      // has chips out of view so the overflow is discoverable. Native
+      // trackpad swipe and shift+wheel scroll it; the scrollbar is hidden.
+      const updateTagFades = (el) => {
+        const max = el.scrollWidth - el.clientWidth;
+        el.classList.toggle('more-left', el.scrollLeft > 1);
+        el.classList.toggle('more-right', el.scrollLeft < max - 1);
+      };
+      const wireTagScroll = (el) => {
+        el.addEventListener('scroll', () => updateTagFades(el), { passive: true });
+      };
+      const refreshTagFades = () => {
+        for (const el of grid.querySelectorAll('.tags')) updateTagFades(el);
+      };
+
       // Ordering is the gallery's editorial voice: strict recency
       // turns it into a changelog, where one busy person's redeploys
       // crowd out everything else. A variety boost (e.g. cap
@@ -1011,7 +1076,14 @@
           info.className = 'tinfo';
           const name = document.createElement('h2');
           name.className = 'tname';
-          name.textContent = siteLabel(site);
+          // The title text is clamped to two lines; the full label is kept
+          // as a tooltip. The "yours" chip sits beside the clamped text.
+          const label = siteLabel(site);
+          name.title = label;
+          const txt = document.createElement('span');
+          txt.className = 'txt';
+          txt.textContent = label;
+          name.appendChild(txt);
           if (site.yours) {
             const chip = document.createElement('span');
             chip.className = 'yours';
@@ -1021,14 +1093,20 @@
           const meta = document.createElement('p');
           meta.className = 'tmeta';
           meta.textContent = (site.title && site.title !== site.name ? site.name + ' · ' : '') + 'by ' + site.owner + ' · ' + rel(site.updated_at);
+          meta.title = meta.textContent;
           info.append(name, meta);
           if (site.description) {
             const desc = document.createElement('p');
             desc.className = 'tdesc';
             desc.textContent = site.description;
+            desc.title = site.description;
             info.appendChild(desc);
           }
-          if ((site.tags || []).length) info.append(tagList(site.tags, chooseTag));
+          if ((site.tags || []).length) {
+            const tags = tagList(site.tags, chooseTag);
+            info.append(tags);
+            wireTagScroll(tags);
+          }
 
           // Keep the interactive tag chips out of the tile's navigational
           // <a>: an anchor may not contain buttons. The preview is the link;
@@ -1050,10 +1128,15 @@
         $('tally').textContent = shown.length === gallery.length && !activeTag
           ? gallery.length + ' public spot' + (gallery.length === 1 ? '' : 's') + ' on the mesh'
           : shown.length + ' of ' + gallery.length + ' public spots' + (activeTag ? ' tagged ' + activeTag : '');
+
+        // Tiles are in the DOM now; set each tag row's initial fade state.
+        requestAnimationFrame(refreshTagFades);
       };
 
       $('search').addEventListener('input', renderGallery);
       $('sort').addEventListener('change', renderGallery);
+      // Column width changes with the viewport, so re-test tag overflow.
+      window.addEventListener('resize', refreshTagFades);
 
       const loadGallery = async () => {
         try {
