@@ -13,6 +13,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Forward-auth identity support for deployments behind an authenticating reverse proxy. (#7)
 - Gallery metadata support via `_spot.json`, HTML title/description extraction, public site tag chips, and tag-aware gallery search/filtering.
 - Optional AI tag suggestions for public sites that do not provide explicit gallery tags.
+- Maintenance command to backfill existing sites with gallery metadata, `_spot.json`, and optional screenshots without redeploying or changing ownership.
 
 ### Fixed
 

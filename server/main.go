@@ -77,7 +77,18 @@ func loadConfig() (config, error) {
 }
 
 func loadConfigFrom(args []string) (config, error) {
-	cfg := config{
+	cfg := defaultConfigFromEnv()
+	if err := applyCLIFlags(&cfg, args); err != nil {
+		return cfg, err
+	}
+	if err := finalizeConfig(&cfg); err != nil {
+		return cfg, err
+	}
+	return cfg, nil
+}
+
+func defaultConfigFromEnv() config {
+	return config{
 		Port:                 envOr("PORT", "8080"),
 		StorageMode:          normalizeStorageMode(os.Getenv("SPOT_STORAGE_MODE")),
 		DataDir:              envOr("SPOT_DATA_DIR", "./data"),
@@ -125,28 +136,28 @@ func loadConfigFrom(args []string) (config, error) {
 		SingleUserName:    envOr("SPOT_SINGLE_USER_NAME", "Spot Owner"),
 		SingleUserGroups:  splitList(os.Getenv("SPOT_SINGLE_USER_GROUPS")),
 	}
-	if err := applyCLIFlags(&cfg, args); err != nil {
-		return cfg, err
-	}
+}
+
+func finalizeConfig(cfg *config) error {
 	if cfg.SQLitePath == "" {
 		cfg.SQLitePath = cfg.DataDir + "/spot.db"
 	}
-	if cfg.StorageMode == storageModeLocal {
-		cfg.SitesDir = envOr("SPOT_SITES_DIR", cfg.DataDir+"/sites")
+	if cfg.StorageMode == storageModeLocal && cfg.SitesDir == "" {
+		cfg.SitesDir = cfg.DataDir + "/sites"
 	}
 	if cfg.SpotDomain == "" {
-		return cfg, errors.New("SPOT_DOMAIN is required (e.g. spot.localhost)")
+		return errors.New("SPOT_DOMAIN is required (e.g. spot.localhost)")
 	}
 	if cfg.AIAccess != aiAccessOwners && cfg.AIAccess != aiAccessVisitors {
-		return cfg, fmt.Errorf("SPOT_AI_ACCESS must be %q or %q", aiAccessOwners, aiAccessVisitors)
+		return fmt.Errorf("SPOT_AI_ACCESS must be %q or %q", aiAccessOwners, aiAccessVisitors)
 	}
 	if cfg.SlackAccess != slackAccessOwners && cfg.SlackAccess != slackAccessVisitors {
-		return cfg, fmt.Errorf("SPOT_SLACK_ACCESS must be %q or %q", slackAccessOwners, slackAccessVisitors)
+		return fmt.Errorf("SPOT_SLACK_ACCESS must be %q or %q", slackAccessOwners, slackAccessVisitors)
 	}
-	if err := validateDeploymentSafety(cfg); err != nil {
-		return cfg, err
+	if err := validateDeploymentSafety(*cfg); err != nil {
+		return err
 	}
-	return cfg, nil
+	return nil
 }
 
 func applyCLIFlags(cfg *config, args []string) error {
@@ -341,6 +352,13 @@ func main() {
 	defer stop()
 
 	log.Printf("spot-api version %s", version)
+
+	if len(os.Args) > 1 && os.Args[1] == "backfill-gallery" {
+		if err := runGalleryBackfillCommand(ctx, os.Args[2:]); err != nil {
+			log.Fatalf("backfill-gallery: %v", err)
+		}
+		return
+	}
 
 	cfg, err := loadConfig()
 	if err != nil {

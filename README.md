@@ -325,6 +325,21 @@ Deploy the committed tree with the TLS overlay and orphan cleanup:
 scripts/deploy-prod.sh
 ```
 
+To populate gallery metadata for sites deployed before `_spot.json` and
+screenshots existed, run the maintenance backfill from the production
+environment:
+
+```sh
+spot-api backfill-gallery
+spot-api backfill-gallery -write -screenshots
+```
+
+The first command is a dry run. With `-write`, Spot updates the site metadata
+columns and writes missing `_spot.json` files directly to site storage. With
+`-screenshots`, it captures missing `_screenshot.png` files for public sites
+using headless Chromium. The command does not use `/api/deploy`, so it does not
+change site owners, create deploy audit entries, or touch `updated_at`.
+
 ## SDK
 
 Sites load `/spot.js` from their own origin:
