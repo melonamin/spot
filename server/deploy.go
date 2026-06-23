@@ -211,7 +211,8 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
-	restricted := deployRestrictsAccess(site, files)
+	incomingPolicy, hasIncomingPolicy, incomingPolicyErr := deployAccessPolicy(site, files)
+	restricted := policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
@@ -243,11 +244,29 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not authorize deploy")
 		return
 	}
+	var policyOnFailure *failurePolicyCache
+	if authz.Action == "create" {
+		s.cacheIncomingPolicyForCreate(site, incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+		if hasIncomingPolicy {
+			policyOnFailure = &failurePolicyCache{
+				policy: immediatePolicyForCreate(incomingPolicy),
+				err:    incomingPolicyErr,
+			}
+		}
+	} else {
+		previousPolicy, previousPolicyErr := s.policyForSite(r.Context(), site)
+		if preservePolicyOnFailure(previousPolicy, previousPolicyErr, incomingPolicy, hasIncomingPolicy, incomingPolicyErr) {
+			policyOnFailure = &failurePolicyCache{policy: previousPolicy, err: previousPolicyErr}
+		}
+	}
+	writeAccessFirst := authz.Action == "create" && restricted && s.policies == nil && hasIncomingPolicy
+	deferAccessChange := policyOnFailure != nil && !writeAccessFirst
+	updateBeforePolicyBroadening := deferAccessChange && !restricted
 
 	existing, err := s.sites.List(r.Context(), site)
 	if err != nil {
 		log.Printf("deploy %s: %v", site, err)
-		s.failDeployStorage(r, site, actor, authz.Action, files, "could not read current files")
+		s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not read current files")
 		httpError(w, http.StatusInternalServerError, "could not read the site's current files")
 		return
 	}
@@ -260,10 +279,15 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// shapes cannot coexist, so the new content cannot be stored until the
 	// conflicting old path is gone.
 	removed := make(map[string]bool)
+	removeAccessLast := false
 	for _, old := range conflictingStalePaths(existing, files, keep) {
+		if deferAccessChange && old == accessFileName {
+			removeAccessLast = true
+			continue
+		}
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.failDeployStorage(r, site, actor, authz.Action, files, "could not remove stale file "+old)
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not remove stale file "+old)
 			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
 			return
 		}
@@ -272,26 +296,109 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// Write every new file before removing the remaining stale files: a
 	// storage failure mid-write then leaves those previous (non-conflicting)
 	// files intact rather than punching holes in the live site.
+	if writeAccessFirst {
+		accessData := incomingAccessData(files)
+		if err := s.sites.Put(r.Context(), site, accessFileName, contentTypeFor(accessFileName, accessData), accessData); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not store "+accessFileName)
+			httpError(w, http.StatusInternalServerError, "could not store "+accessFileName)
+			return
+		}
+	}
+	var deferredAccessPut deployFile
+	putAccessLast := false
 	for _, f := range files {
+		if writeAccessFirst && f.path == accessFileName {
+			continue
+		}
+		if deferAccessChange && f.path == accessFileName {
+			deferredAccessPut = f
+			putAccessLast = true
+			continue
+		}
 		if err := s.sites.Put(r.Context(), site, f.path, contentTypeFor(f.path, f.data), f.data); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.failDeployStorage(r, site, actor, authz.Action, files, "could not store "+f.path)
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not store "+f.path)
 			httpError(w, http.StatusInternalServerError, "could not store "+f.path)
 			return
 		}
+	}
+
+	metadataUpdated := false
+	updateMetadata := func(metadataRestricted bool) error {
+		if updater, ok := s.deployAuth.(siteMetadataUpdater); ok {
+			completed := s.completeSiteMetadata(r.Context(), site, files, metadata, metadataRestricted)
+			if err := updater.UpdateSiteMetadata(r.Context(), site, completed); err != nil {
+				return err
+			}
+		}
+		metadataUpdated = true
+		return nil
 	}
 	for _, old := range existing {
 		if keep[old] || removed[old] {
 			continue
 		}
+		if deferAccessChange && old == accessFileName {
+			removeAccessLast = true
+			continue
+		}
 		if err := s.sites.Remove(r.Context(), site, old); err != nil {
 			log.Printf("deploy %s: %v", site, err)
-			s.failDeployStorage(r, site, actor, authz.Action, files, "could not remove stale file "+old)
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not remove stale file "+old)
 			httpError(w, http.StatusInternalServerError, "could not remove stale file "+old)
 			return
 		}
 	}
-
+	rollbackMetadata := func() {}
+	if updateBeforePolicyBroadening {
+		if reader, ok := s.deployAuth.(siteMetadataReader); ok {
+			previousMetadata, err := reader.SiteMetadata(r.Context(), site)
+			if err != nil {
+				log.Printf("deploy %s: read previous site metadata: %v", site, err)
+				s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not read previous site metadata")
+				httpError(w, http.StatusInternalServerError, "could not read previous site metadata")
+				return
+			}
+			rollbackMetadata = func() {
+				updater, ok := s.deployAuth.(siteMetadataUpdater)
+				if !ok {
+					return
+				}
+				if err := updater.UpdateSiteMetadata(r.Context(), site, previousMetadata); err != nil {
+					log.Printf("deploy %s: rollback site metadata: %v", site, err)
+				}
+			}
+		}
+		if err := updateMetadata(true); err != nil {
+			log.Printf("deploy %s: update site metadata: %v", site, err)
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not update site metadata")
+			httpError(w, http.StatusInternalServerError, "could not update site metadata")
+			return
+		}
+	}
+	if putAccessLast {
+		if err := s.sites.Put(r.Context(), site, deferredAccessPut.path, contentTypeFor(deferredAccessPut.path, deferredAccessPut.data), deferredAccessPut.data); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			rollbackMetadata()
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not store "+deferredAccessPut.path)
+			httpError(w, http.StatusInternalServerError, "could not store "+deferredAccessPut.path)
+			return
+		}
+	}
+	if removeAccessLast {
+		if err := s.sites.Remove(r.Context(), site, accessFileName); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			rollbackMetadata()
+			s.failDeployStorage(r, site, actor, authz.Action, files, policyOnFailure, "could not remove stale file "+accessFileName)
+			httpError(w, http.StatusInternalServerError, "could not remove stale file "+accessFileName)
+			return
+		}
+	}
+	if updateBeforePolicyBroadening {
+		metadataUpdated = false
+	}
+	s.updatePolicyCacheFromDeploy(site, files)
 	s.recordDeployAudit(r, DeployAuditEvent{
 		Site:       site,
 		Actor:      actor,
@@ -300,13 +407,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		FileCount:  len(files),
 		TotalBytes: totalDeployBytes(files),
 	})
-	if updater, ok := s.deployAuth.(siteMetadataUpdater); ok {
-		completed := s.completeSiteMetadata(r.Context(), site, files, metadata, restricted)
-		if err := updater.UpdateSiteMetadata(r.Context(), site, completed); err != nil {
+	if !metadataUpdated {
+		if err := updateMetadata(restricted); err != nil {
 			log.Printf("deploy %s: update site metadata: %v", site, err)
 		}
 	}
-	s.updatePolicyCacheFromDeploy(site, files)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":  site,
 		"url":   s.siteURL(r, site),
@@ -340,6 +445,9 @@ func pathShapeConflict(old, next string) bool {
 // visitor. Serving-time behavior stays fail-closed unchanged.
 func validateDeployPolicy(site string, files []deployFile) error {
 	for _, f := range files {
+		if strings.HasPrefix(f.path, accessFileName+"/") {
+			return fmt.Errorf("%s must be a file at the site root", accessFileName)
+		}
 		if f.path != accessFileName {
 			continue
 		}
@@ -349,6 +457,84 @@ func validateDeployPolicy(site string, files []deployFile) error {
 		break
 	}
 	return nil
+}
+
+func deployAccessPolicy(site string, files []deployFile) (*AccessPolicy, bool, error) {
+	for _, f := range files {
+		if f.path != accessFileName {
+			continue
+		}
+		policy, err := parseAccessPolicy(site, f.data)
+		return policy, true, err
+	}
+	return nil, false, nil
+}
+
+func incomingAccessData(files []deployFile) []byte {
+	for _, f := range files {
+		if f.path == accessFileName {
+			return f.data
+		}
+	}
+	return nil
+}
+
+func policyRestrictsAccess(policy *AccessPolicy, hasPolicy bool, err error) bool {
+	return err != nil || (hasPolicy && policy != nil && policy.RestrictsAccess())
+}
+
+func (s *Server) cacheIncomingPolicyForCreate(site string, policy *AccessPolicy, hasPolicy bool, err error) {
+	if s.policies == nil || !hasPolicy {
+		return
+	}
+	if err != nil {
+		s.policies.Set(site, nil, err)
+		return
+	}
+	s.policies.Set(site, immediatePolicyForCreate(policy), nil)
+}
+
+func immediatePolicyForCreate(policy *AccessPolicy) *AccessPolicy {
+	if policy == nil {
+		return nil
+	}
+	immediate := cloneAccessPolicy(policy)
+	immediate.AI = ""
+	immediate.Slack = ""
+	return immediate
+}
+
+func preservePolicyOnFailure(current *AccessPolicy, currentErr error, next *AccessPolicy, hasNext bool, nextErr error) bool {
+	if currentErr != nil {
+		return true
+	}
+	if nextErr != nil {
+		return false
+	}
+	if !hasNext {
+		return current != nil && policyRemovalBroadens(current)
+	}
+	return policyBroadens(current, next)
+}
+
+func policyRemovalBroadens(current *AccessPolicy) bool {
+	return current.RestrictsAccess() || !current.AllowsDownload() ||
+		current.AllowsAIVisitors() || current.AllowsSlackVisitors()
+}
+
+func policyBroadens(current, next *AccessPolicy) bool {
+	if accessBroadens(current, next) {
+		return true
+	}
+	if next == nil {
+		return false
+	}
+	if current == nil {
+		return next.AllowsAIVisitors() || next.AllowsSlackVisitors()
+	}
+	return (!current.AllowsDownload() && next.AllowsDownload()) ||
+		(!current.AllowsAIVisitors() && next.AllowsAIVisitors()) ||
+		(!current.AllowsSlackVisitors() && next.AllowsSlackVisitors())
 }
 
 func (s *Server) updatePolicyCacheFromDeploy(site string, files []deployFile) {
@@ -395,6 +581,7 @@ func immediatePolicyCache(current, next *AccessPolicy) (*AccessPolicy, bool) {
 	if current == nil {
 		immediate := cloneAccessPolicy(next)
 		immediate.AI = ""
+		immediate.Slack = ""
 		return immediate, true
 	}
 	if accessBroadens(current, next) {
@@ -403,6 +590,9 @@ func immediatePolicyCache(current, next *AccessPolicy) (*AccessPolicy, bool) {
 	immediate := cloneAccessPolicy(next)
 	if !current.AllowsAIVisitors() {
 		immediate.AI = ""
+	}
+	if !current.AllowsSlackVisitors() {
+		immediate.Slack = ""
 	}
 	return immediate, true
 }
@@ -463,11 +653,23 @@ type claimDeleter interface {
 	DeleteClaim(ctx context.Context, site string) error
 }
 
+type failurePolicyCache struct {
+	policy *AccessPolicy
+	err    error
+}
+
 // failDeployStorage records the storage-failure audit and, when the
 // failed deploy was the site's first (a "create"), releases the name it
 // just claimed so the orphaned row does not lock the name forever. A
 // redeploy keeps the existing site's claim untouched.
-func (s *Server) failDeployStorage(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
+func (s *Server) failDeployStorage(r *http.Request, site string, actor Identity, action string, files []deployFile, policyOnFailure *failurePolicyCache, message string) {
+	if s.policies != nil {
+		if policyOnFailure != nil {
+			s.policies.Set(site, policyOnFailure.policy, policyOnFailure.err)
+		} else {
+			s.policies.Invalidate(site)
+		}
+	}
 	s.recordDeployFailure(r, site, actor, action, files, message)
 	if action != "create" {
 		return

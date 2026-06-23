@@ -1,10 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
+	"io"
 	"log"
 	"regexp"
 	"sort"
@@ -18,6 +21,8 @@ const (
 	maxSiteDescLength    = 240
 	maxSiteTagCount      = 8
 	maxSiteTagLength     = 32
+	maxTagPromptFiles    = 80
+	maxTagPromptPathLen  = 120
 )
 
 type SiteMetadata struct {
@@ -32,16 +37,16 @@ type deploySiteMetadata struct {
 }
 
 type siteMetadataFile struct {
-	Title       string    `json:"title"`
-	Description string    `json:"description"`
-	Tags        *[]string `json:"tags"`
+	Title       string   `json:"title"`
+	Description string   `json:"description"`
+	Tags        []string `json:"tags"`
 }
 
 var (
 	siteTagRe        = regexp.MustCompile(`^[a-z0-9](?:[a-z0-9-]{0,30}[a-z0-9])?$`)
 	titleTagRe       = regexp.MustCompile(`(?is)<title[^>]*>(.*?)</title>`)
-	metaDescRe       = regexp.MustCompile(`(?is)<meta\s+[^>]*(?:name|property)\s*=\s*["'](?:description|og:description)["'][^>]*content\s*=\s*["']([^"']*)["'][^>]*>`)
-	metaDescReAlt    = regexp.MustCompile(`(?is)<meta\s+[^>]*content\s*=\s*["']([^"']*)["'][^>]*(?:name|property)\s*=\s*["'](?:description|og:description)["'][^>]*>`)
+	metaDescRe       = regexp.MustCompile(`(?is)<meta\s+[^>]*(?:name|property)\s*=\s*["'](?:description|og:description)["'][^>]*content\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*>`)
+	metaDescReAlt    = regexp.MustCompile(`(?is)<meta\s+[^>]*content\s*=\s*(?:"([^"]*)"|'([^']*)')[^>]*(?:name|property)\s*=\s*["'](?:description|og:description)["'][^>]*>`)
 	headingRe        = regexp.MustCompile(`(?is)<h[1-2][^>]*>(.*?)</h[1-2]>`)
 	stripTagsRe      = regexp.MustCompile(`(?is)<[^>]+>`)
 	jsonObjectBounds = regexp.MustCompile(`(?s)\{.*\}`)
@@ -80,20 +85,54 @@ func metadataForDeploy(site string, files []deployFile) (deploySiteMetadata, err
 
 func parseSiteMetadataFile(data []byte) (deploySiteMetadata, error) {
 	var raw siteMetadataFile
-	dec := json.NewDecoder(strings.NewReader(string(data)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&raw); err != nil {
+	var fields map[string]json.RawMessage
+	dec := json.NewDecoder(bytes.NewReader(data))
+	if err := dec.Decode(&fields); err != nil {
 		return deploySiteMetadata{}, err
+	}
+	var extra any
+	if err := dec.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return deploySiteMetadata{}, errors.New("metadata must contain a single JSON object")
+		}
+		return deploySiteMetadata{}, err
+	}
+	if fields == nil {
+		return deploySiteMetadata{}, errors.New("metadata must be a JSON object")
+	}
+	tagsSpecified := false
+	for key, value := range fields {
+		switch key {
+		case "title":
+			if err := json.Unmarshal(value, &raw.Title); err != nil {
+				return deploySiteMetadata{}, fmt.Errorf("title must be a string: %w", err)
+			}
+		case "description":
+			if err := json.Unmarshal(value, &raw.Description); err != nil {
+				return deploySiteMetadata{}, fmt.Errorf("description must be a string: %w", err)
+			}
+		case "tags":
+			tagsSpecified = true
+			if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+				raw.Tags = nil
+				continue
+			}
+			if err := json.Unmarshal(value, &raw.Tags); err != nil {
+				return deploySiteMetadata{}, fmt.Errorf("tags must be an array: %w", err)
+			}
+		default:
+			return deploySiteMetadata{}, fmt.Errorf("unknown field %q", key)
+		}
 	}
 	out := deploySiteMetadata{
 		SiteMetadata: SiteMetadata{
 			Title:       cleanText(raw.Title, maxSiteTitleLength),
 			Description: cleanText(raw.Description, maxSiteDescLength),
 		},
-		TagsSpecified: raw.Tags != nil,
+		TagsSpecified: tagsSpecified,
 	}
-	if raw.Tags != nil {
-		tags, err := normalizeSiteTags(*raw.Tags)
+	if tagsSpecified {
+		tags, err := normalizeSiteTags(raw.Tags)
 		if err != nil {
 			return deploySiteMetadata{}, err
 		}
@@ -145,7 +184,12 @@ func firstHTMLMatch(body string, res ...*regexp.Regexp) string {
 	for _, re := range res {
 		match := re.FindStringSubmatch(body)
 		if len(match) > 1 {
-			return html.UnescapeString(stripTagsRe.ReplaceAllString(match[1], ""))
+			for _, value := range match[1:] {
+				if value != "" {
+					return html.UnescapeString(stripTagsRe.ReplaceAllString(value, ""))
+				}
+			}
+			return ""
 		}
 	}
 	return ""
@@ -158,17 +202,6 @@ func cleanText(text string, maxLen int) string {
 	}
 	runes := []rune(text)
 	return strings.TrimSpace(string(runes[:maxLen]))
-}
-
-func deployRestrictsAccess(site string, files []deployFile) bool {
-	for _, f := range files {
-		if f.path != accessFileName {
-			continue
-		}
-		policy, err := parseAccessPolicy(site, f.data)
-		return err != nil || (policy != nil && policy.RestrictsAccess())
-	}
-	return false
 }
 
 func (s *Server) completeSiteMetadata(ctx context.Context, site string, files []deployFile, meta deploySiteMetadata, restricted bool) SiteMetadata {
@@ -227,12 +260,17 @@ func siteTagPrompt(site string, files []deployFile, meta SiteMetadata) string {
 	var index string
 	var fileNames []string
 	for _, f := range files {
-		fileNames = append(fileNames, f.path)
+		fileNames = append(fileNames, tagPromptPath(f.path))
 		if f.path == "index.html" {
 			index = string(f.data)
 		}
 	}
 	sort.Strings(fileNames)
+	fileSummary := strings.Join(fileNames, ", ")
+	if len(fileNames) > maxTagPromptFiles {
+		fileSummary = strings.Join(fileNames[:maxTagPromptFiles], ", ")
+		fileSummary += fmt.Sprintf(", ... and %d more", len(fileNames)-maxTagPromptFiles)
+	}
 	var headings []string
 	for _, m := range headingRe.FindAllStringSubmatch(index, 4) {
 		if len(m) > 1 {
@@ -246,7 +284,15 @@ Headings: %s
 Files: %s
 
 Suggest 3 to 5 gallery tags. Rules: tags must be generic, lowercase, short, useful for filtering, and use hyphens for spaces. Avoid names, emails, and private-looking terms. Return exactly: {"tags":["tag-one","tag-two"]}`,
-		site, meta.Title, meta.Description, strings.Join(headings, ", "), strings.Join(fileNames, ", "))
+		site, meta.Title, meta.Description, strings.Join(headings, ", "), fileSummary)
+}
+
+func tagPromptPath(path string) string {
+	runes := []rune(path)
+	if len(runes) <= maxTagPromptPathLen {
+		return path
+	}
+	return string(runes[:maxTagPromptPathLen]) + "..."
 }
 
 func encodeSiteTags(tags []string) string {

@@ -427,6 +427,7 @@
       text-decoration: none;
       color: var(--ink);
       opacity: 0;
+      pointer-events: none;
       transform: translateY(-4px);
       transition: opacity .15s ease, transform .15s ease, background .12s ease, color .12s ease;
     }
@@ -439,7 +440,10 @@
     .tile:hover .visit,
     .tile:hover .download-float,
     .tile:focus-within .visit,
-    .tile:focus-within .download-float { opacity: 1; transform: none; }
+    .tile:focus-within .download-float { opacity: 1; pointer-events: auto; transform: none; }
+    @media (hover: none), (pointer: coarse) {
+      .download-float { opacity: 1; pointer-events: auto; transform: none; }
+    }
 
     .tinfo { padding: 15px 17px 17px; }
     .tname {
@@ -935,9 +939,10 @@
       // turns it into a changelog, where one busy person's redeploys
       // crowd out everything else. A variety boost (e.g. cap
       // consecutive tiles per owner) would keep the wall communal.
+      const siteLabel = (site) => site.title || site.name;
       const rankGallery = (sites, mode) => {
         const ranked = [...sites];
-        if (mode === 'name') ranked.sort((a, b) => a.name.localeCompare(b.name));
+        if (mode === 'name') ranked.sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
         else if (mode === 'created') ranked.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
         else ranked.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
         return ranked;
@@ -1006,7 +1011,7 @@
           info.className = 'tinfo';
           const name = document.createElement('h2');
           name.className = 'tname';
-          name.textContent = site.title || site.name;
+          name.textContent = siteLabel(site);
           if (site.yours) {
             const chip = document.createElement('span');
             chip.className = 'yours';

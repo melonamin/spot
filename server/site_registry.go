@@ -43,6 +43,10 @@ type siteMetadataUpdater interface {
 	UpdateSiteMetadata(ctx context.Context, site string, meta SiteMetadata) error
 }
 
+type siteMetadataReader interface {
+	SiteMetadata(ctx context.Context, site string) (SiteMetadata, error)
+}
+
 type SiteRecord struct {
 	Name        string
 	OwnerEmail  string
@@ -256,6 +260,22 @@ func (r *SiteRegistry) UpdateSiteMetadata(ctx context.Context, site string, meta
 		return ErrSiteNotFound
 	}
 	return nil
+}
+
+func (r *SiteRegistry) SiteMetadata(ctx context.Context, site string) (SiteMetadata, error) {
+	var record SiteRecord
+	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)
+	if errors.Is(err, sql.ErrNoRows) {
+		return SiteMetadata{}, ErrSiteNotFound
+	}
+	if err != nil {
+		return SiteMetadata{}, fmt.Errorf("read site metadata for %s: %w", site, err)
+	}
+	return SiteMetadata{
+		Title:       record.Title,
+		Description: record.Description,
+		Tags:        cloneSiteTags(record.Tags),
+	}, nil
 }
 
 type siteRecordScanner interface {
