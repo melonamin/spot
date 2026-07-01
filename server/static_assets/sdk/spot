@@ -71,6 +71,10 @@ usage: spot <command>
 commands:
   deploy [name] [path]  sync a directory or index.html (default .) to
                         the site <name> (default: current directory name)
+  show build [json] [out]
+                        render a card/block show.json into a static site
+  show deploy <name> [json]
+                        render show.json and deploy it to <name>
   init [options]        write the Spot agent skill for Claude, Codex, or Pi
   update                replace this CLI with the latest from SPOT_URL
 
@@ -88,6 +92,7 @@ EOF
 deploy() {
     name=${1:-$(basename "$PWD")}
     src=${2:-.}
+    preserve_access=${3:-}
     if [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(basename "$1")" = "index.html" ]; then
         name=$(basename "$PWD")
         src=$1
@@ -122,6 +127,9 @@ deploy() {
     # Quote the path and filename= values so curl does not treat ';' ','
     # or '@' in a filename as -F metacharacters.
     set -- -F "site=$name"
+    if [ "$preserve_access" = "--preserve-access" ]; then
+        set -- "$@" -F "preserve_access=true"
+    fi
     if [ -f "$src" ]; then
         set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
     else
@@ -148,6 +156,300 @@ EOF
         exit 1
     fi
     echo "live: $SPOT_SCHEME://$name.$SPOT_HOSTPORT/"
+}
+
+show_usage() {
+    cat <<'EOF'
+usage:
+  spot show build [show.json] [out-dir]
+  spot show deploy <site-name> [show.json]
+
+show.json shape:
+{
+  "title": "Auth refactor",
+  "description": "Optional one-line summary",
+  "cards": [{
+    "title": "Current flow",
+    "blocks": [
+      { "kind": "markdown", "body": "## Notes\n- One\n- Two" },
+      { "kind": "mermaid", "body": "graph TD\nA-->B" },
+      { "kind": "diff", "body": "--- a\n+++ b\n@@ ..." },
+      { "kind": "terminal", "body": "go test ./...\nok" },
+      { "kind": "code", "language": "js", "body": "console.log('hi')" },
+      { "kind": "json", "value": { "ok": true } },
+      { "kind": "image", "src": "https://...", "caption": "Optional" },
+      { "kind": "html", "body": "<button>Sandboxed</button>" }
+    ]
+  }]
+}
+EOF
+    exit 1
+}
+
+show_build() {
+    spec=${1:-show.json}
+    out=${2:-spot-show-out}
+    [ -f "$spec" ] || { echo "error: $spec not found" >&2; exit 1; }
+    case $out in
+        ''|/|.) echo "error: refusing to write show output to '$out'" >&2; exit 1 ;;
+    esac
+    spec_dir=$(cd "$(dirname "$spec")" && pwd -P) || exit 1
+    spec_abs=$spec_dir/$(basename "$spec")
+    if [ -e "$out" ]; then
+        if [ -d "$out" ]; then
+            out_abs=$(cd "$out" && pwd -P) || exit 1
+            case $spec_abs in
+                "$out_abs"/*) echo "error: refusing to write show output over source '$spec'" >&2; exit 1 ;;
+            esac
+        else
+            out_dir=$(cd "$(dirname "$out")" && pwd -P) || exit 1
+            out_abs=$out_dir/$(basename "$out")
+            [ "$out_abs" != "$spec_abs" ] || { echo "error: refusing to write show output over source '$spec'" >&2; exit 1; }
+        fi
+    fi
+    rm -rf "$out"
+    mkdir -p "$out"
+    cp "$spec" "$out/show.json"
+    cat > "$out/_spot.json" <<'EOF'
+{"title":"Spot Show","description":"A card/block visual report rendered by Spot.","tags":["spot-show","agent","dashboard","tools"]}
+EOF
+    cat > "$out/index.html" <<'EOF'
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Spot Show</title>
+  <style>
+    :root { color-scheme: dark; --bg:#07070a; --panel:rgba(18,18,24,.78); --panel2:rgba(255,255,255,.055); --line:rgba(255,255,255,.12); --text:#f7f7fb; --muted:rgba(247,247,251,.68); --dim:rgba(247,247,251,.44); --accent:#a78bfa; --accent2:#22d3ee; --good:#86efac; --bad:#fca5a5; --warn:#fcd34d; }
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; color:var(--text); font:15px/1.55 Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: radial-gradient(circle at 10% 0%, rgba(124,58,237,.45), transparent 34rem), radial-gradient(circle at 92% 12%, rgba(34,211,238,.28), transparent 30rem), radial-gradient(circle at 50% 100%, rgba(244,63,94,.18), transparent 32rem), var(--bg); }
+    .shell { width:min(1180px, calc(100vw - 32px)); margin:0 auto; padding:34px 0 56px; }
+    header { display:grid; grid-template-columns:1fr auto; gap:18px; align-items:end; margin-bottom:24px; }
+    .eyebrow { display:inline-flex; gap:8px; align-items:center; width:max-content; color:#d8b4fe; background:rgba(167,139,250,.12); border:1px solid rgba(167,139,250,.22); border-radius:999px; padding:6px 10px; font-weight:750; font-size:12px; letter-spacing:.05em; text-transform:uppercase; }
+    .dot { width:8px; height:8px; border-radius:999px; background:var(--good); box-shadow:0 0 18px var(--good); }
+    h1 { margin:16px 0 8px; max-width:920px; font-size:clamp(38px, 7vw, 84px); line-height:.9; letter-spacing:-.075em; }
+    .desc { margin:0; max-width:760px; color:var(--muted); font-size:19px; }
+    .meta { color:var(--dim); font-size:13px; text-align:right; }
+    .grid { display:grid; grid-template-columns: repeat(12, 1fr); gap:18px; }
+    .card { grid-column: span 12; background:linear-gradient(180deg, rgba(255,255,255,.075), rgba(255,255,255,.035)); border:1px solid var(--line); border-radius:26px; padding:22px; box-shadow:0 24px 80px rgba(0,0,0,.32); backdrop-filter: blur(22px); }
+    .card.compact { grid-column: span 6; }
+    .card h2 { margin:0 0 4px; font-size:26px; line-height:1.05; letter-spacing:-.04em; }
+    .card .summary { margin:0 0 18px; color:var(--muted); }
+    .block { margin-top:14px; overflow:hidden; border:1px solid var(--line); border-radius:18px; background:var(--panel2); }
+    .block-head { display:flex; justify-content:space-between; gap:12px; align-items:center; padding:10px 13px; border-bottom:1px solid var(--line); color:var(--muted); font-size:12px; font-weight:760; letter-spacing:.06em; text-transform:uppercase; }
+    .block-body { padding:16px; }
+    .markdown { color:var(--text); }
+    .markdown h1,.markdown h2,.markdown h3 { margin:1em 0 .35em; letter-spacing:-.035em; line-height:1.05; }
+    .markdown h1:first-child,.markdown h2:first-child,.markdown h3:first-child,.markdown p:first-child { margin-top:0; }
+    .markdown p { margin:.65em 0; color:rgba(247,247,251,.82); }
+    .markdown ul,.markdown ol { margin:.6em 0 .6em 1.3em; padding:0; color:rgba(247,247,251,.82); }
+    .markdown code { color:#f0abfc; background:rgba(240,171,252,.10); padding:.12em .32em; border-radius:6px; }
+    pre { margin:0; overflow:auto; white-space:pre-wrap; word-break:break-word; color:#e5e7eb; font:13px/1.5 ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+    .code pre, .json pre { white-space:pre; }
+    .terminal { background:#050507; border-color:rgba(255,255,255,.16); }
+    .terminal .block-head:before { content:""; width:34px; height:10px; background:radial-gradient(circle at 5px 5px,#fb7185 4px,transparent 5px), radial-gradient(circle at 17px 5px,#fbbf24 4px,transparent 5px), radial-gradient(circle at 29px 5px,#34d399 4px,transparent 5px); }
+    .diff-line { display:block; min-height:1.5em; padding:0 4px; border-left:3px solid transparent; }
+    .diff-add { color:#bbf7d0; background:rgba(34,197,94,.10); border-left-color:#22c55e; }
+    .diff-del { color:#fecaca; background:rgba(239,68,68,.10); border-left-color:#ef4444; }
+    .diff-hunk { color:#fde68a; background:rgba(245,158,11,.10); border-left-color:#f59e0b; }
+    .diff-file { color:#bae6fd; background:rgba(14,165,233,.10); border-left-color:#0ea5e9; }
+    .image img { display:block; max-width:100%; border-radius:14px; margin:0 auto; }
+    .caption { margin:10px 0 0; color:var(--muted); font-size:13px; text-align:center; }
+    iframe.html-frame { width:100%; border:0; border-radius:14px; background:white; min-height:220px; }
+    details.json-node { margin-left:1rem; }
+    details.json-node summary { cursor:pointer; color:#bfdbfe; }
+    .json-key { color:#f0abfc; }
+    .json-primitive { color:#a7f3d0; margin-left:1rem; }
+    .empty, .error { border:1px solid var(--line); border-radius:18px; padding:18px; background:rgba(255,255,255,.055); color:var(--muted); }
+    .error { color:var(--bad); }
+    @media (max-width: 820px) { header { grid-template-columns:1fr; } .meta { text-align:left; } .card.compact { grid-column: span 12; } }
+  </style>
+</head>
+<body>
+  <div class="shell">
+    <header>
+      <div>
+        <div class="eyebrow"><span class="dot"></span> Spot Show</div>
+        <h1 id="title">Loading…</h1>
+        <p class="desc" id="description"></p>
+      </div>
+      <div class="meta" id="meta"></div>
+    </header>
+    <main class="grid" id="cards"></main>
+  </div>
+  <script>
+    const $ = (tag, cls, text) => { const el = document.createElement(tag); if (cls) el.className = cls; if (text !== undefined) el.textContent = text; return el; };
+    const text = (v) => v == null ? '' : String(v);
+    const bodyOf = (block) => text(block.body ?? block.text ?? block.content ?? '');
+
+    function blockShell(kind, title) {
+      const block = $('section', 'block ' + kind);
+      const head = $('div', 'block-head');
+      head.append($('span', '', title || kind));
+      block.append(head, $('div', 'block-body'));
+      return block;
+    }
+
+    function renderMarkdown(src) {
+      const root = $('div', 'markdown');
+      const lines = src.split(/\r?\n/);
+      let i = 0;
+      let para = [];
+      const flushPara = () => { if (!para.length) return; root.append(renderInlineParagraph(para.join(' '))); para = []; };
+      while (i < lines.length) {
+        const line = lines[i];
+        if (line.startsWith('```')) {
+          flushPara();
+          const lang = line.slice(3).trim();
+          i++;
+          const code = [];
+          while (i < lines.length && !lines[i].startsWith('```')) code.push(lines[i++]);
+          if (i < lines.length) i++;
+          const pre = $('pre'); const codeEl = $('code'); if (lang) codeEl.dataset.lang = lang; codeEl.textContent = code.join('\n'); pre.append(codeEl); root.append(pre); continue;
+        }
+        const heading = /^(#{1,3})\s+(.*)$/.exec(line);
+        if (heading) { flushPara(); root.append($('h' + heading[1].length, '', heading[2])); i++; continue; }
+        if (/^\s*[-*]\s+/.test(line)) {
+          flushPara(); const ul = $('ul');
+          while (i < lines.length && /^\s*[-*]\s+/.test(lines[i])) { ul.append($('li', '', lines[i].replace(/^\s*[-*]\s+/, ''))); i++; }
+          root.append(ul); continue;
+        }
+        if (/^\s*\d+\.\s+/.test(line)) {
+          flushPara(); const ol = $('ol');
+          while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) { ol.append($('li', '', lines[i].replace(/^\s*\d+\.\s+/, ''))); i++; }
+          root.append(ol); continue;
+        }
+        if (line.trim() === '') { flushPara(); i++; continue; }
+        para.push(line.trim()); i++;
+      }
+      flushPara();
+      return root;
+    }
+
+    function renderInlineParagraph(src) {
+      const p = $('p');
+      const parts = src.split(/(`[^`]+`)/g);
+      for (const part of parts) {
+        if (part.startsWith('`') && part.endsWith('`')) p.append($('code', '', part.slice(1, -1)));
+        else p.append(document.createTextNode(part));
+      }
+      return p;
+    }
+
+    function renderDiff(src) {
+      const pre = $('pre');
+      for (const line of src.split(/\r?\n/)) {
+        const span = $('span', 'diff-line');
+        if (line.startsWith('+') && !line.startsWith('+++')) span.classList.add('diff-add');
+        else if (line.startsWith('-') && !line.startsWith('---')) span.classList.add('diff-del');
+        else if (line.startsWith('@@')) span.classList.add('diff-hunk');
+        else if (/^(diff --git|--- |\+\+\+ )/.test(line)) span.classList.add('diff-file');
+        span.textContent = line || ' ';
+        pre.append(span);
+      }
+      return pre;
+    }
+
+    function renderJSON(value) {
+      const root = $('div');
+      const render = (v, key) => {
+        if (v && typeof v === 'object') {
+          const d = $('details', 'json-node'); d.open = true;
+          const label = key == null ? (Array.isArray(v) ? 'array' : 'object') : key;
+          d.append($('summary', '', `${label} ${Array.isArray(v) ? '[' + v.length + ']' : '{' + Object.keys(v).length + '}'}`));
+          for (const [k, child] of Object.entries(v)) d.append(render(child, k));
+          return d;
+        }
+        const row = $('div', 'json-primitive');
+        if (key != null) row.append($('span', 'json-key', key + ': '));
+        row.append(document.createTextNode(JSON.stringify(v)));
+        return row;
+      };
+      root.append(render(value));
+      return root;
+    }
+
+    let mermaidPromise;
+    function loadMermaid() {
+      if (window.mermaid) return Promise.resolve(window.mermaid);
+      if (mermaidPromise) return mermaidPromise;
+      mermaidPromise = new Promise((resolve, reject) => {
+        const s = document.createElement('script');
+        s.src = 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.min.js';
+        s.onload = () => { window.mermaid.initialize({ startOnLoad:false, theme:'dark' }); resolve(window.mermaid); };
+        s.onerror = reject;
+        document.head.append(s);
+      });
+      return mermaidPromise;
+    }
+
+    function renderBlock(block, index) {
+      const kind = text(block.kind || block.type || 'markdown').toLowerCase();
+      const shell = blockShell(kind, block.title || kind);
+      const body = shell.querySelector('.block-body');
+      if (kind === 'markdown') body.append(renderMarkdown(bodyOf(block)));
+      else if (kind === 'diff') body.append(renderDiff(bodyOf(block)));
+      else if (kind === 'terminal' || kind === 'code') { const pre = $('pre'); pre.textContent = bodyOf(block); body.append(pre); }
+      else if (kind === 'json') body.append(renderJSON(block.value ?? block.body ?? block.data ?? null));
+      else if (kind === 'image') { const img = $('img'); img.src = text(block.src || block.url); img.alt = text(block.alt || block.caption || ''); body.append(img); if (block.caption) body.append($('p', 'caption', block.caption)); }
+      else if (kind === 'html') { const frame = $('iframe', 'html-frame'); frame.sandbox = 'allow-scripts allow-forms allow-popups'; frame.srcdoc = bodyOf(block); frame.addEventListener('load', () => { try { frame.style.height = Math.max(220, frame.contentDocument.body.scrollHeight + 24) + 'px'; } catch {} }); body.append(frame); }
+      else if (kind === 'mermaid') { const target = $('div'); target.textContent = bodyOf(block); body.append(target); loadMermaid().then(async (m) => { const id = 'm' + Date.now() + '-' + index; const out = await m.render(id, bodyOf(block)); target.innerHTML = out.svg; }).catch(() => { target.textContent = bodyOf(block); }); }
+      else body.append(renderMarkdown(bodyOf(block)));
+      return shell;
+    }
+
+    async function main() {
+      const res = await fetch('show.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error('could not load show.json');
+      const show = await res.json();
+      document.title = show.title || 'Spot Show';
+      document.getElementById('title').textContent = show.title || 'Untitled show';
+      document.getElementById('description').textContent = show.description || show.summary || '';
+      document.getElementById('meta').textContent = show.updated_at || new Date().toLocaleString();
+      const cards = document.getElementById('cards'); cards.textContent = '';
+      const list = Array.isArray(show.cards) ? show.cards : [];
+      if (!list.length) { cards.append($('div', 'empty', 'No cards in show.json')); return; }
+      list.forEach((card, cardIndex) => {
+        const el = $('article', 'card' + (card.compact ? ' compact' : ''));
+        if (card.title) el.append($('h2', '', card.title));
+        if (card.summary || card.description) el.append($('p', 'summary', card.summary || card.description));
+        const blocks = Array.isArray(card.blocks) ? card.blocks : [];
+        blocks.forEach((block, blockIndex) => el.append(renderBlock(block, cardIndex + '-' + blockIndex)));
+        cards.append(el);
+      });
+    }
+    main().catch((err) => { document.getElementById('title').textContent = 'Could not render show'; document.getElementById('cards').append($('div', 'error', err.message || String(err))); });
+  </script>
+  <script src="/spot-live.js" defer data-cache-bust="true"></script>
+</body>
+</html>
+EOF
+    echo "built show site: $out"
+}
+
+show_deploy() {
+    [ $# -ge 1 ] || show_usage
+    site=$1
+    spec=${2:-show.json}
+    case $site in
+        *[!a-z0-9-]*|'') echo "error: site name '$site' must match [a-z0-9-]+" >&2; exit 1 ;;
+    esac
+    tmp=$(mktemp -d "${TMPDIR:-/tmp}/spot-show.XXXXXX")
+    cleanup_show() { rm -rf "$tmp"; }
+    trap cleanup_show EXIT INT TERM
+    show_build "$spec" "$tmp"
+    deploy "$site" "$tmp" --preserve-access
+}
+
+show() {
+    sub=${1:-help}
+    [ $# -gt 0 ] && shift
+    case $sub in
+        build)  show_build "$@" ;;
+        deploy) show_deploy "$@" ;;
+        *)      show_usage ;;
+    esac
 }
 
 current_executable() {
@@ -421,7 +723,7 @@ render_skill() {
     cat <<EOF
 ---
 name: spot
-description: Build and deploy sites on Spot, the internal hosting platform. Use when creating or updating a Spot site, or when a site needs identity, database, realtime, file uploads, text AI, AI image generation, or Slack notifications.
+description: Build and deploy sites and Spot Show card/block visual reports on Spot, the internal hosting platform. Use when creating or updating a Spot site, showing plans, architecture diagrams, diffs, terminal output, JSON, screenshots, or when a site needs identity, database, realtime, file uploads, text AI, AI image generation, or Slack notifications.
 ---
 
 # Spot
@@ -433,6 +735,100 @@ folder with an index.html, or a single index.html file. Deploy with
 $SPOT_SCHEME://<name>.$SPOT_HOSTPORT/.
 
 There is no build step and no framework. Plain HTML/CSS/JS works best.
+
+## Spot Show: card/block visual reports
+
+When you need to show a plan, architecture sketch, diff review, command
+output, or other agent work-in-progress, prefer a Spot Show over a one-off
+custom page. Before authoring one, fetch the current schema from this Spot
+server:
+
+\`\`\`sh
+curl -fsSL $SPOT_SCHEME://$SPOT_HOSTPORT/spot-show-schema.md
+\`\`\`
+
+Then write a \`show.json\` with cards and blocks and deploy it:
+
+\`\`\`sh
+spot show deploy <site-name> show.json
+\`\`\`
+
+Use the same \`<site-name>\` while iterating; open browsers refresh because
+the generated page includes \`/spot-live.js\`. To inspect the generated static
+site without deploying:
+
+\`\`\`sh
+spot show build show.json spot-show-out
+\`\`\`
+
+Minimal shape:
+
+\`\`\`json
+{
+  "title": "Auth refactor review",
+  "description": "What changed and why.",
+  "cards": [{
+    "title": "Proposed flow",
+    "blocks": [
+      { "kind": "markdown", "body": "## Summary\\n- Token exchange moves server-side" },
+      { "kind": "mermaid", "body": "graph TD\\nA[Login] --> B[Server]" },
+      { "kind": "diff", "body": "--- old\\n+++ new\\n@@ ..." },
+      { "kind": "terminal", "body": "go test ./...\\nok" },
+      { "kind": "code", "language": "go", "body": "func main() {}" },
+      { "kind": "json", "value": { "status": "ok" } },
+      { "kind": "image", "src": "https://...", "caption": "Screenshot" },
+      { "kind": "html", "body": "<button>Sandboxed mini demo</button>" }
+    ]
+  }]
+}
+\`\`\`
+
+Keep shows concise and redeploy after each meaningful change so the user can
+review in the browser. Prefer updating the same \`show.json\` and same site
+name over creating new sites.
+
+### Spot Show schema reference
+
+Top-level fields:
+
+- \`title\` string — required; names the board.
+- \`description\` string — optional one-line context.
+- \`updated_at\` string — optional; shown in the header.
+- \`cards\` array — required; ordered cards.
+
+Card fields:
+
+- \`title\` string — card heading.
+- \`summary\` or \`description\` string — short card intro.
+- \`compact\` boolean — optional; renders as a half-width card on wide screens.
+- \`blocks\` array — ordered block list.
+
+Block fields common to all kinds:
+
+- \`kind\` string — one of the kinds below.
+- \`title\` string — optional label in the block header.
+- Text blocks accept \`body\`, \`text\`, or \`content\`; prefer \`body\`.
+
+Supported block kinds:
+
+| kind | Use for | Fields |
+| --- | --- | --- |
+| \`markdown\` | prose, plans, bullets, headings, fenced code | \`body\` |
+| \`mermaid\` | flowcharts, sequence diagrams, state diagrams | \`body\` with Mermaid source |
+| \`diff\` | patches/code review | \`body\` with unified/git diff text |
+| \`terminal\` | test output, logs, commands | \`body\` with plain terminal text |
+| \`code\` | focused snippets | \`body\`, optional \`language\` |
+| \`json\` | structured data/config/API output | \`value\` for parsed JSON; \`body\` also works |
+| \`image\` | screenshots or generated images | \`src\` or \`url\`, optional \`alt\`, \`caption\` |
+| \`html\` | small interactive/custom demos | \`body\` as a complete iframe document fragment |
+
+Authoring guidance:
+
+- Use \`markdown\` + \`mermaid\` for design explanations.
+- Use \`diff\` + \`terminal\` for implementation/review checkpoints.
+- Use \`json\` when the shape of data matters more than prose.
+- Use \`html\` sparingly for small demos; it is sandboxed in an iframe.
+- Do not embed secrets: Spot source can be downloadable by authorized viewers.
 
 ## Gallery preview
 
@@ -808,6 +1204,7 @@ cmd=${1:-help}
 [ $# -gt 0 ] && shift
 case $cmd in
     deploy) deploy "$@" ;;
+    show)   show "$@" ;;
     init)   init "$@" ;;
     update) update_cli "$@" ;;
     *)      usage ;;

@@ -10,11 +10,15 @@ import (
 )
 
 // Event is what subscribed browsers receive over the websocket.
+const deployEventsCollection = "_spot_deploys"
+
 type Event struct {
 	Type       string    `json:"type"`
 	Collection string    `json:"collection"`
 	ID         string    `json:"id"`
 	Doc        *Document `json:"doc,omitempty"`
+	Version    string    `json:"version,omitempty"`
+	URL        string    `json:"url,omitempty"`
 }
 
 type subKey struct {
@@ -74,6 +78,19 @@ func (h *Hub) Publish(scope, collection string, ev Event) {
 		default:
 		}
 	}
+}
+
+func (s *Server) publishDeployEvent(site, version, url string) {
+	if s.hub == nil {
+		return
+	}
+	s.hub.Publish(site, deployEventsCollection, Event{
+		Type:       "deploy",
+		Collection: deployEventsCollection,
+		ID:         version,
+		Version:    version,
+		URL:        url,
+	})
 }
 
 type roomKey struct {

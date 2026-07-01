@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"mime/multipart"
 	"net/http"
@@ -313,11 +314,20 @@ func deployRequest(t *testing.T, host, site string, files map[string]string) *ht
 }
 
 func deployRequestOrdered(t *testing.T, host, site string, files [][2]string) *http.Request {
+	return deployRequestOrderedFields(t, host, site, files, nil)
+}
+
+func deployRequestOrderedFields(t *testing.T, host, site string, files [][2]string, fields map[string]string) *http.Request {
 	t.Helper()
 	var form bytes.Buffer
 	writer := multipart.NewWriter(&form)
 	if site != "" {
 		if err := writer.WriteField("site", site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for key, value := range fields {
+		if err := writer.WriteField(key, value); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -410,6 +420,108 @@ func TestDeployWithoutStore(t *testing.T) {
 		map[string]string{"index.html": "<h1>hi</h1>"}))
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Errorf("deploy without store = %d, want 503", rec.Code)
+	}
+}
+
+func TestDeployPublishesLiveReloadEvent(t *testing.T) {
+	hub := NewHub()
+	out := make(chan Event, 1)
+	hub.Subscribe("demo", deployEventsCollection, out)
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		deployAuth:     &recordingDeployAuth{},
+		resolver:       NewStaticResolver("dev@spot.local", "Spot Dev", nil),
+		hub:            hub,
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo",
+		map[string]string{"index.html": "<h1>hi</h1>"}))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case ev := <-out:
+		if ev.Type != "deploy" || ev.Collection != deployEventsCollection || ev.ID == "" || ev.Version == "" {
+			t.Fatalf("deploy event = %+v, want deploy event with version", ev)
+		}
+		if ev.URL != "http://demo.spot.localhost/" {
+			t.Fatalf("deploy event URL = %q, want site URL", ev.URL)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for deploy event")
+	}
+}
+
+func TestDeployPreserveAccessKeepsExistingPolicy(t *testing.T) {
+	sites := newTestSiteStore(t)
+	srv := &Server{
+		sites:          sites,
+		deployAuth:     &recordingDeployAuth{},
+		resolver:       NewStaticResolver("dev@spot.local", "Spot Dev", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	first := deployRequest(t, "spot.localhost", "secret", map[string]string{
+		"index.html":   "<h1>old</h1>",
+		"old.txt":      "remove me",
+		accessFileName: `{"allow":["alice@example.com"],"download":false}`,
+	})
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, first)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("initial deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	second := deployRequestOrderedFields(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>show</h1>"},
+		{"_spot.json", `{"title":"Show"}`},
+	}, map[string]string{"preserve_access": "true"})
+	rec = httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, second)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("preserving deploy = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+
+	rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
+	if err != nil {
+		t.Fatalf("open preserved %s: %v", accessFileName, err)
+	}
+	data, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("read preserved %s: %v", accessFileName, err)
+	}
+	if string(data) != `{"allow":["alice@example.com"],"download":false}` {
+		t.Fatalf("preserved policy = %s", data)
+	}
+	if _, _, err := sites.Open(context.Background(), "secret", "old.txt"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("old.txt after preserving deploy = %v, want ErrNotFound", err)
+	}
+}
+
+func TestDeployPreserveAccessRequiresAuthorizationBeforeStorageRead(t *testing.T) {
+	srv := &Server{
+		sites:          failingSiteStore{},
+		deployAuth:     &recordingDeployAuth{err: ErrDeployForbidden},
+		resolver:       NewStaticResolver("dev@spot.local", "Spot Dev", nil),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	req := deployRequestOrderedFields(t, "spot.localhost", "secret", [][2]string{
+		{"index.html", "<h1>show</h1>"},
+	}, map[string]string{"preserve_access": "true"})
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("unauthorized preserving deploy = %d %s, want 403", rec.Code, rec.Body.String())
 	}
 }
 

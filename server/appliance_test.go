@@ -203,6 +203,13 @@ func TestStaticServerServesApexAndSiteFiles(t *testing.T) {
 	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("window.spot")) {
 		t.Fatalf("spot.js = %d body %q", rec.Code, rec.Body.String()[:min(80, rec.Body.Len())])
 	}
+
+	req = httptest.NewRequest(http.MethodGet, "https://demo.spot.localhost/spot-live.js", nil)
+	rec = httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK || !bytes.Contains(rec.Body.Bytes(), []byte("_spot_deploys")) {
+		t.Fatalf("spot-live.js = %d body %q", rec.Code, rec.Body.String()[:min(80, rec.Body.Len())])
+	}
 }
 
 func nextEvent(t *testing.T, events <-chan Event) Event {

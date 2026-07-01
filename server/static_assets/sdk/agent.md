@@ -17,6 +17,28 @@ spot init --yes
 spot deploy <site-name>
 ```
 
+For agent visual reports, use Spot Show cards instead of hand-authoring a
+whole page. Before authoring a Spot Show, fetch the current schema from this
+Spot server:
+
+```sh
+curl -fsSL https://spot.corp.example.com/spot-show-schema.md
+```
+
+Use the same origin that served this document; for example, if this file is at
+`http://spot.localhost:8080/agent.md`, fetch
+`http://spot.localhost:8080/spot-show-schema.md`. Then write `show.json` and
+deploy it:
+
+```sh
+spot show deploy <site-name> show.json
+```
+
+The schema document defines the required JSON shape, card fields, and supported
+blocks: `markdown`, `mermaid`, `diff`, `terminal`, `code`, `json`, `image`, and
+sandboxed `html`. Redeploy the same site name while iterating; open browser tabs
+refresh via `/spot-live.js`.
+
 Spot sites are folders with an `index.html`, or a single `index.html`
 file. Plain HTML, CSS, and JS work without a build step. Load the
 browser SDK with:

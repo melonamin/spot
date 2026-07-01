@@ -155,6 +155,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var site string
 	var files []deployFile
+	preserveAccess := false
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -172,6 +173,13 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			site = strings.TrimSpace(string(raw))
+		case "preserve_access":
+			raw, err := io.ReadAll(io.LimitReader(part, 32))
+			if err != nil {
+				deployReadError(w, err)
+				return
+			}
+			preserveAccess = parseDeployBool(string(raw))
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -243,6 +251,25 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		log.Printf("deploy %s: authorize: %v", site, err)
 		httpError(w, http.StatusInternalServerError, "could not authorize deploy")
 		return
+	}
+	if preserveAccess {
+		files, err = s.preserveExistingAccessPolicy(r.Context(), site, files)
+		if err != nil {
+			log.Printf("deploy %s: preserve access: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not preserve existing "+accessFileName)
+			return
+		}
+		if len(files) > maxDeployFiles {
+			httpError(w, http.StatusBadRequest,
+				fmt.Sprintf("too many files in the deploy (max %d)", maxDeployFiles))
+			return
+		}
+		if err := validateDeployPolicy(site, files); err != nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		incomingPolicy, hasIncomingPolicy, incomingPolicyErr = deployAccessPolicy(site, files)
+		restricted = policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
 	}
 	var policyOnFailure *failurePolicyCache
 	if authz.Action == "create" {
@@ -421,10 +448,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if s.shouldAutoTag(metadata, existingSiteTags, restricted) {
 		s.scheduleAutoTag(site, files, resolveSiteMetadata(metadata, existingSiteTags))
 	}
+	version := time.Now().UTC().Format("20060102T150405.000000000Z")
+	url := s.siteURL(r, site)
+	s.publishDeployEvent(site, version, url)
 	writeJSON(w, http.StatusOK, map[string]any{
-		"site":  site,
-		"url":   s.siteURL(r, site),
-		"files": len(files),
+		"site":    site,
+		"url":     url,
+		"files":   len(files),
+		"version": version,
 	})
 }
 
@@ -442,6 +473,36 @@ func conflictingStalePaths(existing []string, files []deployFile, keep map[strin
 		}
 	}
 	return out
+}
+
+func parseDeployBool(raw string) bool {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func (s *Server) preserveExistingAccessPolicy(ctx context.Context, site string, files []deployFile) ([]deployFile, error) {
+	for _, f := range files {
+		if f.path == accessFileName {
+			return files, nil
+		}
+	}
+	rc, _, err := s.sites.Open(ctx, site, accessFileName)
+	if errors.Is(err, ErrNotFound) {
+		return files, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer rc.Close()
+	data, err := io.ReadAll(rc)
+	if err != nil {
+		return nil, err
+	}
+	return append(files, deployFile{path: accessFileName, data: data}), nil
 }
 
 func pathShapeConflict(old, next string) bool {
