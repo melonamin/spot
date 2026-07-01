@@ -402,6 +402,8 @@ Common files:
 - `sdk/spot.js`: browser SDK used by deployed sites.
 - `sdk/spot`: CLI helper installed by `install.sh`.
 - `sdk/agent.md`: agent-facing instructions distributed by Spot.
+- `sdk/spot-agent-howto.md` and `sdk/spot-show-schema.md`: agent-facing Spot
+  and Spot Show workflow docs.
 
 Embedded copies live in `server/static_assets/sdk/` and are compiled into the Go
 binary. After editing SDK assets in `sdk/`, regenerate the embedded copies:
@@ -454,7 +456,8 @@ Default verification:
 just test
 ```
 
-This runs `go vet ./...` and `go test ./...` in `server/`.
+This runs `go vet ./...` and `go test ./...` in `server/`, then
+`scripts/cli-smoke.sh` for CLI and Spot Show behavior.
 
 Use broader tests when changing behavior across boundaries:
 

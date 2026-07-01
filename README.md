@@ -75,6 +75,59 @@ printf 'SPOT_URL=https://spot.example.com\n' > ~/.config/spot/env
 The apex page is also a deployer: open `http://spot.localhost:8080/`,
 drop a folder or `index.html`, pick a name, and launch.
 
+## Spot Show Reports
+
+Spot Show turns a JSON card/block document into a visual report site. Use it
+for agent work logs, architecture sketches, review notes, diffs, terminal
+output, structured data, diagrams, screenshots, or small sandboxed demos.
+
+Start from a template:
+
+```sh
+cli/spot show init show.json
+```
+
+Deploy it to a stable site name:
+
+```sh
+cli/spot show deploy spot-show show.json
+```
+
+For local demos, open the browser after deploy:
+
+```sh
+cli/spot show deploy --open spot-show show.json
+```
+
+For active iteration, watch the file and redeploy on changes:
+
+```sh
+cli/spot show watch --open spot-show show.json
+```
+
+Open the generated site at:
+
+```text
+http://spot-show.spot.localhost:8080/
+```
+
+The generated page includes `/spot-live.js`, so open tabs refresh after each
+redeploy. The generated `_spot.json` uses the show's `title` and `description`
+for gallery metadata.
+
+The full schema is served by the running Spot instance:
+
+```sh
+cli/spot show-schema
+```
+
+An example report lives in `examples/spot-show/show.json` and can be deployed
+to the local stack with:
+
+```sh
+just deploy-show-demo
+```
+
 ## Deployment Modes
 
 ### Prebuilt Images
@@ -559,7 +612,8 @@ just test-integration
 just e2e
 ```
 
-`just e2e` starts compose, deploys the demo site, exercises static
+`just test` runs Go vet/unit tests plus the CLI smoke test. `just e2e` starts
+compose, deploys the demo site, exercises static
 serving, DB APIs, uploads, site deletion, and platform pages.
 
 ## Production Notes
