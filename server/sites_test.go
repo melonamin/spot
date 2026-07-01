@@ -188,6 +188,7 @@ func TestSitesAPIIsApexOnly(t *testing.T) {
 	for _, tt := range []struct{ method, path string }{
 		{http.MethodGet, "/api/sites/mine"},
 		{http.MethodGet, "/api/sites/public"},
+		{http.MethodGet, "/api/sites/stats"},
 		{http.MethodDelete, "/api/sites/demo"},
 	} {
 		req := sitesRequest(tt.method, tt.path)
@@ -229,6 +230,71 @@ func TestSitesAPIRequiresIdentity(t *testing.T) {
 		if rec.Code != http.StatusServiceUnavailable {
 			t.Errorf("%s %s without resolver = %d, want 503", tt.method, tt.path, rec.Code)
 		}
+	}
+}
+
+func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
+	dir := t.TempDir()
+	writePolicy(t, dir, "locked", `{"allow":["bob@example.com"],"download":false}`)
+	admin := &fakeSiteAdmin{all: []SiteRecord{
+		{
+			Name:        "open",
+			OwnerEmail:  "alice@example.com",
+			Title:       "Open",
+			Description: "Visible",
+			Tags:        []string{"dashboard", "tool"},
+			CreatedAt:   time.Date(2026, 6, 29, 10, 0, 0, 0, time.UTC),
+			UpdatedAt:   time.Date(2026, 7, 1, 10, 0, 0, 0, time.UTC),
+		},
+		{
+			Name:       "locked",
+			OwnerEmail: "bob@example.com",
+			Tags:       []string{"secret-roadmap"},
+			CreatedAt:  time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC),
+			UpdatedAt:  time.Date(2026, 6, 30, 10, 0, 0, 0, time.UTC),
+		},
+	}}
+	srv := &Server{
+		siteAdmin:      admin,
+		policies:       NewPolicyStore(dir, time.Minute),
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/stats"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("site stats = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	var body siteStatsJSON
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatal(err)
+	}
+	if body.Totals.Total != 2 || body.Totals.Public != 1 || body.Totals.Private != 1 {
+		t.Fatalf("totals = %+v, want 2 total, 1 public, 1 private", body.Totals)
+	}
+	if body.Totals.Creators != 2 || body.Totals.NoDownloadZip != 1 {
+		t.Fatalf("totals = %+v, want 2 creators and 1 no-download site", body.Totals)
+	}
+	if len(body.Tags) != 2 || body.Tags[0].Tag == "secret-roadmap" || body.Tags[1].Tag == "secret-roadmap" {
+		t.Fatalf("tags = %+v, want only public tags", body.Tags)
+	}
+	if len(body.Growth) == 0 || body.Growth[len(body.Growth)-1].Total != 2 ||
+		body.Growth[len(body.Growth)-1].Public != 1 || body.Growth[len(body.Growth)-1].Private != 1 {
+		t.Fatalf("growth = %+v, want final 2/1/1", body.Growth)
+	}
+}
+
+func TestSiteStatsDoesNotRequireIdentity(t *testing.T) {
+	srv := &Server{
+		siteAdmin:      &fakeSiteAdmin{},
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+	}
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/stats"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("site stats without identity = %d %s, want 200", rec.Code, rec.Body.String())
 	}
 }
 

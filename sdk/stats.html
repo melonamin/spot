@@ -1,0 +1,598 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <meta name="theme-color" content="#5a4bf0">
+  <title>Spot - stats</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>📍</text></svg>">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      --field: #5a4bf0;
+      --grid: rgba(255, 255, 255, .09);
+      --ink: #15121e;
+      --card: #fffefb;
+      --mutedink: #8d879b;
+      --accent: #5a4bf0;
+      --public: #23b14d;
+      --private: #f7258b;
+      --warm: #ff9f1c;
+      --paper: #fff7d6;
+      --sky: #e9f8ff;
+      --font-logo: 'Pacifico', 'Brush Script MT', cursive;
+      --font-mono: 'Space Mono', ui-monospace, 'SF Mono', monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(var(--grid) 1.5px, transparent 1.5px),
+        linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px),
+        var(--field);
+      background-size: 44px 44px, 44px 44px, auto;
+    }
+
+    .topbar {
+      display: flex;
+      align-items: center;
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 26px 24px 8px;
+    }
+    .brand,
+    .title {
+      position: relative;
+      z-index: 0;
+      color: #fff;
+      text-decoration: none;
+    }
+    .brand {
+      font: 400 32px/1.35 var(--font-logo);
+    }
+    .title {
+      margin: 0;
+      font: 400 clamp(48px, 8vw, 76px)/1.3 var(--font-logo);
+    }
+    .brand::before,
+    .brand::after,
+    .title::before,
+    .title::after {
+      content: attr(data-text);
+      position: absolute;
+      inset: 0;
+      color: var(--ink);
+      -webkit-text-stroke: .13em var(--ink);
+    }
+    .brand::after,
+    .title::after { transform: translate(.05em, .07em); z-index: -2; }
+    .brand::before,
+    .title::before { z-index: -1; }
+
+    .github-link {
+      margin-left: auto;
+      display: inline-grid;
+      place-items: center;
+      width: 44px;
+      height: 44px;
+      border: 3px solid var(--ink);
+      border-radius: 999px;
+      background: var(--card);
+      color: var(--ink);
+      box-shadow: 5px 6px 0 var(--ink);
+      text-decoration: none;
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease, color .12s ease;
+    }
+    .github-link:hover {
+      transform: translate(-2px, -2px) rotate(-4deg);
+      box-shadow: 7px 8px 0 var(--ink);
+      background: var(--ink);
+      color: #fff;
+    }
+    .github-link svg { width: 23px; height: 23px; }
+
+    main {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 28px 24px 92px;
+    }
+    .pagehead {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(240px, 360px);
+      gap: 24px;
+      align-items: end;
+      margin: 20px 0 30px;
+    }
+    .sub {
+      margin: 14px 0 0;
+      font: 700 12px/1.8 var(--font-mono);
+      letter-spacing: .26em;
+      text-transform: uppercase;
+      color: rgba(255, 255, 255, .92);
+    }
+    .summary {
+      border: 3px solid var(--ink);
+      border-radius: 18px;
+      background: var(--paper);
+      box-shadow: 7px 8px 0 var(--ink);
+      padding: 18px 20px;
+      font: 700 12px/1.65 var(--font-mono);
+      letter-spacing: .08em;
+      text-transform: uppercase;
+    }
+    .summary b { font-size: 28px; letter-spacing: 0; }
+
+    .kpis {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 18px;
+      margin-bottom: 24px;
+    }
+    .kpi,
+    .panel,
+    .note {
+      border: 3px solid var(--ink);
+      border-radius: 18px;
+      background: var(--card);
+      box-shadow: 7px 8px 0 var(--ink);
+    }
+    .kpi {
+      padding: 18px 18px 16px;
+      min-height: 116px;
+    }
+    .kpi .label,
+    .panel-title,
+    .bar-label,
+    .legend {
+      font: 700 10px/1.4 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .kpi .value {
+      margin-top: 8px;
+      font: 700 clamp(26px, 4vw, 40px)/1 var(--font-mono);
+      letter-spacing: 0;
+    }
+    .kpi .detail {
+      margin-top: 9px;
+      font: 700 11px/1.5 var(--font-mono);
+      color: var(--ink);
+    }
+    .kpi.public { background: #d9f4e1; }
+    .kpi.private { background: #ffe0f0; }
+    .kpi.week { background: #fff0c2; }
+    .kpi.creators { background: var(--sky); }
+
+    .layout {
+      display: grid;
+      grid-template-columns: minmax(0, 1.6fr) minmax(280px, .9fr);
+      gap: 24px;
+      align-items: start;
+    }
+    .panel {
+      padding: 20px;
+      margin-bottom: 24px;
+    }
+    .panel-head {
+      display: flex;
+      gap: 16px;
+      align-items: baseline;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .panel h2 {
+      margin: 0;
+      font: 700 18px/1.25 var(--font-mono);
+    }
+    .legend {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--ink);
+    }
+    .legend span {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      white-space: nowrap;
+    }
+    .swatch {
+      width: 12px;
+      height: 12px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--accent);
+    }
+    .swatch.public { background: var(--public); }
+    .swatch.private { background: var(--private); }
+    .swatch.total { background: var(--ink); }
+
+    .chart {
+      width: 100%;
+      aspect-ratio: 16 / 9;
+      border: 2px solid var(--ink);
+      border-radius: 12px;
+      background:
+        linear-gradient(rgba(21, 18, 30, .08) 1px, transparent 1px),
+        linear-gradient(90deg, rgba(21, 18, 30, .08) 1px, transparent 1px),
+        #fffefb;
+      background-size: 36px 36px;
+      overflow: hidden;
+    }
+    .chart svg {
+      width: 100%;
+      height: 100%;
+      display: block;
+    }
+    .axis-label {
+      font: 700 8px/1 var(--font-mono);
+      letter-spacing: .08em;
+      fill: var(--mutedink);
+      text-transform: uppercase;
+    }
+
+    .activity {
+      display: grid;
+      grid-template-columns: repeat(30, minmax(4px, 1fr));
+      gap: 5px;
+      align-items: end;
+      min-height: 112px;
+      padding-top: 12px;
+    }
+    .day {
+      position: relative;
+      min-height: 10px;
+      display: grid;
+      grid-template-rows: 1fr auto;
+      gap: 2px;
+    }
+    .day i,
+    .day b {
+      display: block;
+      min-height: 4px;
+      border: 2px solid var(--ink);
+      border-radius: 5px 5px 2px 2px;
+    }
+    .day i { background: var(--warm); align-self: end; }
+    .day b { background: var(--public); }
+    .day .empty {
+      min-height: 0;
+      height: 0;
+      border: 0;
+    }
+
+    .bars {
+      display: grid;
+      gap: 12px;
+    }
+    .bar-row {
+      display: grid;
+      grid-template-columns: minmax(92px, .75fr) minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+    }
+    .bar-track {
+      height: 18px;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: #f5f1ea;
+      overflow: hidden;
+    }
+    .bar-fill {
+      display: block;
+      height: 100%;
+      min-width: 8px;
+      background: var(--accent);
+    }
+    .bar-fill.public { background: var(--public); }
+    .bar-fill.private { background: var(--private); }
+    .bar-fill.warm { background: var(--warm); }
+    .bar-count {
+      font: 700 12px/1 var(--font-mono);
+    }
+
+    .note {
+      padding: 34px 24px;
+      text-align: center;
+      font: 700 14px/1.7 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .note.error { color: #d92d2d; }
+
+    footer {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding: 0 24px 60px;
+      font: 400 12px/2.2 var(--font-mono);
+      color: rgba(255, 255, 255, .82);
+      text-align: center;
+    }
+    footer a {
+      color: #fff;
+      text-decoration: underline;
+      text-underline-offset: 3px;
+    }
+    footer a[aria-current="page"] {
+      color: var(--paper);
+      font-weight: 700;
+      text-decoration: none;
+    }
+
+    button:focus-visible,
+    a:focus-visible {
+      outline: 3px solid var(--paper);
+      outline-offset: 3px;
+    }
+
+    @media (max-width: 840px) {
+      .pagehead,
+      .layout {
+        grid-template-columns: 1fr;
+      }
+      .kpis {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+    }
+    @media (max-width: 520px) {
+      .topbar { padding-top: 22px; }
+      .title { font-size: 48px; }
+      .kpis { grid-template-columns: 1fr; }
+      .panel { padding: 17px; }
+      .panel-head { display: block; }
+      .legend { margin-top: 12px; }
+      .bar-row { grid-template-columns: 1fr auto; }
+      .bar-track { grid-column: 1 / -1; grid-row: 2; }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      * { transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" data-text="Spot">Spot</a>
+    <a class="github-link" href="https://github.com/melonamin/spot" target="_blank" rel="noopener"
+       aria-label="Open Spot on GitHub" title="Open Spot on GitHub">
+      <svg viewBox="0 0 24 24" aria-hidden="true">
+        <path fill="currentColor" fill-rule="evenodd" clip-rule="evenodd"
+              d="M12 .5C5.65.5.5 5.65.5 12c0 5.09 3.29 9.39 7.86 10.91.58.11.79-.25.79-.56v-2.02c-3.2.7-3.88-1.37-3.88-1.37-.52-1.33-1.28-1.69-1.28-1.69-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.19 1.77 1.19 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.25.73-1.54-2.56-.29-5.25-1.28-5.25-5.69 0-1.26.45-2.28 1.19-3.09-.12-.29-.52-1.46.11-3.04 0 0 .97-.31 3.17 1.18a11.1 11.1 0 0 1 5.78 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.58.23 2.75.11 3.04.74.81 1.19 1.83 1.19 3.09 0 4.42-2.7 5.4-5.26 5.68.41.36.78 1.06.78 2.13v3.15c0 .31.21.67.8.56A11.51 11.51 0 0 0 23.5 12C23.5 5.65 18.35.5 12 .5Z"/>
+      </svg>
+    </a>
+  </header>
+
+  <main>
+    <section class="pagehead" aria-labelledby="stats-title">
+      <div>
+        <h1 class="title" id="stats-title" data-text="Pulse">Pulse</h1>
+        <p class="sub">Public aggregate stats for the Spot mesh</p>
+      </div>
+      <div class="summary" id="summary">Loading mesh pulse...</div>
+    </section>
+
+    <div id="content" hidden>
+      <section class="kpis" aria-label="Spot totals">
+        <article class="kpi">
+          <div class="label">total spots</div>
+          <div class="value" id="total">0</div>
+          <div class="detail" id="public-ratio">0% public</div>
+        </article>
+        <article class="kpi public">
+          <div class="label">public</div>
+          <div class="value" id="public">0</div>
+          <div class="detail">visible in the gallery</div>
+        </article>
+        <article class="kpi private">
+          <div class="label">private</div>
+          <div class="value" id="private">0</div>
+          <div class="detail">counted, not listed</div>
+        </article>
+        <article class="kpi week">
+          <div class="label">updated this week</div>
+          <div class="value" id="updated-week">0</div>
+          <div class="detail" id="creator-count">0 creators</div>
+        </article>
+      </section>
+
+      <div class="layout">
+        <section>
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">growth</div>
+                <h2>Total spots over time</h2>
+              </div>
+              <div class="legend" aria-label="Chart legend">
+                <span><i class="swatch public"></i>public</span>
+                <span><i class="swatch private"></i>private</span>
+                <span><i class="swatch total"></i>total</span>
+              </div>
+            </div>
+            <div class="chart" id="growth-chart" role="img" aria-label="Cumulative public and private Spot count over time"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-head">
+              <div>
+                <div class="panel-title">last 30 days</div>
+                <h2>Deploy rhythm</h2>
+              </div>
+              <div class="legend">
+                <span><i class="swatch" style="background: var(--warm)"></i>new</span>
+                <span><i class="swatch public"></i>updated</span>
+              </div>
+            </div>
+            <div class="activity" id="activity" aria-label="Daily new and updated site counts"></div>
+          </article>
+        </section>
+
+        <aside>
+          <article class="panel">
+            <div class="panel-title">public tags</div>
+            <h2>What people are making</h2>
+            <div class="bars" id="tags"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-title">freshness</div>
+            <h2>How alive it is</h2>
+            <div class="bars" id="freshness"></div>
+          </article>
+
+          <article class="panel">
+            <div class="panel-title">gallery health</div>
+            <h2>Metadata coverage</h2>
+            <div class="bars" id="quality"></div>
+          </article>
+        </aside>
+      </div>
+    </div>
+
+    <div class="note" id="note" hidden></div>
+  </main>
+
+  <footer>
+    <nav aria-label="Spot pages">
+      <a href="/">deploy</a> &nbsp;.&nbsp;
+      <a href="/spots">my spots</a> &nbsp;.&nbsp;
+      <a href="/gallery">gallery</a> &nbsp;.&nbsp;
+      <a href="/stats" aria-current="page">stats</a>
+    </nav>
+  </footer>
+
+  <script>
+    (() => {
+      'use strict';
+
+      const $ = (id) => document.getElementById(id);
+      const fmt = (n) => new Intl.NumberFormat().format(n || 0);
+      const pct = (part, total) => total ? Math.round((part / total) * 100) : 0;
+      const maxOf = (items, get) => Math.max(1, ...items.map(get));
+
+      const showNote = (message, isError) => {
+        const note = $('note');
+        note.hidden = false;
+        note.classList.toggle('error', !!isError);
+        note.textContent = message;
+      };
+
+      const api = async (path) => {
+        let res;
+        try {
+          res = await fetch(path);
+        } catch {
+          throw new Error('could not reach the Spot API');
+        }
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) throw new Error(body.error || 'request failed (HTTP ' + res.status + ')');
+        return body;
+      };
+
+      const pointLine = (points) => points.map((p) => p.x.toFixed(2) + ',' + p.y.toFixed(2)).join(' ');
+      const makeArea = (top, bottom) => pointLine(top) + ' ' + pointLine([...bottom].reverse());
+
+      const renderGrowth = (data) => {
+        const growth = data.growth || [];
+        const total = data.totals.total || 0;
+        if (!growth.length || !total) {
+          $('growth-chart').innerHTML = '<svg viewBox="0 0 640 360"><text x="320" y="180" text-anchor="middle" class="axis-label">no spots yet</text></svg>';
+          return;
+        }
+        const w = 640, h = 360, pad = 34;
+        const max = maxOf(growth, (p) => p.total);
+        const scaleX = (i) => growth.length === 1 ? pad : pad + (i / (growth.length - 1)) * (w - pad * 2);
+        const scaleY = (value) => h - pad - (value / max) * (h - pad * 2);
+        const baseline = growth.map((_, i) => ({ x: scaleX(i), y: h - pad }));
+        const privateLine = growth.map((p, i) => ({ x: scaleX(i), y: scaleY(p.private) }));
+        const totalLine = growth.map((p, i) => ({ x: scaleX(i), y: scaleY(p.total) }));
+        const labels = [growth[0].date, growth[growth.length - 1].date];
+
+        $('growth-chart').innerHTML = `
+          <svg viewBox="0 0 ${w} ${h}" aria-hidden="true">
+            <polygon points="${makeArea(privateLine, baseline)}" fill="rgba(247, 37, 139, .55)" stroke="none"></polygon>
+            <polygon points="${makeArea(totalLine, privateLine)}" fill="rgba(35, 177, 77, .55)" stroke="none"></polygon>
+            <polyline points="${pointLine(totalLine)}" fill="none" stroke="#15121e" stroke-width="5" stroke-linejoin="round" stroke-linecap="round"></polyline>
+            <polyline points="${pointLine(privateLine)}" fill="none" stroke="#f7258b" stroke-width="3" stroke-linejoin="round" stroke-linecap="round"></polyline>
+            <text x="${pad}" y="${h - 9}" class="axis-label">${labels[0]}</text>
+            <text x="${w - pad}" y="${h - 9}" text-anchor="end" class="axis-label">${labels[1]}</text>
+            <text x="${pad}" y="${pad - 10}" class="axis-label">${fmt(max)} spots</text>
+          </svg>`;
+      };
+
+      const renderActivity = (items) => {
+        const max = maxOf(items, (p) => (p.created || 0) + (p.updated || 0));
+        $('activity').replaceChildren(...items.map((day) => {
+          const wrap = document.createElement('div');
+          wrap.className = 'day';
+          const created = document.createElement('i');
+          const updated = document.createElement('b');
+          const createdValue = day.created || 0;
+          const updatedValue = day.updated || 0;
+          const createdPct = createdValue ? Math.max(4, Math.round((createdValue / max) * 92)) : 0;
+          const updatedPct = updatedValue ? Math.max(4, Math.round((updatedValue / max) * 92)) : 0;
+          created.style.height = createdPct + 'px';
+          updated.style.height = updatedPct + 'px';
+          created.classList.toggle('empty', createdValue === 0);
+          updated.classList.toggle('empty', updatedValue === 0);
+          wrap.title = day.date + ': ' + fmt(day.created) + ' new, ' + fmt(day.updated) + ' updated';
+          wrap.append(created, updated);
+          return wrap;
+        }));
+      };
+
+      const renderBars = (id, items, labelKey, colorClass) => {
+        const max = maxOf(items, (item) => item.count);
+        const rows = items.map((item) => {
+          const row = document.createElement('div');
+          row.className = 'bar-row';
+          const label = document.createElement('div');
+          label.className = 'bar-label';
+          label.textContent = item[labelKey];
+          const track = document.createElement('div');
+          track.className = 'bar-track';
+          const fill = document.createElement('span');
+          fill.className = 'bar-fill ' + (colorClass || '');
+          fill.style.width = Math.max(5, Math.round((item.count / max) * 100)) + '%';
+          track.appendChild(fill);
+          const count = document.createElement('div');
+          count.className = 'bar-count';
+          count.textContent = fmt(item.count);
+          row.append(label, track, count);
+          return row;
+        });
+        $(id).replaceChildren(...rows);
+      };
+
+      const main = async () => {
+        const data = await api('/api/sites/stats');
+        const totals = data.totals || {};
+        $('summary').innerHTML = '<b>' + fmt(totals.total) + '</b><br>spots across the mesh';
+        $('total').textContent = fmt(totals.total);
+        $('public').textContent = fmt(totals.public);
+        $('private').textContent = fmt(totals.private);
+        $('updated-week').textContent = fmt(totals.updated_week);
+        $('creator-count').textContent = fmt(totals.creators) + ' creator' + (totals.creators === 1 ? '' : 's');
+        $('public-ratio').textContent = pct(totals.public, totals.total) + '% public';
+
+        renderGrowth(data);
+        renderActivity(data.activity || []);
+        renderBars('tags', (data.tags || []).length ? data.tags : [{ tag: 'no public tags yet', count: 0 }], 'tag', 'public');
+        renderBars('freshness', data.freshness || [], 'label', 'warm');
+        renderBars('quality', data.quality || [], 'label', '');
+        $('content').hidden = false;
+      };
+
+      main().catch((err) => {
+        showNote(err.message || String(err), true);
+      });
+    })();
+  </script>
+</body>
+</html>
