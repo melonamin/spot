@@ -8,7 +8,8 @@ spot show deploy <site-name> show.json
 ```
 
 Reuse the same site name while iterating. Open browser tabs refresh after each
-redeploy through `/spot-live.js`.
+redeploy through `/spot-live.js`. The generated `_spot.json` uses the show's
+`title` and `description` for gallery metadata.
 
 ## Top-level shape
 
@@ -85,8 +86,9 @@ Use for explanations, plans, tradeoffs, bullets, and prose.
 }
 ```
 
-Supported markdown is intentionally simple: headings, paragraphs, lists, inline
-code, and fenced code render well. Raw HTML should use an `html` block instead.
+Supported markdown is intentionally simple: headings, paragraphs, lists,
+blockquotes, tables, links, bold text, inline code, and fenced code render well.
+Raw HTML should use an `html` block instead.
 
 ### `mermaid`
 
@@ -257,7 +259,12 @@ source may be downloadable by authorized viewers.
    curl -fsSL "$SPOT_URL/spot-show-schema.md"
    ```
 
-2. Write or update `show.json`.
+2. Write or update `show.json`. To create a starter file:
+
+   ```sh
+   spot show init show.json
+   ```
+
 3. Deploy the same site name:
 
    ```sh
@@ -265,7 +272,12 @@ source may be downloadable by authorized viewers.
    ```
 
 4. Tell the user the URL once. On later updates, just redeploy and summarize what
-   changed.
+   changed. For active local iteration, use:
+
+   ```sh
+   spot show watch <site-name> show.json
+   ```
+
 5. Prefer updating the existing show over creating a new site.
 
 ## Safety notes

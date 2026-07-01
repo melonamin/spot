@@ -166,6 +166,8 @@ func TestStaticServerServesApexAndSiteFiles(t *testing.T) {
 	}{
 		{"/install.sh", "Install the Spot CLI"},
 		{"/agent.md", "Spot Agent Setup"},
+		{"/spot-agent-howto.md", "Spot — agent how-to"},
+		{"/spot-show-schema.md", "Spot Show schema"},
 		{"/spot", "usage: spot <command>"},
 	} {
 		req = httptest.NewRequest(http.MethodGet, "https://spot.localhost"+tt.path, nil)

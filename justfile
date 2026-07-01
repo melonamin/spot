@@ -26,6 +26,7 @@ build-binary:
 # Unit tests (no external services needed).
 test:
     cd server && go vet ./... && go test ./...
+    ./scripts/cli-smoke.sh
 
 # Integration tests need SQLite and (for the filestore tests) a running
 # S3/RustFS endpoint.
@@ -57,3 +58,7 @@ deploy *args:
 # Deploy the demo guestbook to the local stack.
 deploy-demo:
     cd examples/demo && ../../cli/spot deploy demo
+
+# Deploy the Spot Show example to the local stack.
+deploy-show-demo:
+    SPOT_URL=http://spot.localhost:8080 ./cli/spot show deploy spot-show examples/spot-show/show.json

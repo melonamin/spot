@@ -32,7 +32,7 @@ curl -fsSL https://spot.corp.example.com/spot-agent-howto.md
 ```
 
 For Spot Show card/block reports, also fetch the schema before writing
-`show.json`:
+`show.json` or running `spot show init`:
 
 ```sh
 spot show-schema

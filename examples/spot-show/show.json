@@ -1,0 +1,65 @@
+{
+  "title": "Spot Show demo",
+  "description": "A card/block visual report rendered by Spot and refreshed on redeploy.",
+  "updated_at": "example",
+  "cards": [
+    {
+      "title": "What Spot Show is",
+      "summary": "Agents write this JSON instead of hand-authoring a whole page.",
+      "blocks": [
+        {
+          "kind": "markdown",
+          "title": "Summary",
+          "body": "## Agent visual report\n- One site name acts like a session\n- Cards group focused ideas\n- Blocks render prose, diagrams, diffs, logs, data, and demos\n- Redeploying refreshes open browser tabs"
+        },
+        {
+          "kind": "mermaid",
+          "title": "Workflow",
+          "body": "flowchart LR\n  A[Agent] --> B[show.json]\n  B --> C[spot show deploy]\n  C --> D[Spot site]\n  D --> E[Browser refresh]"
+        }
+      ]
+    },
+    {
+      "title": "Implementation checkpoint",
+      "summary": "A typical agent update combines a diff with validation output.",
+      "blocks": [
+        {
+          "kind": "diff",
+          "title": "Example patch",
+          "body": "diff --git a/app.js b/app.js\n@@\n-console.log('old')\n+console.log('new')"
+        },
+        {
+          "kind": "terminal",
+          "title": "Validation",
+          "body": "$ just test\nok  spot/server  1.8s"
+        }
+      ]
+    },
+    {
+      "title": "Structured status",
+      "compact": true,
+      "blocks": [
+        {
+          "kind": "json",
+          "title": "State",
+          "value": {
+            "live_reload": true,
+            "same_site_updates": true,
+            "supported_blocks": ["markdown", "mermaid", "diff", "terminal", "code", "json", "image", "html"]
+          }
+        }
+      ]
+    },
+    {
+      "title": "Small custom demo",
+      "compact": true,
+      "blocks": [
+        {
+          "kind": "html",
+          "title": "Sandboxed HTML",
+          "body": "<style>body{margin:0;min-height:180px;display:grid;place-items:center;background:linear-gradient(135deg,#0f172a,#7c3aed);color:white;font:18px system-ui}.box{padding:20px 24px;border:1px solid rgba(255,255,255,.3);border-radius:18px;background:rgba(255,255,255,.12)}</style><div class=box>Custom HTML block</div>"
+        }
+      ]
+    }
+  ]
+}
