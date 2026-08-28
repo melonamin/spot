@@ -7,8 +7,9 @@
 # apex web deployer uses), so the only configuration is where the
 # platform lives. Via environment (or $XDG_CONFIG_HOME/spot/env,
 # default ~/.config/spot/env, sourced if present):
-#   SPOT_URL   apex URL of the Spot deployment
-#              (default http://spot.localhost:8080)
+#   SPOT_URL          apex URL of the Spot deployment
+#                     (default http://spot.localhost:8080)
+#   SPOT_PUBLISH_KEY  optional repository publishing key; environment only
 set -eu
 
 # Read SPOT_URL from the config without executing the file: parse it as
@@ -186,8 +187,23 @@ EOF
     fi
 
     # Capture curl's exit without tripping set -e, so a network/HTTP
-    # failure reaches the friendly message below instead of aborting.
-    if ! out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
+    # failure reaches the friendly message below instead of aborting. When a
+    # publishing key is present, feed its header through curl config on stdin;
+    # putting -H in "$@" would expose the key through the process argument list.
+    if [ -n "${SPOT_PUBLISH_KEY:-}" ]; then
+        case $SPOT_PUBLISH_KEY in
+            *[!A-Za-z0-9_-]*|'')
+                echo "error: SPOT_PUBLISH_KEY has an invalid format" >&2
+                exit 1
+                ;;
+        esac
+		if ! out=$(cd "$dir" && printf 'header = "Authorization: Bearer %s"\n' "$SPOT_PUBLISH_KEY" | \
+			curl -q --config - -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
+                "$@" "$SPOT_URL/api/deploy"); then
+            echo "error: could not reach $SPOT_URL/api/deploy" >&2
+            exit 1
+        fi
+    elif ! out=$(cd "$dir" && curl -sS $SPOT_CURL_OPTS -w '\n%{http_code}' \
         "$@" "$SPOT_URL/api/deploy"); then
         echo "error: could not reach $SPOT_URL/api/deploy" >&2
         exit 1
@@ -196,6 +212,9 @@ EOF
     body=$(printf '%s' "$out" | sed '$d')
     if [ "$status" != "200" ]; then
         echo "error: deploy failed (HTTP $status): $body" >&2
+        if [ "$status" = "401" ] && [ -n "${SPOT_PUBLISH_KEY:-}" ]; then
+            echo "       SPOT_PUBLISH_KEY may be invalid or revoked" >&2
+        fi
         exit 1
     fi
 }
@@ -257,8 +276,8 @@ usage:
   spot show init [show.json] [--force]
   spot show validate [show.json]
   spot show build [show.json] [out-dir]
-  spot show deploy [--open] [--no-screenshot] <site-name> [show.json]
-  spot show watch [--open] [--no-screenshot] [--interval seconds] <site-name> [show.json]
+  spot show deploy [--open] [--screenshot|--no-screenshot] <site-name> [show.json]
+  spot show watch [--open] [--screenshot|--no-screenshot] [--interval seconds] <site-name> [show.json]
 
 show.json shape:
 {
@@ -1145,7 +1164,7 @@ open_url() {
 
 show_deploy() {
     show_open=0
-    show_screenshot=1
+    show_screenshot=auto
     while [ $# -gt 0 ]; do
         case $1 in
             --open) show_open=1; shift ;;
@@ -1157,6 +1176,13 @@ show_deploy() {
         esac
     done
     [ $# -ge 1 ] || show_usage
+    if [ "$show_screenshot" = auto ]; then
+        show_screenshot=1
+        if [ -n "${SPOT_PUBLISH_KEY:-}" ]; then
+            show_screenshot=0
+            echo "screenshot: skipped for publishing-key deploy (pass --screenshot when the site is public)"
+        fi
+    fi
     site=$1
     spec=${2:-show.json}
     case $site in
@@ -1187,7 +1213,7 @@ file_state() {
 
 show_watch() {
     show_open=0
-    show_screenshot=1
+    show_screenshot=auto
     interval=2
     while [ $# -gt 0 ]; do
         case $1 in
@@ -1204,6 +1230,13 @@ show_watch() {
         esac
     done
     [ $# -ge 1 ] || show_usage
+    if [ "$show_screenshot" = auto ]; then
+        show_screenshot=1
+        if [ -n "${SPOT_PUBLISH_KEY:-}" ]; then
+            show_screenshot=0
+            echo "screenshot: skipped for publishing-key watch (pass --screenshot when the site is public)"
+        fi
+    fi
     site=$1
     spec=${2:-show.json}
     case $site in

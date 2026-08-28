@@ -321,28 +321,28 @@ func splitList(raw string) []string {
 	return out
 }
 
-func newResolver(cfg config) (IdentityResolver, string) {
+func newResolver(cfg config) (IdentityResolver, string, string) {
 	if normalizeAuthMode(cfg.AuthMode) == authModeSingleUser {
 		return NewStaticResolver(cfg.SingleUserEmail, cfg.SingleUserName, cfg.SingleUserGroups),
-			fmt.Sprintf("using single-user identity %s", cfg.SingleUserEmail)
+			fmt.Sprintf("using single-user identity %s", cfg.SingleUserEmail), "single_user"
 	}
 	if cfg.NetbirdAPIURL != "" && cfg.NetbirdAPIToken != "" {
 		return NewNetbirdResolver(cfg.NetbirdAPIURL, cfg.NetbirdAPIToken, 30*time.Second),
-			fmt.Sprintf("resolving via NetBird API at %s", cfg.NetbirdAPIURL)
+			fmt.Sprintf("resolving via NetBird API at %s", cfg.NetbirdAPIURL), "netbird"
 	}
 	if cfg.TailscaleAPIToken != "" {
 		return NewTailscaleResolver(cfg.TailscaleAPIURL, cfg.TailscaleAPIToken, cfg.TailscaleTailnet, 30*time.Second),
-			"resolving via Tailscale API"
+			"resolving via Tailscale API", "tailscale"
 	}
 	if cfg.TailscaleOAuthID != "" && cfg.TailscaleOAuthSecret != "" {
 		return NewTailscaleOAuthResolver(cfg.TailscaleAPIURL, cfg.TailscaleOAuthID, cfg.TailscaleOAuthSecret, cfg.TailscaleTailnet, 30*time.Second),
-			"resolving via Tailscale API with OAuth"
+			"resolving via Tailscale API with OAuth", "tailscale"
 	}
 	if cfg.DevIdentityEmail != "" && !cfg.ForwardAuth {
 		return NewStaticResolver(cfg.DevIdentityEmail, cfg.DevIdentityName, cfg.DevIdentityGroups),
-			fmt.Sprintf("using explicit dev identity %s", cfg.DevIdentityEmail)
+			fmt.Sprintf("using explicit dev identity %s", cfg.DevIdentityEmail), "dev"
 	}
-	return nil, "NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET not set, /api/me will return 503"
+	return nil, "NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, or TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET not set, /api/me will return 503", ""
 }
 
 // version is the build version, injected via -ldflags "-X main.version=...".
@@ -375,7 +375,7 @@ func main() {
 	}
 	defer db.Close()
 
-	resolver, resolverLog := newResolver(cfg)
+	resolver, resolverLog, deployAuthMethod := newResolver(cfg)
 	switch {
 	case resolver != nil:
 		log.Printf("identity: %s", resolverLog)
@@ -460,6 +460,7 @@ func main() {
 	}
 
 	registry := NewSiteRegistry(db, adminPolicy)
+	publishingKeys := NewPublishingKeyStore(db)
 	cloudflarePubs := NewCloudflarePublicationStore(db)
 	var cloudflarePublisher *CloudflarePublisher
 	if cfg.Cloudflare.Enabled() {
@@ -478,25 +479,28 @@ func main() {
 		policies = NewPolicyStore("", 5*time.Second)
 	}
 	srv := &Server{
-		store:          store,
-		resolver:       resolver,
-		forwardAuth:    forwardAuth,
-		policies:       policies,
-		hub:            hub,
-		files:          files,
-		sites:          sites,
-		deployAuth:     registry,
-		siteAdmin:      registry,
-		siteManager:    registry,
-		cloudflare:     cloudflarePublisher,
-		cloudflarePubs: cloudflarePubs,
-		ai:             ai,
-		aiAccess:       cfg.AIAccess,
-		slack:          slack,
-		slackAccess:    cfg.SlackAccess,
-		spotDomain:     cfg.SpotDomain,
-		trustedProxies: trustedProxies,
-		serveStatic:    true,
+		store:            store,
+		resolver:         resolver,
+		forwardAuth:      forwardAuth,
+		policies:         policies,
+		hub:              hub,
+		files:            files,
+		sites:            sites,
+		deployAuth:       registry,
+		deployAuthMethod: deployAuthMethod,
+		publishingKeys:   publishingKeys,
+		adminPolicy:      adminPolicy,
+		siteAdmin:        registry,
+		siteManager:      registry,
+		cloudflare:       cloudflarePublisher,
+		cloudflarePubs:   cloudflarePubs,
+		ai:               ai,
+		aiAccess:         cfg.AIAccess,
+		slack:            slack,
+		slackAccess:      cfg.SlackAccess,
+		spotDomain:       cfg.SpotDomain,
+		trustedProxies:   trustedProxies,
+		serveStatic:      true,
 	}
 	registry.SetPolicyResolver(srv.policyForSite)
 

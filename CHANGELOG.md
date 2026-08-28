@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Added named, repository-scoped publishing keys for off-mesh CI deploys. Keys can create and update sites within a fixed prefix, carry publisher attribution, and can be managed and revoked from `/spots`.
 - Upgraded Spot Show with structural validation, safe local image bundling, stable card links, system/light/dark appearance, fullscreen Mermaid and image views, theme-aware sandboxed HTML, code line numbers and highlighting, ANSI terminal output, split diffs, and agent trace timelines.
 
 ### Fixed

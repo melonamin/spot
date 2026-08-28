@@ -148,6 +148,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"the deploy API is served on the platform root, not on site subdomains")
 		return
 	}
+	var principal DeployPrincipal
+	if len(r.Header.Values("Authorization")) > 0 {
+		var ok bool
+		principal, ok = s.requireDeployPrincipal(w, r)
+		if !ok {
+			return
+		}
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxDeploySize)
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -202,6 +210,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"site name must be 1-63 lowercase letters, digits or hyphens, starting and ending with a letter or digit")
 		return
 	}
+	if principal.PublishingKey && (!strings.HasPrefix(site, principal.RequiredPrefix) || len(site) == len(principal.RequiredPrefix)) {
+		log.Printf("publishing key rejected: id=%s site=%s", principal.PublisherKeyID, site)
+		httpError(w, http.StatusForbidden, "publishing key is not authorized for this site name")
+		return
+	}
 	files, err = normalizeDeploy(files)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
@@ -227,20 +240,41 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
 	}
-	actor, ok := s.requireDeployIdentity(w, r)
-	if !ok {
-		return
+	if actorKey(principal.Actor) == "" {
+		var ok bool
+		principal, ok = s.requireDeployPrincipal(w, r)
+		if !ok {
+			return
+		}
 	}
+	r = withDeployPrincipal(r, principal)
+	actor := principal.Actor
 	siteLock := s.siteMutationLock(site)
 	siteLock.Lock()
 	defer siteLock.Unlock()
-	if err := s.reconcilePolicyTransition(r.Context(), site, actor); err != nil && !errors.Is(err, ErrSiteNotFound) {
+	if err := s.reconcilePolicyTransition(r.Context(), site, principal); err != nil && !errors.Is(err, ErrSiteNotFound) {
 		log.Printf("deploy %s: reconcile policy transition: %v", site, err)
 		httpError(w, http.StatusServiceUnavailable, "the site's access policy needs owner or admin recovery")
 		return
 	}
 
-	authz, err := s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
+	var authz DeployAuthorization
+	if principal.PublishingKey {
+		authorizer, ok := s.deployAuth.(interface {
+			AuthorizePublishingKeyDeploy(context.Context, string, Identity, string) (DeployAuthorization, error)
+		})
+		if !ok {
+			httpError(w, http.StatusServiceUnavailable, "publishing-key deploy authorization is not configured")
+			return
+		}
+		authz, err = authorizer.AuthorizePublishingKeyDeploy(r.Context(), site, actor, principal.PublisherKeyID)
+	} else {
+		authz, err = s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
+	}
+	if errors.Is(err, errPublishingKeyInvalid) {
+		httpError(w, http.StatusUnauthorized, "invalid or revoked publishing key")
+		return
+	}
 	if errors.Is(err, ErrDeployForbidden) {
 		s.recordDeployAudit(r, DeployAuditEvent{
 			Site:       site,
@@ -519,6 +553,13 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		AuthorizedAs:      authz.AuthorizedAs,
 		ContentGeneration: authz.ContentGeneration,
 	})
+	if principal.PublishingKey && s.publishingKeys != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.publishingKeys.TouchUsed(ctx, principal.PublisherKeyID); err != nil {
+			log.Printf("publishing key %s: update last used: %v", principal.PublisherKeyID, err)
+		}
+		cancel()
+	}
 	if !metadataUpdated {
 		if err := updateMetadata(); err != nil {
 			log.Printf("deploy %s: update site metadata: %v", site, err)
@@ -841,7 +882,11 @@ type pendingPolicyTransitionRegistry interface {
 	ManagementDecision(ctx context.Context, site string, actor Identity) (ManagementDecision, error)
 }
 
-func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, actor Identity) error {
+type publishingKeyPolicyTransitionRegistry interface {
+	ClearPolicyTransitionForPublishingKey(ctx context.Context, site string, generation int64, actor Identity, keyID string) error
+}
+
+func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, principal DeployPrincipal) error {
 	registry, ok := s.deployAuth.(pendingPolicyTransitionRegistry)
 	if !ok {
 		return nil
@@ -850,12 +895,14 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 	if err != nil || transition.Generation == 0 {
 		return err
 	}
-	decision, err := registry.ManagementDecision(ctx, site, actor)
-	if err != nil {
-		return err
-	}
-	if decision.Role != ManagementRoleOwner && decision.Role != ManagementRoleAdmin {
-		return errPolicyTransitionUnresolved
+	if !principal.PublishingKey {
+		decision, err := registry.ManagementDecision(ctx, site, principal.Actor)
+		if err != nil {
+			return err
+		}
+		if decision.Role != ManagementRoleOwner && decision.Role != ManagementRoleAdmin {
+			return errPolicyTransitionUnresolved
+		}
 	}
 	stored, absent, err := s.storedPolicyBytes(ctx, site)
 	if err != nil {
@@ -865,6 +912,22 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 	if hash != transition.PreviousHash && hash != transition.NextHash {
 		return fmt.Errorf("%w: stored digest %s", errPolicyTransitionUnresolved, hash)
 	}
+	if principal.PublishingKey {
+		keyRegistry, ok := s.deployAuth.(publishingKeyPolicyTransitionRegistry)
+		if !ok {
+			return errPolicyTransitionUnresolved
+		}
+		err = keyRegistry.ClearPolicyTransitionForPublishingKey(
+			ctx, site, transition.Generation, principal.Actor, principal.PublisherKeyID)
+	} else {
+		err = registry.ClearPolicyTransition(ctx, site, transition.Generation)
+	}
+	if err != nil {
+		if s.policies != nil {
+			s.policies.Set(site, nil, errPolicyTransitionUnresolved)
+		}
+		return err
+	}
 	if s.policies != nil {
 		if absent {
 			s.policies.Set(site, nil, nil)
@@ -873,9 +936,6 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 		} else {
 			s.policies.Set(site, policy, nil)
 		}
-	}
-	if err := registry.ClearPolicyTransition(ctx, site, transition.Generation); err != nil {
-		return err
 	}
 	return nil
 }

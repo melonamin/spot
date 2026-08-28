@@ -36,22 +36,36 @@ type manageableSiteAdmin interface {
 }
 
 type ownedSiteJSON struct {
-	Name            string    `json:"name"`
-	URL             string    `json:"url"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	Tags            []string  `json:"tags"`
-	DownloadAllowed bool      `json:"download_allowed"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
-	FileCount       int       `json:"file_count"`
-	TotalBytes      int64     `json:"total_bytes"`
-	Restricted      bool      `json:"restricted"`
-	AllowCount      int       `json:"allow_count"`
-	Cloudflare      any       `json:"cloudflare,omitempty"`
-	Owner           string    `json:"owner,omitempty"`
-	ManagementRole  string    `json:"management_role,omitempty"`
-	State           SiteState `json:"state,omitempty"`
+	Name            string          `json:"name"`
+	URL             string          `json:"url"`
+	Title           string          `json:"title"`
+	Description     string          `json:"description"`
+	Tags            []string        `json:"tags"`
+	DownloadAllowed bool            `json:"download_allowed"`
+	CreatedAt       time.Time       `json:"created_at"`
+	UpdatedAt       time.Time       `json:"updated_at"`
+	FileCount       int             `json:"file_count"`
+	TotalBytes      int64           `json:"total_bytes"`
+	Restricted      bool            `json:"restricted"`
+	AllowCount      int             `json:"allow_count"`
+	Cloudflare      any             `json:"cloudflare,omitempty"`
+	Owner           string          `json:"owner,omitempty"`
+	ManagementRole  string          `json:"management_role,omitempty"`
+	State           SiteState       `json:"state,omitempty"`
+	LastDeploy      *lastDeployJSON `json:"last_deploy,omitempty"`
+}
+
+type lastDeployJSON struct {
+	At            string `json:"at"`
+	AuthMethod    string `json:"auth_method,omitempty"`
+	PublisherName string `json:"publisher_name,omitempty"`
+}
+
+func lastDeployForSite(site OwnedSite) *lastDeployJSON {
+	if site.LastDeployAt == "" {
+		return nil
+	}
+	return &lastDeployJSON{At: site.LastDeployAt, AuthMethod: site.LastDeployAuthMethod, PublisherName: site.LastDeployPublisher}
 }
 
 func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
@@ -81,6 +95,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			FileCount: site.FileCount, TotalBytes: site.TotalBytes,
 			Owner: ownerDisplay(site.SiteRecord), ManagementRole: string(site.ManagementRole), State: site.State,
+			LastDeploy: lastDeployForSite(site.OwnedSite),
 		}
 		if site.State == SiteStateActive {
 			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = s.policySummaryForSite(r.Context(), site.Name)
@@ -206,6 +221,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			AllowCount:      allowCount,
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
+			LastDeploy: lastDeployForSite(site),
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})

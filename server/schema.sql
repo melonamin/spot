@@ -48,12 +48,31 @@ CREATE TABLE IF NOT EXISTS site_deploy_audit (
     total_bytes integer NOT NULL DEFAULT 0,
     content_hash text NOT NULL DEFAULT '',
     authorized_as text NOT NULL DEFAULT '',
+    auth_method text NOT NULL DEFAULT '',
+    publisher_key_id text NOT NULL DEFAULT '',
+    publisher_name text NOT NULL DEFAULT '',
     message text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS site_deploy_audit_site_created_idx
     ON site_deploy_audit (site, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS publishing_keys (
+    id text PRIMARY KEY,
+    owner_email text NOT NULL DEFAULT '',
+    owner_peer_ip text NOT NULL DEFAULT '',
+    owner_name text NOT NULL DEFAULT '',
+    name text NOT NULL,
+    site_prefix text NOT NULL,
+    secret_hash blob,
+    created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    last_used_at datetime,
+    revoked_at datetime
+);
+
+CREATE INDEX IF NOT EXISTS publishing_keys_owner_created_idx
+    ON publishing_keys (owner_email, owner_peer_ip, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS site_cloudflare_publications (
     site text PRIMARY KEY REFERENCES sites(name) ON DELETE RESTRICT,

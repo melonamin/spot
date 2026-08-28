@@ -278,6 +278,76 @@ rm -f /tmp/spot-e2e-upload.txt
 refill_deploy_budget() { sleep 4; }
 
 refill_deploy_budget
+echo "==> publishing keys: create, deploy, attribute, constrain, and revoke"
+key_headers="$XDG_CONFIG_HOME/publishing-key-headers"
+key_json=$($CURL -D "$key_headers" -X POST -H 'Content-Type: application/json' \
+    -d '{"name":"GitHub Actions · e2e/repo","site_prefix":"e2e-pr-"}' \
+    http://spot.localhost:8080/api/publishing-keys)
+grep -qi '^cache-control: no-store' "$key_headers" \
+    || fail "publishing-key create response is missing Cache-Control: no-store"
+publishing_key=$(printf '%s' "$key_json" | sed -n 's/.*"secret":"\([^"]*\)".*/\1/p')
+publishing_key_id=$(printf '%s' "$key_json" | sed -n 's/.*"id":"\([0-9a-f]*\)".*/\1/p')
+[ -n "$publishing_key" ] || fail "publishing-key creation returned no one-time secret"
+[ -n "$publishing_key_id" ] || fail "publishing-key creation returned no key id"
+keydir="$XDG_CONFIG_HOME/publishing-key-site"
+mkdir -p "$keydir"
+printf '<title>PR preview</title><h1>published by repository key</h1>' > "$keydir/index.html"
+key_deploy_log="$XDG_CONFIG_HOME/publishing-key-deploy.log"
+if ! SPOT_URL=http://spot.localhost:8080 SPOT_PUBLISH_KEY=$publishing_key \
+    ./cli/spot deploy e2e-pr-42 "$keydir" >"$key_deploy_log" 2>&1; then
+    fail "publishing-key CLI deploy failed: $(sed 's/spot_pk_[A-Za-z0-9_-]*/[redacted]/g' "$key_deploy_log")"
+fi
+grep -Fq "$publishing_key" "$key_deploy_log" \
+    && fail "publishing-key CLI output exposed the secret"
+$CURL --resolve e2e-pr-42.spot.localhost:8080:127.0.0.1 \
+    http://e2e-pr-42.spot.localhost:8080/ | grep -q 'published by repository key' \
+    || fail "publishing-key site was not served"
+SPOT_URL=http://spot.localhost:8080 SPOT_PUBLISH_KEY=$publishing_key \
+    ./cli/spot deploy e2e-pr-43 "$keydir" >"$key_deploy_log" 2>&1 \
+    || fail "publishing key could not create a second site in its prefix"
+
+manageable=$($CURL http://spot.localhost:8080/api/sites/manageable)
+printf '%s' "$manageable" | grep -q '"name":"e2e-pr-42"' \
+    || fail "publishing-key site missing from manageable sites"
+printf '%s' "$manageable" | grep -q '"publisher_name":"GitHub Actions · e2e/repo"' \
+    || fail "manageable site is missing publishing-key attribution"
+public=$($CURL http://spot.localhost:8080/api/sites/public)
+printf '%s' "$public" | grep -q 'GitHub Actions · e2e/repo' \
+    && fail "public sites API exposed publishing-key attribution"
+
+key_list=$($CURL http://spot.localhost:8080/api/publishing-keys)
+printf '%s' "$key_list" | grep -q '"last_used_at"' \
+    || fail "publishing-key list did not record successful use"
+printf '%s' "$key_list" | grep -Fq "$publishing_key" \
+    && fail "publishing-key list exposed the secret"
+
+refill_deploy_budget
+outside_log="$XDG_CONFIG_HOME/publishing-key-outside.log"
+if SPOT_URL=http://spot.localhost:8080 SPOT_PUBLISH_KEY=$publishing_key \
+    ./cli/spot deploy outside-prefix "$keydir" >"$outside_log" 2>&1; then
+    fail "publishing key deployed outside its fixed prefix"
+fi
+grep -q 'HTTP 403' "$outside_log" \
+    || fail "outside-prefix deploy did not fail with 403"
+grep -Fq "$publishing_key" "$outside_log" \
+    && fail "failed CLI deploy output exposed the publishing key"
+
+code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE \
+    "http://spot.localhost:8080/api/publishing-keys/$publishing_key_id")
+[ "$code" = "204" ] || fail "publishing-key revoke returned $code, want 204"
+revoked_log="$XDG_CONFIG_HOME/publishing-key-revoked.log"
+if SPOT_URL=http://spot.localhost:8080 SPOT_PUBLISH_KEY=$publishing_key \
+    ./cli/spot deploy e2e-pr-44 "$keydir" >"$revoked_log" 2>&1; then
+    fail "revoked publishing key still deployed"
+fi
+grep -q 'HTTP 401' "$revoked_log" \
+    || fail "revoked publishing key did not fail with 401"
+grep -Fq "$publishing_key" "$revoked_log" \
+    && fail "revoked CLI deploy output exposed the publishing key"
+unset publishing_key
+echo "    repository key lifecycle passed"
+
+refill_deploy_budget
 echo "==> web deploy: multipart deploy through the apex /api/deploy"
 webdir=$(mktemp -d)
 printf '<title>Web Deploy</title><meta name="description" content="Browser deploy smoke test"><h1>spot web deploy</h1>' > "$webdir/index.html"

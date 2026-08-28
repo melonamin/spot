@@ -25,6 +25,7 @@ sdk = root / "sdk"
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     deploys = 0
+    last_authorization = ""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(sdk), **kwargs)
@@ -36,6 +37,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         self.rfile.read(length)
         Handler.deploys += 1
+        Handler.last_authorization = self.headers.get("Authorization", "")
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b"ok")
@@ -183,6 +185,18 @@ try:
         run(["./cli/spot", "show", "deploy", "--no-screenshot", "demo", str(show)], extra_env={"TMPDIR": tmp})
         leaked = list(pathlib.Path(tmp).glob("spot-show.*"))
         assert not leaked, leaked
+        publishing_key = "test_publishing_key_redacted_fixture"
+        curl_home = pathlib.Path(tmp) / "curl-home"
+        curl_home.mkdir()
+        curl_trace = pathlib.Path(tmp) / "curl-trace"
+        (curl_home / ".curlrc").write_text(f'trace-ascii = "{curl_trace}"\n')
+        keyed = run(
+            ["./cli/spot", "deploy", "keydemo", str(out)],
+            extra_env={"SPOT_PUBLISH_KEY": publishing_key, "CURL_HOME": str(curl_home)},
+        )
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
+        assert publishing_key not in keyed.stdout and publishing_key not in keyed.stderr
+        assert not curl_trace.exists(), "secret-bearing curl loaded the default .curlrc"
         fake_bin = pathlib.Path(tmp) / "fake-bin"
         fake_bin.mkdir()
         chromium = fake_bin / "chromium"
@@ -198,11 +212,28 @@ printf 'fake png' > "$out"
 """)
         chromium.chmod(0o755)
         start_deploys = Handler.deploys
-        run(
+        keyed_show = run(
             ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
-            extra_env={"TMPDIR": tmp, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+            extra_env={
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_PUBLISH_KEY": publishing_key,
+            },
+        )
+        assert Handler.deploys == start_deploys + 1, Handler.deploys
+        assert "screenshot: skipped for publishing-key deploy" in keyed_show.stdout, keyed_show.stdout
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
+        start_deploys = Handler.deploys
+        run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-explicit", str(show)],
+            extra_env={
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_PUBLISH_KEY": publishing_key,
+            },
         )
         assert Handler.deploys == start_deploys + 2, Handler.deploys
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
         zero = subprocess.run(
             ["./cli/spot", "show", "watch", "--interval", "0", "demo", str(show)],
             cwd=root,

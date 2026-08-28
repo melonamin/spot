@@ -302,34 +302,40 @@ func TestValidateDeploymentSafetyRequiresProviderForNonLocalDomain(t *testing.T)
 
 func TestNewResolver(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  config
-		want string
+		name   string
+		cfg    config
+		want   string
+		method string
 	}{
 		{
-			name: "netbird",
-			cfg:  config{NetbirdAPIURL: "https://netbird.example.com", NetbirdAPIToken: "token"},
-			want: "*main.NetbirdResolver",
+			name:   "netbird",
+			cfg:    config{NetbirdAPIURL: "https://netbird.example.com", NetbirdAPIToken: "token"},
+			want:   "*main.NetbirdResolver",
+			method: "netbird",
 		},
 		{
-			name: "tailscale",
-			cfg:  config{TailscaleAPIToken: "token", TailscaleTailnet: "-"},
-			want: "*main.TailscaleResolver",
+			name:   "tailscale",
+			cfg:    config{TailscaleAPIToken: "token", TailscaleTailnet: "-"},
+			want:   "*main.TailscaleResolver",
+			method: "tailscale",
 		},
 		{
-			name: "tailscale oauth",
-			cfg:  config{TailscaleOAuthID: "client-id", TailscaleOAuthSecret: "client-secret", TailscaleTailnet: "-"},
-			want: "*main.TailscaleResolver",
+			name:   "tailscale oauth",
+			cfg:    config{TailscaleOAuthID: "client-id", TailscaleOAuthSecret: "client-secret", TailscaleTailnet: "-"},
+			want:   "*main.TailscaleResolver",
+			method: "tailscale",
 		},
 		{
-			name: "dev identity",
-			cfg:  config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
-			want: "*main.StaticResolver",
+			name:   "dev identity",
+			cfg:    config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
+			want:   "*main.StaticResolver",
+			method: "dev",
 		},
 		{
-			name: "single user",
-			cfg:  config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
-			want: "*main.StaticResolver",
+			name:   "single user",
+			cfg:    config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
+			want:   "*main.StaticResolver",
+			method: "single_user",
 		},
 		{
 			name: "forward auth ignores dev fallback",
@@ -344,9 +350,12 @@ func TestNewResolver(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resolver, _ := newResolver(tt.cfg)
+			resolver, _, method := newResolver(tt.cfg)
 			if got := typeName(resolver); got != tt.want {
 				t.Fatalf("newResolver type = %s, want %s", got, tt.want)
+			}
+			if method != tt.method {
+				t.Fatalf("newResolver auth method = %q, want %q", method, tt.method)
 			}
 		})
 	}

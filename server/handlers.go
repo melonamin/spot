@@ -33,6 +33,9 @@ type Server struct {
 	files             FileStorage
 	sites             SiteStorage
 	deployAuth        DeployAuthorizer
+	deployAuthMethod  string
+	publishingKeys    *PublishingKeyStore
+	adminPolicy       *AccessPolicy
 	siteAdmin         SiteAdmin
 	siteManager       SiteManager
 	cloudflare        *CloudflarePublisher
@@ -180,6 +183,9 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.handleIncrement)))
 	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
+	mux.HandleFunc("GET /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
+	mux.HandleFunc("POST /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
+	mux.HandleFunc("DELETE /api/publishing-keys/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKey)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/manageable", s.sameOriginOnly(s.limited(s.dbLimit, s.handleManageableSites)))
@@ -502,6 +508,11 @@ func (s *Server) recordDeployAudit(r *http.Request, event DeployAuditEvent) {
 	// content metadata cannot remain stale after a partial or successful deploy.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if principal, ok := deployPrincipalFromRequest(r); ok {
+		event.AuthMethod = principal.AuthMethod
+		event.PublisherKeyID = principal.PublisherKeyID
+		event.PublisherName = principal.PublisherName
+	}
 	if err := s.deployAuth.RecordDeploy(ctx, event); err != nil {
 		log.Printf("deploy audit %s: %v", event.Site, err)
 	}

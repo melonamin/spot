@@ -26,10 +26,11 @@ spot VM
   `- S3/RustFS  deployed site files and uploads
 ```
 
-Authentication is the mesh itself. NetBird or Tailscale decides who can
-reach the VM, and Spot maps the request's mesh source IP to an identity
-through the provider API. There are no cookies, sessions, OIDC redirects,
-or per-site deploy keys.
+Authentication is normally the mesh itself. NetBird or Tailscale decides who
+can reach the VM, and Spot maps the request's mesh source IP to an identity
+through the provider API. There are no cookies, sessions, or OIDC redirects.
+For trusted repository automation outside the mesh, an owner can create a
+named, fixed-prefix publishing key that authenticates only `POST /api/deploy`.
 
 S3-compatible storage stays in the architecture because deployed sites
 and uploads can be large and are the easiest part to keep in blob storage.
@@ -549,6 +550,10 @@ Restricted sites are not auto-tagged.
 Important APIs:
 
 - `POST /api/deploy` deploys a site from the apex only.
+- `GET` and `POST /api/publishing-keys` list the caller's keys and create a
+  named, fixed-prefix key. The secret is returned only by the create response.
+- `DELETE /api/publishing-keys/{id}` irrevocably revokes a key. Administrators
+  may revoke a known key ID, but there is no administrator-wide key listing.
 - `GET /api/sites/mine` lists the caller's sites.
 - `GET /api/sites/manageable` lists sites the caller can manage and includes
   `management_role`, immutable owner attribution, and lifecycle state.
@@ -586,6 +591,46 @@ await spot.sites.delete('old-demo');
 
 `mine()` remains the ownership-only compatibility view. Platform management UI
 and new integrations should normally use `manageable()`.
+
+## Repository Publishing Keys
+
+Named publishing keys let a trusted CI repository deploy pull-request sites
+without giving its runner a mesh identity. Create one from **My spots** at
+`/spots`, give it a descriptive name, and bind it to a literal prefix such as
+`spot-pr-`. The key can create, update, or recreate sites such as
+`spot-pr-184`, but it cannot deploy outside that prefix or take over a matching
+site owned by someone else.
+
+The person who creates the key remains the immutable owner of every site the
+key creates. The key name is recorded as publisher attribution in deploy audit
+history and authenticated `/spots` responses. It is not exposed in Gallery.
+Publishing keys authenticate deploys only: they cannot delete sites, publish
+to Cloudflare Pages, manage other keys, or call deployed-site APIs. Trusted
+repository workflows may deploy `_access.json`, with the same validation and
+policy-transition protections as an owner deploy.
+
+The secret is displayed once. Store it as a masked repository secret named
+`SPOT_PUBLISH_KEY`; do not put it in the CLI config file or command line. The
+CLI sends it to curl over standard input so it is not exposed in the process
+argument list. A GitHub Actions step can deploy one site per pull request:
+
+```yaml
+- name: Publish Spot preview
+  env:
+    SPOT_URL: https://spot.example.com
+    SPOT_PUBLISH_KEY: ${{ secrets.SPOT_PUBLISH_KEY }}
+  run: ./cli/spot deploy "spot-pr-${{ github.event.pull_request.number }}" dist
+```
+
+A hosted runner still needs a routable, trusted HTTPS path to the Spot apex;
+the publishing key supplies application authentication, not network access.
+Use one key per repository. To rotate without downtime, create a replacement
+with the same prefix, update the repository secret, confirm its **Last used**
+time in `/spots`, then revoke the old key. Revocation is immediate for deploys
+that have not yet passed Spot's transactional authorization point.
+
+These credentials publish into Spot itself. They are unrelated to the optional
+Cloudflare Pages publishing flow below.
 
 ## Optional Cloudflare Pages Publishing
 

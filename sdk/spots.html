@@ -128,6 +128,15 @@
     }
 
     .pagehead { margin: 18px 0 30px; }
+    .deploys-pagehead {
+      display: flex;
+      align-items: flex-end;
+      gap: 24px;
+    }
+    .pagehead-copy {
+      flex: 1;
+      min-width: 0;
+    }
     .title {
       position: relative;
       z-index: 0;
@@ -252,6 +261,11 @@
       color: var(--mutedink);
     }
     .sitemeta b { color: var(--ink); }
+    .publisher-meta {
+      margin: 8px 0 0;
+      font: 700 11px/1.6 var(--font-mono);
+      color: var(--accent);
+    }
     .cfmeta {
       margin: 10px 0 0;
       font: 700 11px/1.7 var(--font-mono);
@@ -817,19 +831,155 @@
       gap: 12px;
       margin-top: 24px;
     }
+    .publish-dialog-actions[hidden] { display: none; }
     /* Unpublish sits apart from cancel/submit — it leaves the internet,
        not the dialog. */
     .publish-dialog-actions .btn-delete { margin-right: auto; }
 
+    /* ─── repository automation keys ─────────────────────────── */
+    .key-manager-trigger {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      margin-bottom: 4px;
+      border: 3px solid var(--ink);
+      border-radius: 999px;
+      background: var(--paper);
+      color: var(--ink);
+      box-shadow: 4px 5px 0 var(--ink);
+      padding: 11px 15px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      white-space: nowrap;
+      cursor: pointer;
+      transition: transform .12s ease, box-shadow .12s ease, background .12s ease;
+    }
+    .key-manager-trigger:hover {
+      transform: translate(-2px, -2px);
+      box-shadow: 6px 7px 0 var(--ink);
+      background: var(--card);
+    }
+    .key-manager-trigger:active {
+      transform: translate(1px, 2px);
+      box-shadow: 1px 1px 0 var(--ink);
+    }
+    .key-manager-count { color: var(--accent); }
+    .key-dialog { width: min(720px, calc(100vw - 32px)); }
+    .key-manager-head {
+      display: flex;
+      align-items: flex-start;
+      gap: 22px;
+    }
+    .key-manager-copy { flex: 1; min-width: 0; }
+    .key-manager-copy h2 {
+      margin: 0;
+      font: 700 21px/1.3 var(--font-mono);
+      letter-spacing: .02em;
+    }
+    .key-manager-copy p {
+      margin: 10px 0 0;
+      font: 700 11px/1.7 var(--font-mono);
+      color: var(--mutedink);
+    }
+    .key-list {
+      margin-top: 24px;
+      overflow: hidden;
+      border: 3px solid var(--ink);
+      border-radius: 16px;
+      background: var(--card);
+    }
+    .key-empty {
+      margin: 0;
+      padding: 28px 22px;
+      font: 700 11px/1.6 var(--font-mono);
+      color: var(--mutedink);
+      text-align: center;
+    }
+    .key-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      padding: 17px 22px;
+      border-top: 2px dashed #c9c2d2;
+    }
+    .key-row:first-child { border-top: 0; }
+    .key-main { flex: 1; min-width: 0; }
+    .key-name {
+      display: block;
+      font: 700 13px/1.4 var(--font-mono);
+      overflow-wrap: anywhere;
+    }
+    .key-scope {
+      display: block;
+      margin-top: 5px;
+      font: 700 10px/1.6 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      color: var(--mutedink);
+    }
+    .key-scope code { color: var(--accent); font: inherit; }
+    .key-row.revoked { opacity: .58; }
+    .key-row.revoked .key-name { text-decoration: line-through; }
+    .key-form-field { margin-top: 19px; }
+    .key-form-field label {
+      display: block;
+      margin-bottom: 8px;
+      font: 700 11px/1 var(--font-mono);
+      letter-spacing: .12em;
+      text-transform: uppercase;
+    }
+    .key-form-field input {
+      width: 100%;
+      border: 3px solid var(--ink);
+      border-radius: 13px;
+      background: #fff;
+      color: var(--ink);
+      padding: 13px 15px;
+      font: 700 13px/1.5 var(--font-mono);
+    }
+    .key-overlap {
+      margin: 10px 0 0;
+      border-left: 4px solid var(--saved);
+      padding-left: 10px;
+      color: var(--ink);
+    }
+    .key-secret {
+      display: block;
+      margin: 20px 0 0;
+      border: 3px solid var(--ink);
+      border-radius: 13px;
+      background: var(--ink);
+      color: #bdf7cb;
+      padding: 15px;
+      font: 700 12px/1.7 var(--font-mono);
+      overflow-wrap: anywhere;
+      user-select: all;
+    }
+    .key-example {
+      margin: 14px 0 0;
+      border-left: 4px solid var(--accent);
+      padding: 2px 0 2px 13px;
+      white-space: pre-wrap;
+      font: 400 11px/1.65 var(--font-mono);
+      color: var(--mutedink);
+    }
+    .key-manager-actions { margin-top: 20px; }
+
     /* ─── responsive ──────────────────────────────────────────── */
     @media (max-width: 720px) {
       .topbar { padding-top: 22px; }
+      .deploys-pagehead { align-items: flex-start; flex-direction: column; gap: 18px; }
+      .key-manager-trigger { margin-bottom: 0; }
       .site { padding: 22px 20px; }
       .toolbar { grid-template-columns: 1fr; }
       #sort,
       .saved-toggle { width: 100%; }
       .visibility-options { grid-template-columns: 1fr; }
       .publish-form { padding: 22px 20px; }
+      .key-manager-head, .key-row { align-items: stretch; flex-direction: column; }
+      .key-manager-head .btn, .key-row .btn { width: 100%; }
     }
     @media (prefers-reduced-motion: reduce) {
       * { animation: none !important; transition: none !important; }
@@ -850,9 +1000,16 @@
 
   <main>
     <section id="view-deploys" aria-labelledby="deploys-title" hidden>
-      <div class="pagehead">
-        <h1 class="title" id="deploys-title" data-text="My spots">My spots</h1>
-        <p class="sub" id="deploys-sub">Loading…</p>
+      <div class="pagehead deploys-pagehead">
+        <div class="pagehead-copy">
+          <h1 class="title" id="deploys-title" data-text="My spots">My spots</h1>
+          <p class="sub" id="deploys-sub">Loading…</p>
+        </div>
+        <button class="key-manager-trigger" id="key-manager-open" type="button"
+                aria-haspopup="dialog" aria-controls="key-dialog">
+          <span id="key-manager-label">Publishing keys</span>
+          <span class="key-manager-count" id="key-manager-count" hidden></span>
+        </button>
       </div>
       <div id="sitelist"></div>
       <div class="empty" id="deploys-note" hidden>
@@ -938,6 +1095,53 @@
         <button class="btn btn-delete" type="button" id="cf-publish-unpublish" hidden>Unpublish</button>
         <button class="btn" type="button" id="cf-publish-cancel">Cancel</button>
         <button class="btn btn-open" type="submit" id="cf-publish-submit">Publish</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog class="publish-dialog key-dialog" id="key-dialog" aria-labelledby="automation-title">
+    <form class="publish-form" id="key-form">
+      <div id="key-manager-panel">
+        <div class="key-manager-head">
+          <div class="key-manager-copy">
+            <h2 id="automation-title">Repository publishing keys</h2>
+            <p>Give each trusted repository its own fixed preview namespace. Secrets can deploy, never delete.</p>
+          </div>
+          <button class="btn btn-open" id="key-create-open" type="button">New key</button>
+        </div>
+        <div class="key-list" id="key-list" aria-live="polite">
+          <p class="key-empty">Loading repository keys…</p>
+        </div>
+        <div class="publish-dialog-actions key-manager-actions">
+          <button class="btn" type="button" id="key-manager-close">Done</button>
+        </div>
+      </div>
+      <div id="key-create-panel" hidden>
+        <h2 id="key-dialog-title">New repository key</h2>
+        <p class="publish-intro">This secret may create or update spots inside one fixed prefix. It cannot delete them or use other Spot APIs.</p>
+        <div class="key-form-field">
+          <label for="key-name">Publisher name</label>
+          <input id="key-name" name="name" maxlength="80" required autocomplete="off"
+                 placeholder="GitHub Actions · owner/repository">
+        </div>
+        <div class="key-form-field">
+          <label for="key-prefix">Site prefix</label>
+          <input id="key-prefix" name="site_prefix" maxlength="61" required autocomplete="off"
+                 pattern="[a-z0-9][a-z0-9-]{0,59}-" placeholder="repository-pr-">
+          <p class="publish-help">Lowercase letters, digits, and hyphens; finish with a hyphen.</p>
+          <p class="publish-help key-overlap" id="key-overlap" role="status" hidden></p>
+        </div>
+      </div>
+      <div id="key-secret-panel" hidden>
+        <h2 id="key-secret-title">Copy this key now</h2>
+        <p class="publish-intro">Spot stores only its hash. After this dialog closes, the secret cannot be shown again.</p>
+        <code class="key-secret" id="key-secret"></code>
+        <pre class="key-example" id="key-example"></pre>
+      </div>
+      <div class="publish-dialog-actions" id="key-workflow-actions" hidden>
+        <button class="btn" type="button" id="key-cancel">Back to keys</button>
+        <button class="btn btn-open" type="submit" id="key-submit">Create key</button>
+        <button class="btn btn-open" type="button" id="key-copy" hidden>Copy key</button>
       </div>
     </form>
   </dialog>
@@ -1100,6 +1304,7 @@
 
       // ─── my spots ─────────────────────────────────────────────
       let mySites = [];
+      let publishingKeys = [];
       const siteList = $('sitelist');
       let armed = null; // { button, label, timer } for the pending delete
 	  let cloudflarePollTimer = null;
@@ -1128,6 +1333,188 @@
         clearTimeout(armed.timer);
         armed = null;
       };
+
+      const renderPublishingKeys = () => {
+        const list = $('key-list');
+        const activeCount = publishingKeys.filter((key) => !key.revoked_at).length;
+        $('key-manager-label').textContent = activeCount ? 'Publishing keys' : 'Set up CI publishing';
+        $('key-manager-count').hidden = !activeCount;
+        $('key-manager-count').textContent = activeCount ? '· ' + activeCount : '';
+        list.replaceChildren();
+        if (!publishingKeys.length) {
+          const empty = document.createElement('p');
+          empty.className = 'key-empty';
+          empty.textContent = 'No repository keys yet. Create one for a trusted CI workflow.';
+          list.append(empty);
+          return;
+        }
+        for (const key of publishingKeys) {
+          const row = document.createElement('article');
+          row.className = 'key-row' + (key.revoked_at ? ' revoked' : '');
+          const main = document.createElement('div');
+          main.className = 'key-main';
+          const name = document.createElement('strong');
+          name.className = 'key-name';
+          name.textContent = key.name;
+          const scope = document.createElement('span');
+          scope.className = 'key-scope';
+          const prefix = document.createElement('code');
+          prefix.textContent = key.site_prefix + '*';
+          scope.append(prefix, ' · created ' + dateLabel(key.created_at) + ' · ' +
+            (key.revoked_at ? 'revoked ' + rel(key.revoked_at) : key.last_used_at ? 'used ' + rel(key.last_used_at) : 'never used'));
+          main.append(name, scope);
+          row.append(main);
+          if (!key.revoked_at) {
+            const revoke = document.createElement('button');
+            revoke.type = 'button';
+            revoke.className = 'btn btn-delete';
+            revoke.textContent = 'Revoke';
+            revoke.addEventListener('click', async () => {
+              if (revoke.dataset.armed !== 'true') {
+                revoke.dataset.armed = 'true';
+                revoke.textContent = 'Sure?';
+                setTimeout(() => { revoke.dataset.armed = ''; revoke.textContent = 'Revoke'; }, 4000);
+                return;
+              }
+              revoke.disabled = true;
+              try {
+                await api('/api/publishing-keys/' + encodeURIComponent(key.id), { method: 'DELETE' });
+                key.revoked_at = new Date().toISOString();
+                renderPublishingKeys();
+                toast('Repository key revoked');
+              } catch (err) {
+                revoke.disabled = false;
+                revoke.dataset.armed = '';
+                revoke.textContent = 'Revoke';
+                toast(err.message);
+              }
+            });
+            row.append(revoke);
+          }
+          list.append(row);
+        }
+      };
+
+      const loadPublishingKeys = async () => {
+        try {
+          const body = await api('/api/publishing-keys');
+          publishingKeys = body.keys || [];
+          renderPublishingKeys();
+        } catch (err) {
+          const list = $('key-list');
+          list.replaceChildren();
+          const note = document.createElement('p');
+          note.className = 'key-empty';
+          note.textContent = 'Could not load repository keys: ' + err.message;
+          list.append(note);
+        }
+      };
+
+      const keyDialog = $('key-dialog');
+      const keyForm = $('key-form');
+      let keyCreating = false;
+      const syncKeyOverlap = () => {
+        const prefix = $('key-prefix').value;
+        const overlap = publishingKeys.find((key) => !key.revoked_at && prefix &&
+          (key.site_prefix.startsWith(prefix) || prefix.startsWith(key.site_prefix)));
+        const warning = $('key-overlap');
+        warning.hidden = !overlap;
+        warning.textContent = overlap
+          ? 'Active key “' + overlap.name + '” already covers an overlapping prefix. This is allowed for rotation.'
+          : '';
+      };
+      const showKeyManager = () => {
+        keyDialog.setAttribute('aria-labelledby', 'automation-title');
+        $('key-manager-panel').hidden = false;
+        $('key-create-panel').hidden = true;
+        $('key-secret-panel').hidden = true;
+        $('key-workflow-actions').hidden = true;
+        $('key-submit').hidden = false;
+        $('key-copy').hidden = true;
+        $('key-cancel').textContent = 'Back to keys';
+      };
+      const clearKeySecret = () => {
+        $('key-secret').textContent = '';
+        $('key-example').textContent = '';
+        showKeyManager();
+      };
+      const showKeyCreate = () => {
+        keyDialog.setAttribute('aria-labelledby', 'key-dialog-title');
+        $('key-manager-panel').hidden = true;
+        $('key-create-panel').hidden = false;
+        $('key-secret-panel').hidden = true;
+        $('key-workflow-actions').hidden = false;
+        $('key-submit').hidden = false;
+        $('key-copy').hidden = true;
+        $('key-cancel').textContent = 'Back to keys';
+      };
+      $('key-manager-open').addEventListener('click', () => {
+        clearKeySecret();
+        keyDialog.showModal();
+      });
+      $('key-create-open').addEventListener('click', () => {
+        clearKeySecret();
+        keyForm.reset();
+        syncKeyOverlap();
+        showKeyCreate();
+        $('key-name').focus();
+      });
+      $('key-manager-close').addEventListener('click', () => keyDialog.close());
+      $('key-prefix').addEventListener('input', syncKeyOverlap);
+      $('key-cancel').addEventListener('click', () => {
+        if (!keyCreating) {
+          clearKeySecret();
+          $('key-create-open').focus();
+        }
+      });
+      keyDialog.addEventListener('cancel', (event) => {
+        if (keyCreating) event.preventDefault();
+      });
+      keyDialog.addEventListener('close', clearKeySecret);
+      keyForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (keyCreating) return;
+        const submit = $('key-submit');
+        const cancel = $('key-cancel');
+        keyCreating = true;
+        submit.disabled = true;
+        cancel.disabled = true;
+        try {
+          const body = await api('/api/publishing-keys', {
+            method: 'POST', cache: 'no-store',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name: $('key-name').value, site_prefix: $('key-prefix').value }),
+          });
+          publishingKeys.unshift(body.key);
+          renderPublishingKeys();
+          $('key-manager-panel').hidden = true;
+          $('key-create-panel').hidden = true;
+          $('key-secret-panel').hidden = false;
+          $('key-workflow-actions').hidden = false;
+          keyDialog.setAttribute('aria-labelledby', 'key-secret-title');
+          $('key-secret').textContent = body.secret;
+          $('key-example').textContent = 'SPOT_URL=https://spot.example.com\nSPOT_PUBLISH_KEY=' + body.secret + '\nspot deploy "' + body.key.site_prefix + '${PR_NUMBER}" dist/';
+          submit.hidden = true;
+          $('key-copy').hidden = false;
+          $('key-cancel').textContent = 'Back to keys';
+        } catch (err) {
+          toast(err.message);
+        } finally {
+          keyCreating = false;
+          submit.disabled = false;
+          cancel.disabled = false;
+        }
+      });
+      $('key-copy').addEventListener('click', async () => {
+        const secret = $('key-secret').textContent;
+        if (!secret) return;
+        try {
+          await copyText(secret);
+          toast('Publishing key copied');
+        } catch {
+          toast('Could not copy the publishing key');
+        }
+      });
 
       const cloudflareActionLabel = (site) => {
         const cf = site.cloudflare || {};
@@ -1492,6 +1879,12 @@
           slots[3].textContent = rel(site.updated_at);
 
           info.append(head, chips, url, meta);
+          if (site.last_deploy && site.last_deploy.publisher_name) {
+            const publisher = document.createElement('p');
+            publisher.className = 'publisher-meta';
+            publisher.textContent = 'Deployed ' + rel(site.last_deploy.at) + ' by ' + site.last_deploy.publisher_name;
+            info.append(publisher);
+          }
           if ((site.tags || []).length) info.append(tagList(site.tags));
 
           if (cf.enabled || cf.publication) {
@@ -1977,7 +2370,10 @@
         whoami = me && me.email ? me.email : '';
         if (VIEW === 'deploys' && mySites.length) renderDeploys();
       });
-      if (VIEW === 'deploys') loadMine();
+      if (VIEW === 'deploys') {
+        loadMine();
+        loadPublishingKeys();
+      }
       else {
         loadSavedSpots();
         loadGallery();

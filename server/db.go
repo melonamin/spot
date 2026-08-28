@@ -109,6 +109,18 @@ func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE site_deploy_audit ADD COLUMN authorized_as text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "auth_method",
+		`ALTER TABLE site_deploy_audit ADD COLUMN auth_method text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "publisher_key_id",
+		`ALTER TABLE site_deploy_audit ADD COLUMN publisher_key_id text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "publisher_name",
+		`ALTER TABLE site_deploy_audit ADD COLUMN publisher_name text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	if err := ensureColumn(ctx, db, "site_cloudflare_publications", "account_id",
 		`ALTER TABLE site_cloudflare_publications ADD COLUMN account_id text NOT NULL DEFAULT ''`); err != nil {
 		return err

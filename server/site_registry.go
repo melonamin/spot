@@ -72,6 +72,9 @@ type DeployAuditEvent struct {
 	ContentHash       string
 	AuthorizedAs      ManagementRole
 	ContentGeneration int64
+	AuthMethod        string
+	PublisherKeyID    string
+	PublisherName     string
 }
 
 type SiteRegistry struct {
@@ -127,6 +130,17 @@ func (r *SiteRegistry) SetPolicyResolver(resolver func(context.Context, string) 
 // consulted only for active sites; provisional claims and tombstones remain
 // recoverable solely by their immutable owner or a platform admin.
 func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor Identity) (DeployAuthorization, error) {
+	return r.authorizeDeploy(ctx, site, actor, "")
+}
+
+func (r *SiteRegistry) AuthorizePublishingKeyDeploy(ctx context.Context, site string, actor Identity, keyID string) (DeployAuthorization, error) {
+	if keyID == "" {
+		return DeployAuthorization{}, errPublishingKeyInvalid
+	}
+	return r.authorizeDeploy(ctx, site, actor, keyID)
+}
+
+func (r *SiteRegistry) authorizeDeploy(ctx context.Context, site string, actor Identity, publishingKeyID string) (DeployAuthorization, error) {
 	if actorKey(actor) == "" {
 		return DeployAuthorization{}, ErrDeployForbidden
 	}
@@ -138,10 +152,16 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		snapshot, snapshotErr := r.readDeployAuthorizationRecord(ctx, r.db, site)
 		var role ManagementRole
 		if snapshotErr == nil {
-			var err error
-			role, err = r.managementRole(ctx, snapshot.SiteRecord, actor)
-			if err != nil {
-				return DeployAuthorization{}, err
+			if publishingKeyID != "" {
+				if snapshot.OwnedBy(actor) {
+					role = ManagementRoleOwner
+				}
+			} else {
+				var err error
+				role, err = r.managementRole(ctx, snapshot.SiteRecord, actor)
+				if err != nil {
+					return DeployAuthorization{}, err
+				}
 			}
 		} else if !errors.Is(snapshotErr, sql.ErrNoRows) {
 			return DeployAuthorization{}, snapshotErr
@@ -150,6 +170,29 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
 			return DeployAuthorization{}, fmt.Errorf("begin deploy auth: %w", err)
+		}
+		if publishingKeyID != "" {
+			var prefix, ownerEmail, ownerPeerIP string
+			err := tx.QueryRowContext(ctx, `SELECT site_prefix, owner_email, owner_peer_ip
+				FROM publishing_keys
+				WHERE id = ? AND revoked_at IS NULL AND secret_hash IS NOT NULL`, publishingKeyID).Scan(
+				&prefix, &ownerEmail, &ownerPeerIP)
+			if errors.Is(err, sql.ErrNoRows) {
+				tx.Rollback()
+				return DeployAuthorization{}, errPublishingKeyInvalid
+			}
+			if err != nil {
+				tx.Rollback()
+				return DeployAuthorization{}, fmt.Errorf("revalidate publishing key: %w", err)
+			}
+			ownerMatches := ownerEmail != "" && actor.Email != "" && strings.EqualFold(ownerEmail, actor.Email)
+			if ownerEmail == "" {
+				ownerMatches = ownerPeerIP != "" && actor.PeerIP == ownerPeerIP
+			}
+			if !ownerMatches || !strings.HasPrefix(site, prefix) || len(site) == len(prefix) {
+				tx.Rollback()
+				return DeployAuthorization{}, ErrDeployForbidden
+			}
 		}
 		current, currentErr := r.readDeployAuthorizationRecord(ctx, tx, site)
 		if errors.Is(snapshotErr, sql.ErrNoRows) && errors.Is(currentErr, sql.ErrNoRows) {
@@ -303,6 +346,9 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 		event.TotalBytes,
 		event.ContentHash,
 		event.AuthorizedAs,
+		event.AuthMethod,
+		event.PublisherKeyID,
+		event.PublisherName,
 		event.Message,
 	)
 	if err != nil {
@@ -386,6 +432,36 @@ func (r *SiteRegistry) ClearPolicyTransition(ctx context.Context, site string, g
 	return nil
 }
 
+// ClearPolicyTransitionForPublishingKey clears a recoverable policy fence only
+// while the named credential is active and the site is owned by that key's
+// creator. Keeping those checks in the UPDATE prevents a revoked or admin-owned
+// key from using ambient owner/admin recovery authority on a foreign site.
+func (r *SiteRegistry) ClearPolicyTransitionForPublishingKey(ctx context.Context, site string, generation int64, actor Identity, keyID string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET
+		policy_transition_generation = 0, policy_previous_hash = '', policy_next_hash = ''
+		WHERE name = ? AND policy_transition_generation = ? AND content_generation = ?
+		  AND EXISTS (
+			SELECT 1 FROM publishing_keys pk
+			WHERE pk.id = ? AND pk.revoked_at IS NULL AND pk.secret_hash IS NOT NULL
+			  AND substr(sites.name, 1, length(pk.site_prefix)) = pk.site_prefix
+			  AND length(sites.name) > length(pk.site_prefix)
+			  AND ((pk.owner_email <> '' AND pk.owner_email = ? AND sites.owner_email = pk.owner_email)
+			    OR (pk.owner_email = '' AND pk.owner_peer_ip <> '' AND pk.owner_peer_ip = ?
+			      AND sites.owner_email = '' AND sites.owner_peer_ip = pk.owner_peer_ip))
+		  )`, site, generation, generation, keyID, strings.ToLower(actor.Email), actor.PeerIP)
+	if err != nil {
+		return fmt.Errorf("clear publishing-key policy transition: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count publishing-key policy transition clear: %w", err)
+	}
+	if updated != 1 {
+		return ErrDeployForbidden
+	}
+	return nil
+}
+
 func (r *SiteRegistry) HasPendingPolicyTransition(ctx context.Context, site string) (bool, error) {
 	var pending bool
 	if err := r.db.QueryRowContext(ctx, `SELECT policy_transition_generation <> 0 FROM sites WHERE name = ?`, site).Scan(&pending); errors.Is(err, sql.ErrNoRows) {
@@ -417,6 +493,9 @@ type OwnedSite struct {
 	TotalBytes           int64
 	ContentHash          string
 	ContentHashUncertain bool
+	LastDeployAt         string
+	LastDeployAuthMethod string
+	LastDeployPublisher  string
 }
 
 type ManageableSite struct {
@@ -436,7 +515,8 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain); err != nil {
+			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
+			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan manageable site candidate: %w", err)
 		}
 		site.Tags = decodeSiteTags(rawTags)
@@ -500,7 +580,8 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain); err != nil {
+			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
+			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan owned site: %w", err)
 		}
 		site.Tags = decodeSiteTags(rawTags)
@@ -871,8 +952,9 @@ const (
 
 	insertDeployAuditSQL = `INSERT INTO site_deploy_audit
 		(site, actor_email, actor_peer_ip, actor_name, actor_groups,
-		 action, status, file_count, total_bytes, content_hash, authorized_as, message)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 action, status, file_count, total_bytes, content_hash, authorized_as,
+		 auth_method, publisher_key_id, publisher_name, message)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
@@ -888,7 +970,16 @@ const (
 			(s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'update', 'delete')
 				  AND status IN ('success', 'failed')
-				ORDER BY created_at DESC, id DESC LIMIT 1), 0))
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0)),
+			COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
+			COALESCE((SELECT auth_method FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
+			COALESCE((SELECT publisher_name FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), '')
 		FROM sites s
 		WHERE s.state = 'active' AND ((s.owner_email <> '' AND s.owner_email = ?)
 		   OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = ?))
@@ -908,7 +999,16 @@ const (
 			(s.state = 'active' AND (s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'recreate', 'update', 'delete')
 				  AND status IN ('success', 'failed')
-				ORDER BY created_at DESC, id DESC LIMIT 1), 0)))
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0))),
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT auth_method FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT publisher_name FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success'
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END
 		FROM sites s
 		WHERE s.state IN ('active', 'deleted')
 		ORDER BY s.updated_at DESC`

@@ -226,6 +226,19 @@ domain as multipart form data:
 - `files`: one part per file, with the part filename carrying the
   site-relative path.
 
+Deploy authentication has two paths. Ordinary browser and CLI requests use the
+ambient mesh, forward-auth, development, or single-user identity. Trusted CI
+may instead send `Authorization: Bearer spot_pk_...` with a named publishing
+key created by a stable human identity. A supplied invalid or revoked Bearer
+credential fails with `401`; Spot never falls back to ambient identity.
+
+Publishing keys are stored as a fixed-length public lookup ID plus a SHA-256
+hash of a random 256-bit secret. The plaintext secret is returned once. Each
+key has one literal site prefix and may authenticate only `POST /api/deploy`.
+It acts as its creator for ownership, but carries its own trusted name and ID
+for audit attribution; group membership and platform-admin status are not
+delegated to the credential.
+
 Deploy invariants:
 
 - Site names must be valid DNS labels.
@@ -241,6 +254,10 @@ Deploy invariants:
 - Active-site deploys require the immutable owner, a configured platform admin,
   or an email/group matched by the currently stored `maintainers` policy. The
   incoming policy never authorizes its own request.
+- Publishing-key deploys may create, update, or owner-recreate only names under
+  the key's fixed prefix, and only when the immutable owner is the key creator.
+  The trusted repository may deploy `_access.json`, but the incoming policy
+  still cannot authorize the request itself.
 - Deleted names may be recreated only by their original owner or an admin.
 - Visitor-restricting changes stage a deny-all policy before ordinary content
   mutation. Authorization-sensitive policy writes use durable previous/next
@@ -249,10 +266,23 @@ Deploy invariants:
 - Sync semantics are used: uploaded files replace the site, and stale files are
   removed.
 - Deploy audit rows are recorded for success, failure, and denied attempts.
+  They include the authentication method and, for publishing keys, the key ID
+  and human-readable publisher name. Public gallery responses omit this data.
+
+The publishing-key active check and site generation reservation happen in the
+same SQLite transaction. Revocation committed before that point rejects the
+deploy; authorization committed first may finish. This defines the race
+boundary without leaving content mutation authorized by a stale preflight
+check. Successful deploys update `last_used_at` after activation.
 
 The deploy API only answers on the apex. Combined with same-origin checks, this
 prevents JavaScript running on a deployed site from redeploying another site
 using a visitor's ambient mesh identity.
+
+Publishing-key management is also apex-only. Owners can create and list their
+own keys at `GET`/`POST /api/publishing-keys` and revoke one at
+`DELETE /api/publishing-keys/{id}`. Administrators may revoke a known ID for
+incident response, but there is deliberately no administrator-wide listing.
 
 ## Optional Cloudflare Pages Publish Flow
 

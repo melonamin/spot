@@ -55,6 +55,20 @@ HTML/CSS/JS works. Deployed sites can load the browser SDK with:
 <script src="/spot.js"></script>
 ```
 
+For trusted repository automation outside the mesh, the user can create a
+named publishing key in `/spots`. Set the one-time secret only through the
+runner environment and keep the site name under that key's fixed prefix:
+
+```sh
+SPOT_PUBLISH_KEY="$REPOSITORY_SPOT_KEY" \
+  spot deploy "repo-pr-$PR_NUMBER" dist
+```
+
+Never print, persist, or pass the key as a command-line argument. A publishing
+key can deploy only; it cannot delete sites or call site/runtime APIs. It may
+create one preview site per pull request and the human who created the key
+remains their immutable owner.
+
 Public gallery sites should ship a root `_screenshot.png`, `_screenshot.jpg`,
 `_screenshot.jpeg`, or `_screenshot.webp` so the gallery shows a real thumbnail
 instead of the generated fallback. For custom sites, pass `--screenshot` when a
@@ -80,6 +94,10 @@ spot show deploy --open <site-name> show.json
 gallery thumbnail reflects the rendered report. If Chromium is unavailable in a
 constrained environment, install it, set `SPOT_CHROME`, or pass
 `--no-screenshot` only when a thumbnail is impossible.
+
+With `SPOT_PUBLISH_KEY`, Show deploys default to no screenshot because a
+publishing key is not a visitor credential and cannot open a restricted site in
+Chromium. Pass `--screenshot` explicitly only when the matching site is public.
 
 Reuse the same `<site-name>` while iterating. The generated page includes
 `/spot-live.js`, so open browser tabs refresh after each redeploy. For hands-on
