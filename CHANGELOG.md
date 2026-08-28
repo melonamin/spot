@@ -7,15 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-28
+
 ### Added
 
-- Added named, repository-scoped publishing keys for off-mesh CI deploys. Keys can create and update sites within a fixed prefix, carry publisher attribution, and can be managed and revoked from `/spots`.
-- Upgraded Spot Show with structural validation, safe local image bundling, stable card links, system/light/dark appearance, fullscreen Mermaid and image views, theme-aware sandboxed HTML, code line numbers and highlighting, ANSI terminal output, split diffs, and agent trace timelines.
+- Added named, repository-scoped publishing keys for off-mesh CI deploys. Keys can create and update sites within a fixed prefix, carry publisher attribution, and can be managed and revoked from `/spots`. (#20)
+- Upgraded Spot Show with structural validation, safe local image bundling, stable card links, system/light/dark appearance, fullscreen Mermaid and image views, theme-aware sandboxed HTML, code line numbers and highlighting, ANSI terminal output, split diffs, and agent trace timelines. (#18)
 
 ### Fixed
 
-- Stopped `spot deploy --screenshot` and `spot show deploy` from hanging forever when the browser writes the capture but never exits, preferred `chrome-headless-shell` for one-shot capture, and gave deferred page work (Mermaid, syntax highlighting) a virtual time budget so thumbnails are no longer captured mid-render.
-- Replaced Spot Show's direct sandbox document inspection with a guarded resize and theme bridge so opaque-origin HTML blocks size correctly without `allow-same-origin`.
+- Stopped `spot deploy --screenshot` and `spot show deploy` from hanging forever when the browser writes the capture but never exits, preferred `chrome-headless-shell` for one-shot capture, and gave deferred page work (Mermaid, syntax highlighting) a virtual time budget so thumbnails are no longer captured mid-render. (#19)
+- Replaced Spot Show's direct sandbox document inspection with a guarded resize and theme bridge so opaque-origin HTML blocks size correctly without `allow-same-origin`. (#18)
 - Displayed NetBird peer names instead of IP addresses for sites owned by setup-key CI or server peers, including existing sites after their next owner deploy.
 
 ## [0.4.0] - 2026-07-18
@@ -71,7 +73,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/melonamin/spot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/melonamin/spot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/melonamin/spot/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/melonamin/spot/compare/v0.1.0...v0.2.0
