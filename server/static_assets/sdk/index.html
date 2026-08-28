@@ -52,7 +52,7 @@
     .install-trigger {
       position: fixed;
       top: 22px;
-      right: 22px;
+      left: 22px;
       z-index: 20;
       display: inline-flex;
       align-items: center;
@@ -80,7 +80,7 @@
     .github-link {
       position: fixed;
       top: 22px;
-      left: 22px;
+      right: 22px;
       z-index: 20;
       display: inline-grid;
       place-items: center;
@@ -736,13 +736,7 @@
     @media (max-width: 560px) {
       .stage { padding-top: 92px; }
       .install-trigger {
-        left: 50%;
-        right: auto;
-        transform: translateX(-50%);
         white-space: nowrap;
-      }
-      .install-trigger:hover {
-        transform: translate(-50%, -2px);
       }
       .launchrow { grid-template-columns: 1fr; }
       .launch { padding: 19px 30px; }
