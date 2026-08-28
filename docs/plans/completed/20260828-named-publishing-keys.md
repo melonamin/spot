@@ -1,6 +1,6 @@
 # Named Publishing Keys
 
-**Status:** Implemented and validated
+**Status:** Completed
 
 ## Implementation Checklist
 
