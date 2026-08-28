@@ -106,24 +106,73 @@ find_chrome() {
         echo "error: SPOT_CHROME does not point to an executable: $SPOT_CHROME" >&2
         return 1
     fi
-    for chrome in chromium chromium-browser google-chrome google-chrome-stable; do
+    # chrome-headless-shell first: one-shot --screenshot is only reliably
+    # supported there. The full browser is a working fallback, guarded by the
+    # watchdog in capture_screenshot.
+    for chrome in chrome-headless-shell headless_shell chromium chromium-browser google-chrome google-chrome-stable; do
         if command -v "$chrome" >/dev/null 2>&1; then
             command -v "$chrome"
             return 0
         fi
     done
     echo "error: Chromium or Google Chrome is required for screenshots" >&2
-    echo "       install chromium, set SPOT_CHROME, or pass --no-screenshot" >&2
+    echo "       install chrome-headless-shell, set SPOT_CHROME, or pass --no-screenshot" >&2
     return 1
 }
 
+is_complete_png() {
+    png_path=$1
+    [ -s "$png_path" ] || return 1
+    png_header=$(LC_ALL=C od -A n -t x1 -N 8 "$png_path" 2>/dev/null | tr -d '[:space:]') || return 1
+    png_footer=$(LC_ALL=C tail -c 12 "$png_path" 2>/dev/null | od -A n -t x1 | tr -d '[:space:]') || return 1
+    [ "$png_header" = 89504e470d0a1a0a ] &&
+        [ "$png_footer" = 0000000049454e44ae426082 ]
+}
+
+stop_chrome() {
+    stop_pid=$1
+    stop_grace=$2
+    kill "$stop_pid" 2>/dev/null || return 0
+    stop_waited=0
+    while kill -0 "$stop_pid" 2>/dev/null && [ "$stop_waited" -lt "$stop_grace" ]; do
+        sleep 1
+        stop_waited=$((stop_waited + 1))
+    done
+    kill -0 "$stop_pid" 2>/dev/null && kill -KILL "$stop_pid" 2>/dev/null || true
+    # Only wait after confirming that the process is gone. A wedged browser can
+    # otherwise turn cleanup back into the indefinite hang this guards against.
+    kill -0 "$stop_pid" 2>/dev/null || wait "$stop_pid" 2>/dev/null || true
+}
+
+# Capture $url into $out, never blocking the caller indefinitely.
+#
+# One-shot --screenshot is only dependable in chrome-headless-shell. The full
+# browser writes the PNG and then keeps running - its background services hold
+# the process alive - so waiting on the process alone can block forever. Wait
+# for the file instead: once it exists and has stopped growing, the capture is
+# complete and the browser can be stopped. SPOT_SCREENSHOT_TIMEOUT bounds the
+# whole attempt in case no image is ever produced.
 capture_screenshot() {
     url=$1
     out=$2
     chrome=$(find_chrome) || exit 1
+    budget=${SPOT_SCREENSHOT_TIMEOUT:-30}
+    case $budget in
+        ''|*[!0-9]*)
+            echo "error: SPOT_SCREENSHOT_TIMEOUT must be a positive integer" >&2
+            exit 1
+            ;;
+    esac
+    if [ "$budget" -eq 0 ]; then
+        echo "error: SPOT_SCREENSHOT_TIMEOUT must be greater than zero" >&2
+        exit 1
+    fi
     profile=$(mktemp -d "${TMPDIR:-/tmp}/spot-chrome.XXXXXX")
     echo "capturing screenshot: $url"
-    if ! HOME=${HOME:-/tmp} XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp/.config} "$chrome" \
+    rm -f "$out"
+    # A virtual time budget lets deferred page work (syntax highlighting,
+    # Mermaid) finish before the capture without spending real seconds on it.
+    HOME=${HOME:-/tmp} XDG_CONFIG_HOME=${XDG_CONFIG_HOME:-/tmp/.config} "$chrome" \
         --headless=new \
         --disable-gpu \
         --disable-dev-shm-usage \
@@ -135,16 +184,66 @@ capture_screenshot() {
         --hide-scrollbars \
         --ignore-certificate-errors \
         --run-all-compositor-stages-before-draw \
+        --virtual-time-budget=10000 \
         --user-data-dir="$profile" \
         --window-size=1280,800 \
         --screenshot="$out" \
-        "$url" >/dev/null 2>&1; then
-        rm -rf "$profile"
-        echo "error: screenshot capture failed with $(basename "$chrome")" >&2
-        exit 1
+        "$url" >/dev/null 2>&1 &
+    chrome_pid=$!
+
+    waited=0
+    size=0
+    stable=0
+    capture_stable=0
+    chrome_exited=0
+    chrome_status=0
+    while [ "$waited" -lt "$budget" ]; do
+        if [ -s "$out" ]; then
+            current=$(wc -c < "$out" | tr -d ' ')
+            if [ "$current" = "$size" ]; then
+                stable=$((stable + 1))
+                if [ "$stable" -ge 2 ]; then
+                    capture_stable=1
+                    break
+                fi
+            else
+                stable=0
+                size=$current
+            fi
+        fi
+        if ! kill -0 "$chrome_pid" 2>/dev/null; then
+            if wait "$chrome_pid" 2>/dev/null; then
+                chrome_status=0
+            else
+                chrome_status=$?
+            fi
+            chrome_exited=1
+            break
+        fi
+        sleep 1
+        waited=$((waited + 1))
+    done
+    if [ "$chrome_exited" = 0 ]; then
+        shutdown_grace=$((budget - waited))
+        [ "$shutdown_grace" -le 2 ] || shutdown_grace=2
+        stop_chrome "$chrome_pid" "$shutdown_grace"
     fi
     rm -rf "$profile"
-    [ -s "$out" ] || { echo "error: screenshot capture wrote an empty file" >&2; exit 1; }
+
+    if [ "$chrome_exited" = 1 ] && [ "$chrome_status" -ne 0 ]; then
+        echo "error: screenshot capture failed with $(basename "$chrome") (exit $chrome_status)" >&2
+        exit 1
+    fi
+    if [ "$capture_stable" = 0 ] && [ "$chrome_exited" = 0 ]; then
+        echo "error: $(basename "$chrome") produced no complete screenshot within ${budget}s" >&2
+        echo "       install chrome-headless-shell, set SPOT_CHROME, raise" >&2
+        echo "       SPOT_SCREENSHOT_TIMEOUT, or pass --no-screenshot" >&2
+        exit 1
+    fi
+    if ! is_complete_png "$out"; then
+        echo "error: $(basename "$chrome") produced an invalid or incomplete PNG" >&2
+        exit 1
+    fi
 }
 
 deploy_upload() {

@@ -14,6 +14,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- Stopped `spot deploy --screenshot` and `spot show deploy` from hanging forever when the browser writes the capture but never exits, preferred `chrome-headless-shell` for one-shot capture, and gave deferred page work (Mermaid, syntax highlighting) a virtual time budget so thumbnails are no longer captured mid-render.
 - Replaced Spot Show's direct sandbox document inspection with a guarded resize and theme bridge so opaque-origin HTML blocks size correctly without `allow-same-origin`.
 - Displayed NetBird peer names instead of IP addresses for sites owned by setup-key CI or server peers, including existing sites after their next owner deploy.
 

@@ -208,7 +208,7 @@ for arg in "$@"; do
   esac
 done
 [ -n "$out" ] || exit 2
-printf 'fake png' > "$out"
+printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\104\\122\\000\\000\\000\\001\\000\\000\\000\\001\\010\\004\\000\\000\\000\\265\\034\\014\\002\\000\\000\\000\\013\\111\\104\\101\\124\\170\\332\\143\\144\\370\\017\\000\\001\\005\\001\\001\\047\\030\\343\\146\\000\\000\\000\\000\\111\\105\\116\\104\\256\\102\\140\\202' > "$out"
 """)
         chromium.chmod(0o755)
         start_deploys = Handler.deploys
@@ -234,6 +234,79 @@ printf 'fake png' > "$out"
         )
         assert Handler.deploys == start_deploys + 2, Handler.deploys
         assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf 'not-a-png' > "$out"
+exit 7
+""")
+        failed_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-failed", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            },
+            text=True,
+            capture_output=True,
+        )
+        assert failed_capture.returncode != 0, failed_capture.stdout
+        assert "screenshot capture failed" in failed_capture.stderr, failed_capture.stderr
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf 'not-a-png' > "$out"
+""")
+        invalid_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-invalid", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            },
+            text=True,
+            capture_output=True,
+        )
+        assert invalid_capture.returncode != 0, invalid_capture.stdout
+        assert "invalid or incomplete PNG" in invalid_capture.stderr, invalid_capture.stderr
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\104\\122\\000\\000\\000\\001\\000\\000\\000\\001\\010\\004\\000\\000\\000\\265\\034\\014\\002\\000\\000\\000\\013\\111\\104\\101\\124\\170\\332\\143\\144\\370\\017\\000\\001\\005\\001\\001\\047\\030\\343\\146\\000\\000\\000\\000\\111\\105\\116\\104\\256\\102\\140\\202' > "$out"
+trap '' TERM
+exec sleep 30
+""")
+        resistant_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-resistant", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_SCREENSHOT_TIMEOUT": "6",
+            },
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
+        assert resistant_capture.returncode == 0, resistant_capture.stderr
         zero = subprocess.run(
             ["./cli/spot", "show", "watch", "--interval", "0", "demo", str(show)],
             cwd=root,
