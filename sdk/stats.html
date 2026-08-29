@@ -127,6 +127,20 @@
       text-transform: uppercase;
     }
     .summary b { font-size: 28px; letter-spacing: 0; }
+    .summary .storage {
+      display: block;
+      margin-top: 10px;
+      padding-top: 9px;
+      border-top: 2px dotted rgba(21, 18, 30, .28);
+      color: #686173;
+      font-size: 9px;
+      letter-spacing: .1em;
+    }
+    .summary .storage b {
+      color: var(--ink);
+      font-size: inherit;
+      letter-spacing: inherit;
+    }
 
     .kpis {
       display: grid;
@@ -468,12 +482,14 @@
     </nav>
   </footer>
 
+  <script src="/spot-format.js"></script>
   <script>
     (() => {
       'use strict';
 
       const $ = (id) => document.getElementById(id);
-      const fmt = (n) => new Intl.NumberFormat().format(n || 0);
+      const fmt = window.SpotFormat.formatCount;
+      const fmtSize = window.SpotFormat.formatBytes;
       const pct = (part, total) => total ? Math.round((part / total) * 100) : 0;
       const maxOf = (items, get) => Math.max(1, ...items.map(get));
 
@@ -574,7 +590,10 @@
       const main = async () => {
         const data = await api('/api/sites/stats');
         const totals = data.totals || {};
-        $('summary').innerHTML = '<b>' + fmt(totals.total) + '</b><br>spots across the mesh';
+        const storage = data.storage || {};
+        $('summary').innerHTML = '<b>' + fmt(totals.total) + '</b><br>spots across the mesh' +
+          '<span class="storage">storing <b>' + fmtSize(storage.bytes) + '</b> across ' +
+          '<b>' + fmt(storage.files) + '</b> file' + (storage.files === 1 ? '' : 's') + '</span>';
         $('total').textContent = fmt(totals.total);
         $('public').textContent = fmt(totals.public);
         $('private').textContent = fmt(totals.private);

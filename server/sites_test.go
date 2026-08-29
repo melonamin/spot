@@ -14,11 +14,17 @@ import (
 )
 
 type fakeSiteAdmin struct {
-	owned     []OwnedSite
-	all       []SiteRecord
-	err       error
-	deleteErr error
-	deleted   []string
+	owned      []OwnedSite
+	all        []SiteRecord
+	err        error
+	storage    siteStatsStorageJSON
+	storageErr error
+	deleteErr  error
+	deleted    []string
+}
+
+func (f *fakeSiteAdmin) SiteStorageStats(context.Context) (siteStatsStorageJSON, error) {
+	return f.storage, f.storageErr
 }
 
 func (f *fakeSiteAdmin) SitesOwnedBy(_ context.Context, _ Identity) ([]OwnedSite, error) {
@@ -339,7 +345,7 @@ func TestSitesAPIRequiresIdentity(t *testing.T) {
 func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "locked", `{"allow":["bob@example.com"],"download":false}`)
-	admin := &fakeSiteAdmin{all: []SiteRecord{
+	admin := &fakeSiteAdmin{storage: siteStatsStorageJSON{Files: 14, Bytes: 4096}, all: []SiteRecord{
 		{
 			Name:        "open",
 			OwnerEmail:  "alice@example.com",
@@ -379,6 +385,9 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	if body.Totals.Creators != 2 || body.Totals.NoDownloadZip != 1 {
 		t.Fatalf("totals = %+v, want 2 creators and 1 no-download site", body.Totals)
 	}
+	if body.Storage.Files != 14 || body.Storage.Bytes != 4096 {
+		t.Fatalf("storage = %+v, want 14 files and 4096 bytes", body.Storage)
+	}
 	if len(body.Tags) != 2 || body.Tags[0].Tag == "secret-roadmap" || body.Tags[1].Tag == "secret-roadmap" {
 		t.Fatalf("tags = %+v, want only public tags", body.Tags)
 	}
@@ -398,6 +407,50 @@ func TestSiteStatsDoesNotRequireIdentity(t *testing.T) {
 	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/stats"))
 	if rec.Code != http.StatusOK {
 		t.Fatalf("site stats without identity = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSiteStorageStatsUsesLatestSuccessfulActiveDeploys(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	registry := NewSiteRegistry(db, nil)
+
+	for _, site := range []struct {
+		name  string
+		state SiteState
+	}{
+		{name: "one", state: SiteStateActive},
+		{name: "two", state: SiteStateActive},
+		{name: "gone", state: SiteStateDeleted},
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO sites (name, state) VALUES (?, ?)`, site.name, site.state); err != nil {
+			t.Fatalf("insert site %s: %v", site.name, err)
+		}
+	}
+	for _, deploy := range []struct {
+		site, status, created string
+		files                 int
+		bytes                 int64
+	}{
+		{site: "one", status: "success", files: 2, bytes: 20, created: "2026-01-01 00:00:00"},
+		{site: "one", status: "success", files: 4, bytes: 50, created: "2026-01-02 00:00:00"},
+		{site: "one", status: "failed", files: 100, bytes: 1000, created: "2026-01-03 00:00:00"},
+		{site: "two", status: "success", files: 3, bytes: 25, created: "2026-01-01 00:00:00"},
+		{site: "gone", status: "success", files: 9, bytes: 900, created: "2026-01-01 00:00:00"},
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO site_deploy_audit
+			(site, action, status, file_count, total_bytes, created_at)
+			VALUES (?, 'update', ?, ?, ?, ?)`, deploy.site, deploy.status, deploy.files, deploy.bytes, deploy.created); err != nil {
+			t.Fatalf("insert deploy for %s: %v", deploy.site, err)
+		}
+	}
+
+	stats, err := registry.SiteStorageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 7 || stats.Bytes != 75 {
+		t.Fatalf("storage = %+v, want 7 files and 75 bytes", stats)
 	}
 }
 

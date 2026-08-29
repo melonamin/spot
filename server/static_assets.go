@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/stats.html ../sdk/help.html ../sdk/404.html ../sdk/spot.js ../sdk/spot-live.js ../sdk/spot.d.ts ../sdk/install.sh ../sdk/agent.md ../sdk/spot-agent-howto.md ../sdk/spot-show-schema.md ../sdk/spot static_assets/sdk/"
+//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/stats.html ../sdk/help.html ../sdk/404.html ../sdk/spot.js ../sdk/spot-live.js ../sdk/spot-format.js ../sdk/spot.d.ts ../sdk/install.sh ../sdk/agent.md ../sdk/spot-agent-howto.md ../sdk/spot-show-schema.md ../sdk/spot static_assets/sdk/"
 //go:embed static_assets/sdk/*
 var staticAssets embed.FS
 

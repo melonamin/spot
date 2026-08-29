@@ -1146,6 +1146,7 @@
     </form>
   </dialog>
 
+  <script src="/spot-format.js"></script>
   <script>
     (() => {
       'use strict';
@@ -1170,11 +1171,8 @@
       };
       const dateLabel = (iso) =>
         new Date(iso).toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-      const fmtSize = (bytes) => {
-        if (bytes < 1024) return bytes + ' B';
-        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + ' KB';
-        return (bytes / 1024 / 1024).toFixed(1) + ' MB';
-      };
+      const fmtCount = window.SpotFormat.formatCount;
+      const fmtSize = window.SpotFormat.formatBytes;
       const downloadURL = (site) => site.url.replace(/\/$/, '') + '/api/download';
       const siteLabel = (site) => site.title || site.name;
       const tagList = (tags, onPick, options = {}) => {
@@ -1873,7 +1871,7 @@
           meta.className = 'sitemeta';
           meta.innerHTML = '<b></b> files · <b></b> · claimed <b></b> · updated <b></b>';
           const slots = meta.querySelectorAll('b');
-          slots[0].textContent = site.file_count;
+          slots[0].textContent = fmtCount(site.file_count);
           slots[1].textContent = fmtSize(site.total_bytes);
           slots[2].textContent = dateLabel(site.created_at);
           slots[3].textContent = rel(site.updated_at);

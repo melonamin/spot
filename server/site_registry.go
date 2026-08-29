@@ -620,6 +620,28 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	return sites, nil
 }
 
+// SiteStorageStats returns the combined size of each active site's latest
+// successful deploy. The deploy audit already records this information, so
+// the public stats page does not need to enumerate files in object storage.
+func (r *SiteRegistry) SiteStorageStats(ctx context.Context) (siteStatsStorageJSON, error) {
+	var stats siteStatsStorageJSON
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(a.file_count), 0), COALESCE(SUM(a.total_bytes), 0)
+		FROM sites AS s
+		LEFT JOIN site_deploy_audit AS a ON a.id = (
+			SELECT latest.id
+			FROM site_deploy_audit AS latest
+			WHERE latest.site = s.name AND latest.status = 'success'
+			ORDER BY latest.created_at DESC, latest.id DESC
+			LIMIT 1
+		)
+		WHERE s.state = 'active' AND s.policy_transition_generation = 0`).Scan(&stats.Files, &stats.Bytes)
+	if err != nil {
+		return siteStatsStorageJSON{}, fmt.Errorf("read site storage stats: %w", err)
+	}
+	return stats, nil
+}
+
 func (r *SiteRegistry) ManagementDecision(ctx context.Context, site string, actor Identity) (ManagementDecision, error) {
 	var record SiteRecord
 	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)

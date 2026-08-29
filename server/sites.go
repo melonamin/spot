@@ -126,11 +126,21 @@ type publicSiteJSON struct {
 
 type siteStatsJSON struct {
 	Totals    siteStatsTotalsJSON     `json:"totals"`
+	Storage   siteStatsStorageJSON    `json:"storage"`
 	Growth    []siteStatsGrowthJSON   `json:"growth"`
 	Activity  []siteStatsActivityJSON `json:"activity"`
 	Tags      []siteStatsTagJSON      `json:"tags"`
 	Freshness []siteStatsBucketJSON   `json:"freshness"`
 	Quality   []siteStatsBucketJSON   `json:"quality"`
+}
+
+type siteStatsStorageJSON struct {
+	Files int64 `json:"files"`
+	Bytes int64 `json:"bytes"`
+}
+
+type siteStatsStorageReader interface {
+	SiteStorageStats(ctx context.Context) (siteStatsStorageJSON, error)
 }
 
 type siteStatsTotalsJSON struct {
@@ -237,7 +247,18 @@ func (s *Server) handleSiteStats(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not load site stats")
 		return
 	}
-	writeJSON(w, http.StatusOK, buildSiteStats(r.Context(), s, all, time.Now()))
+	var storage siteStatsStorageJSON
+	if reader, ok := s.siteAdmin.(siteStatsStorageReader); ok {
+		storage, err = reader.SiteStorageStats(r.Context())
+		if err != nil {
+			log.Printf("site storage stats: %v", err)
+			httpError(w, http.StatusInternalServerError, "could not load site stats")
+			return
+		}
+	}
+	stats := buildSiteStats(r.Context(), s, all, time.Now())
+	stats.Storage = storage
+	writeJSON(w, http.StatusOK, stats)
 }
 
 // handlePublicSites lists the gallery: every site without an access
