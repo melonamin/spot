@@ -165,7 +165,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var site string
 	var files []deployFile
-	preserveAccess := false
+	// An update that ships no _access.json keeps the stored policy, which may
+	// have been set through PUT /api/sites/{name}/access rather than a bundle.
+	// Only an explicit preserve_access=false lets the deploy remove it.
+	preserveAccess := true
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -305,13 +308,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
-		files, err = s.preserveExistingAccessPolicy(r.Context(), site, files)
+		preserved, err := s.preserveExistingAccessPolicy(r.Context(), site, files)
 		if err != nil {
 			cancelAuthorization()
 			log.Printf("deploy %s: preserve access: %v", site, err)
+			// A read-only failure: audit it without marking content ambiguous.
+			s.recordDeployFailureAs(r, site, actor, "deploy", authz.AuthorizedAs, files, "could not preserve existing "+accessFileName)
 			httpError(w, http.StatusInternalServerError, "could not preserve existing "+accessFileName)
 			return
 		}
+		files = preserved
 		if len(files) > maxDeployFiles {
 			cancelAuthorization()
 			httpError(w, http.StatusBadRequest,

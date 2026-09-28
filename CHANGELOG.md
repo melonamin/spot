@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added delegated login (`SPOT_LOGIN_URL`) so an embedding application can sign viewers in to restricted sites with short single-use tokens and per-site session cookies, plus `SPOT_FRAME_ANCESTORS`, `SPOT_APEX_REDIRECT_URL`, and a Caddy on-demand TLS check at `/api/tls/ask`.
 - Added `PUT /api/sites/{name}/access` to change a site's access policy without redeploying, `GET /api/sites/visible`, and `allow` in site listings.
 
+### Changed
+
+- A site update that ships no `_access.json` now keeps the stored access policy instead of removing it; send `preserve_access=false` to remove it.
+- Delegated login binds each sign-in to the browser that started it: the login app must copy the redirect's `state` into the token's `state` claim. Delegated login now requires HTTPS or `*.localhost`.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added

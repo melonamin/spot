@@ -266,7 +266,9 @@ Deploy invariants:
   hashes; ambiguous storage outcomes fence site traffic and maintainer-derived
   management until reconciliation or owner/admin repair.
 - Sync semantics are used: uploaded files replace the site, and stale files are
-  removed.
+  removed. The exception is `_access.json`: an update that omits it keeps the
+  stored policy (which may come from the access API) unless the deploy sends
+  `preserve_access=false`.
 - Deploy audit rows are recorded for success, failure, and denied attempts.
   They include the authentication method and, for publishing keys, the key ID
   and human-readable publisher name. Public gallery responses omit this data.

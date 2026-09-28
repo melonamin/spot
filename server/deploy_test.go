@@ -318,6 +318,17 @@ func deployRequest(t *testing.T, host, site string, files map[string]string) *ht
 	return deployRequestOrdered(t, host, site, ordered)
 }
 
+// accessRemovingDeployRequest is a redeploy that opts out of keeping the
+// stored _access.json, so a bundle without one removes the policy.
+func accessRemovingDeployRequest(t *testing.T, host, site string, files map[string]string) *http.Request {
+	t.Helper()
+	var ordered [][2]string
+	for path, content := range files {
+		ordered = append(ordered, [2]string{path, content})
+	}
+	return deployRequestOrderedFields(t, host, site, ordered, map[string]string{"preserve_access": "false"})
+}
+
 func deployRequestOrdered(t *testing.T, host, site string, files [][2]string) *http.Request {
 	return deployRequestOrderedFields(t, host, site, files, nil)
 }
@@ -631,27 +642,40 @@ func TestDeployForbiddenIsAuditedBeforeStorage(t *testing.T) {
 }
 
 func TestDeployStorageFailureIsAudited(t *testing.T) {
-	auth := &recordingDeployAuth{action: "update"}
-	srv := &Server{
-		sites:          failingSiteStore{},
-		deployAuth:     auth,
-		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
-		spotDomain:     "spot.localhost",
-		trustedProxies: testTrustedProxies(t),
-	}
-	req := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
-	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	for _, tt := range []struct {
+		name, preserve, message string
+	}{
+		{"listing current files", "false", "could not read current files"},
+		{"preserving the stored policy", "", "could not preserve existing " + accessFileName},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := &recordingDeployAuth{action: "update"}
+			srv := &Server{
+				sites:          failingSiteStore{},
+				deployAuth:     auth,
+				resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+				spotDomain:     "spot.localhost",
+				trustedProxies: testTrustedProxies(t),
+			}
+			var fields map[string]string
+			if tt.preserve != "" {
+				fields = map[string]string{"preserve_access": tt.preserve}
+			}
+			req := deployRequestOrderedFields(t, "spot.localhost", "demo", [][2]string{{"index.html", "<h1>hi</h1>"}}, fields)
+			req.Header.Set("X-Forwarded-For", "100.64.0.7")
 
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("deploy with unreachable store = %d, want 500", rec.Code)
-	}
-	if len(auth.events) != 1 {
-		t.Fatalf("audit events = %d, want 1", len(auth.events))
-	}
-	if event := auth.events[0]; event.Status != "failed" || event.Action != "deploy" {
-		t.Fatalf("audit event = %+v", event)
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("deploy with unreachable store = %d, want 500", rec.Code)
+			}
+			if len(auth.events) != 1 {
+				t.Fatalf("audit events = %d, want 1", len(auth.events))
+			}
+			if event := auth.events[0]; event.Status != "failed" || event.Action != "deploy" || event.Message != tt.message || event.FileCount != 1 {
+				t.Fatalf("audit event = %+v", event)
+			}
+		})
 	}
 }
 
@@ -816,9 +840,9 @@ func TestFailedPublicRedeployKeepsRestrictedPolicyCache(t *testing.T) {
 	}
 
 	srv.sites = &failAfterRemoveSiteStore{SiteStorage: sites, maxRemoves: 1}
-	second := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+	second := deployRequestOrderedFields(t, "spot.localhost", "secret", [][2]string{
 		{"index.html", "<h1>public attempt</h1>"},
-	})
+	}, map[string]string{"preserve_access": "false"})
 	second.Header.Set("X-Forwarded-For", "100.64.0.7")
 	rec = httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, second)

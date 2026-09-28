@@ -371,3 +371,29 @@ func TestDeployUnresolvedRestrictiveStagingRevokesRealtime(t *testing.T) {
 		t.Fatal("realtime session survived an unresolved restrictive staging commit")
 	}
 }
+
+// Access set through the API lives only in storage, so a redeploy of a bundle
+// without _access.json must not silently reopen the site.
+func TestRedeployKeepsAccessSetThroughTheAPI(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "demo.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "demo", "")
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["owner@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("access change = %d %s", rec.Code, rec.Body.String())
+	}
+
+	st.deploy(t, "owner@example.com", "demo", "")
+	if rec := st.do(siteRequest(http.MethodGet, host, "/")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous after redeploy without %s = %d, want 401", accessFileName, rec.Code)
+	}
+
+	// An explicit opt-out still gives the bundle sync semantics.
+	rec := st.do(asForwardUser(accessRemovingDeployRequest(t, "sites.localhost:8443", "demo",
+		map[string]string{"index.html": "<h1>demo</h1>"}), "owner@example.com"))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("access-removing deploy = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(siteRequest(http.MethodGet, host, "/")); rec.Code != http.StatusOK {
+		t.Fatalf("anonymous after preserve_access=false = %d, want 200", rec.Code)
+	}
+}

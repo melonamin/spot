@@ -140,7 +140,8 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	}
 	srv.resolver = NewStaticResolver("it-deployer@example.com", "Integration Deployer", nil)
 
-	// Redeploy without old.txt: sync semantics must remove it.
+	// Redeploy without old.txt: sync semantics must remove it. The stored
+	// _access.json stays, since the bundle does not replace it.
 	code, body = deploy(map[string]string{
 		"index.html":  "<h1>v2</h1>",
 		"css/app.css": "body{color:red}",
@@ -153,8 +154,8 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 		t.Fatalf("list after redeploy: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 2 || paths[0] != "css/app.css" || paths[1] != "index.html" {
-		t.Errorf("paths after redeploy = %v, want [css/app.css index.html]", paths)
+	if len(paths) != 3 || paths[0] != "_access.json" || paths[1] != "css/app.css" || paths[2] != "index.html" {
+		t.Errorf("paths after redeploy = %v, want [_access.json css/app.css index.html]", paths)
 	}
 }
 
