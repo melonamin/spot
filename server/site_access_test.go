@@ -175,8 +175,18 @@ func TestVisibleSites(t *testing.T) {
 	if got["open"].Restricted || got["open"].Allow != nil || got["open"].Yours {
 		t.Fatalf("open entry = %+v", got["open"])
 	}
-	if !got["platform"].Restricted || len(got["platform"].Allow) != 1 || got["platform"].Allow[0] != "platform" {
-		t.Fatalf("platform entry = %+v", got["platform"])
+	// A viewer does not learn who else may view a site; its managers do.
+	if !got["platform"].Restricted || got["platform"].Allow != nil {
+		t.Fatalf("platform entry for a viewer = %+v, want no allowlist", got["platform"])
+	}
+	if allow := got["delegated"].Allow; len(allow) != 1 || allow[0] != "owner@example.com" {
+		t.Fatalf("delegated entry for its maintainer = %+v", got["delegated"])
+	}
+	if allow := got["own"].Allow; len(allow) != 1 || allow[0] != "viewer@example.com" {
+		t.Fatalf("own entry = %+v", got["own"])
+	}
+	if allow := visible("owner@example.com", "")["platform"].Allow; len(allow) != 1 || allow[0] != "platform" {
+		t.Fatalf("platform entry for its owner allow = %v", allow)
 	}
 	if got["platform"].OwnerEmail != "owner@example.com" {
 		t.Fatalf("platform owner_email = %q", got["platform"].OwnerEmail)

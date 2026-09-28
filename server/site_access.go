@@ -168,6 +168,8 @@ type visibleSiteJSON struct {
 // handleVisibleSites lists every active site the caller may view: open sites,
 // restricted sites whose allowlist matches the caller, and sites the caller
 // manages. Sites with an unreadable policy are omitted, as authz fails closed.
+// Only the owner and managers see the allowlist; a viewer does not learn who
+// else may view the site.
 func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSitesAPI(w, r) {
 		return
@@ -190,8 +192,13 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 		}
 		restricted := policy.RestrictsAccess()
 		yours := site.OwnedBy(viewer)
-		if restricted && !yours && !policy.Allows(viewer) && !s.canManageSite(r.Context(), site.Name, viewer) {
+		manages := yours || s.canManageSite(r.Context(), site.Name, viewer)
+		if restricted && !manages && !policy.Allows(viewer) {
 			continue
+		}
+		var allow []string
+		if manages {
+			allow = policyAllowList(policy)
 		}
 		preview := ""
 		if !restricted && s.hasSitePreview(r.Context(), site.Name) {
@@ -205,7 +212,7 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 				Preview: preview, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			},
 			Restricted: restricted,
-			Allow:      policyAllowList(policy),
+			Allow:      allow,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
