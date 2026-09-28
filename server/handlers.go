@@ -180,7 +180,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/auth/callback", s.limited(s.dbLimit, s.handleAuthCallback))
 	mux.HandleFunc("GET /api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("GET /api/auth/logout", s.handleAuthLogout)
-	mux.HandleFunc("GET /api/tls/ask", s.handleTLSAsk)
+	mux.HandleFunc("GET /api/tls/ask", s.limited(s.dbLimit, s.handleTLSAsk))
 	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.requireVisitor(s.handleWS)))
 	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleList))))
 	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleCount))))

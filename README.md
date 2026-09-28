@@ -278,7 +278,10 @@ Notes:
 - To run the proxy off-mesh (where its source IP isn't a reliable identifier),
   set `SPOT_FORWARD_AUTH_SECRET` to a long random value and have the proxy send
   it in the `X-Spot-Forward-Auth-Secret` header. When set, the secret is
-  required and replaces the source-IP check.
+  required and replaces the source-IP check. Requests that prove the secret
+  and assert an identity skip Spot's per-IP rate limits (including deploy, AI,
+  and Slack), because the proxy speaks for all its users from one address;
+  the proxy must throttle its own users.
 - Pangolin only emits identity headers under SSO. PIN, password, and
   shareable links authenticate but carry no identity, so restricted sites
   behind Pangolin require SSO.

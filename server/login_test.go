@@ -552,6 +552,16 @@ func TestTLSAsk(t *testing.T) {
 	if rec := st.do(httptest.NewRequest(http.MethodGet, "http://sites:8080/api/sites/visible", nil)); rec.Code != http.StatusBadRequest {
 		t.Fatalf("other API on internal host = %d, want 400", rec.Code)
 	}
+
+	// It is reachable from outside, so it is rate-limited like other lookups.
+	st.srv.dbLimit = NewRateLimiter(1, 1)
+	st.handler = st.srv.routes()
+	ask := func() int {
+		return st.do(httptest.NewRequest(http.MethodGet, "http://sites:8080/api/tls/ask?domain=live.sites.localhost", nil)).Code
+	}
+	if first, second := ask(), ask(); first != http.StatusOK || second != http.StatusTooManyRequests {
+		t.Fatalf("tls ask burst = %d then %d, want 200 then 429", first, second)
+	}
 }
 
 func TestDelegatedLoginAcceptsForwardAuthFirst(t *testing.T) {
