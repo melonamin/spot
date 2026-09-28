@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added delegated login (`SPOT_LOGIN_URL`) so an embedding application can sign viewers in to restricted sites with short single-use tokens and per-site session cookies, plus `SPOT_FRAME_ANCESTORS`, `SPOT_APEX_REDIRECT_URL`, and a Caddy on-demand TLS check at `/api/tls/ask`.
+- Added `PUT /api/sites/{name}/access` to change a site's access policy without redeploying, `GET /api/sites/visible`, and `allow` in site listings.
+
 ## [0.5.0] - 2026-08-28
 
 ### Added

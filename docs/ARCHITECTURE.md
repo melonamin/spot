@@ -381,8 +381,10 @@ unlocks the site.
 
 ## Identity Model
 
-Spot does not manage browser login sessions. Authentication is ambient network
-identity from a mesh, or a configured single-user/static identity.
+Authentication is ambient network identity from a mesh, forward-auth headers
+from a trusted proxy, or a configured single-user/static identity. The optional
+delegated login mode (`server/login.go`) adds per-site-host browser sessions
+that an external application issues through a short HS256 login token.
 
 Core type:
 
@@ -397,6 +399,9 @@ Resolvers:
   identities.
 - `StaticResolver`: returns one configured identity for local dev or
   single-user installs.
+
+`resolvePeer` checks forward auth first, then the delegated-login session
+cookie (site hosts only), then the mesh resolver.
 
 Handlers call `resolveIdentity` using `clientIP`. If a trusted proxy is in
 front, `clientIP` may use trusted forwarded headers; otherwise it uses the

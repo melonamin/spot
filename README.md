@@ -291,6 +291,44 @@ Notes:
 - Email is the principal: a user keeps the same site ownership whether they
   arrive via the proxy or the mesh, as long as the email matches.
 
+### Delegated Login (embedding Spot in another app)
+
+Use this when another application owns sign-in and hosts Spot sites for its
+users. That application calls the Spot API with forward-auth headers and a
+shared secret, and signs browsers in to restricted sites:
+
+```env
+SPOT_LOGIN_URL=https://app.example.com/sites/login
+SPOT_LOGIN_TOKEN_SECRET=<32+ random chars>
+SPOT_SESSION_SECRET=<32+ random chars, different>
+SPOT_SESSION_TTL=12h
+SPOT_FRAME_ANCESTORS='self' https://app.example.com
+SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
+```
+
+1. A browser opens a restricted site with no identity. Spot redirects it to
+   `SPOT_LOGIN_URL?return_to=<site URL>`. Other requests get `401`.
+2. The login app authenticates the browser and redirects it to
+   `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`. The token is
+   a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
+   (`spot-login`), `host` (the exact site host, lowercase, with any non-default
+   port), `email`, optional `name` and `groups`, `iat`, `exp` (at most 300 s
+   after `iat`), and a single-use `jti`.
+3. Spot sets a signed session cookie for that host only and continues to
+   `/api/auth/check`, which shows an "open in a new tab" page instead of
+   looping when the browser dropped the cookie (for example in a frame).
+   `/api/auth/logout` clears the cookie.
+
+The cookie is `SameSite=None; Secure; Partitioned` on HTTPS and `*.localhost`
+(named `__Host-spot_session` on HTTPS), and `SameSite=Lax` otherwise. In this
+mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
+`/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
+`shared-*` collections and rooms are disabled because sites belong to
+different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
+site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
+embedding app. `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
+for the apex and active site names.
+
 ### Single-User Homelab
 
 Use this when LAN/VPN/firewall access is the boundary and everyone who
@@ -558,6 +596,12 @@ Important APIs:
 - `GET /api/sites/manageable` lists sites the caller can manage and includes
   `management_role`, immutable owner attribution, and lifecycle state.
 - `GET /api/sites/public` lists unrestricted sites.
+- `GET /api/sites/visible` lists every active site the caller may view (open,
+  allowed, or managed) with `restricted` and `allow`. `mine` and `manageable`
+  entries also carry `allow` (`null` when the site has no `allow` field).
+- `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
+  redeploy. The owner, an admin, or a maintainer may call it; a maintainer
+  cannot change `maintainers`. A concurrent content change returns `409`.
 - `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
   publication status.
 - `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site
