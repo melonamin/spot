@@ -346,13 +346,23 @@ func (s *Server) originMatchesHost(r *http.Request) bool {
 
 func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !l.Allow(s.clientIP(r)) {
+		if !l.Allow(s.rateLimitKey(r)) {
 			w.Header().Set("Retry-After", "1")
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded, slow down")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// rateLimitKey buckets requests by client IP, except requests that a trusted
+// forward-auth proxy made for a user: one proxy speaks for many users from a
+// single address, so those share nothing but the asserted identity.
+func (s *Server) rateLimitKey(r *http.Request) string {
+	if id, ok := s.forwardAuthIdentity(r); ok {
+		return "forward-auth:" + actorKey(id)
+	}
+	return s.clientIP(r)
 }
 
 // forwardAuthIdentity returns the identity asserted by a trusted auth proxy

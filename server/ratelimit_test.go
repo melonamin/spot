@@ -91,3 +91,40 @@ func TestRateLimiterPruneRemovesIdle(t *testing.T) {
 		t.Error("prune dropped a fresh visitor")
 	}
 }
+
+func TestLimitedHandlerKeysForwardAuthByIdentity(t *testing.T) {
+	limiter := NewRateLimiter(1, 1)
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "0123456789abcdef0123456789abcdef"
+	srv := &Server{forwardAuth: fa, trustedProxies: testTrustedProxies(t)}
+	handler := srv.limited(limiter, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	call := func(email, secret string) int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.1:12345"
+		req.Header.Set("Remote-Email", email)
+		req.Header.Set(forwardAuthSecretHeader, secret)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec.Code
+	}
+
+	if code := call("a@example.com", fa.Secret); code != http.StatusOK {
+		t.Fatalf("first user: status %d", code)
+	}
+	if code := call("b@example.com", fa.Secret); code != http.StatusOK {
+		t.Fatalf("second user from the same proxy address: status %d, want 200", code)
+	}
+	if code := call("a@example.com", fa.Secret); code != http.StatusTooManyRequests {
+		t.Fatalf("repeat user: status %d, want 429", code)
+	}
+	// An unproven identity header falls back to the address bucket.
+	if code := call("c@example.com", "wrong-secret-wrong-secret-wrong!"); code != http.StatusOK {
+		t.Fatalf("first unproven call: status %d", code)
+	}
+	if code := call("d@example.com", "wrong-secret-wrong-secret-wrong!"); code != http.StatusTooManyRequests {
+		t.Fatalf("second unproven call from the same address: status %d, want 429", code)
+	}
+}
