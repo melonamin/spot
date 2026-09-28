@@ -18,6 +18,7 @@ var (
 	ErrSiteNotActive                    = errors.New("site is not active")
 	ErrExternalContentMutationActive    = errors.New("external content mutation already active")
 	ErrExternalContentMutationLeaseLost = errors.New("external content mutation lease lost")
+	ErrPolicyTransitionConflict         = errors.New("content generation changed or policy transition pending")
 )
 
 type SiteState string
@@ -410,7 +411,7 @@ func (r *SiteRegistry) BeginPolicyTransition(ctx context.Context, site string, g
 		return fmt.Errorf("count policy transition for %s: %w", site, err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("begin policy transition for %s: generation changed or transition pending", site)
+		return fmt.Errorf("begin policy transition for %s: %w", site, ErrPolicyTransitionConflict)
 	}
 	return nil
 }
@@ -631,7 +632,7 @@ func (r *SiteRegistry) SiteStorageStats(ctx context.Context) (siteStatsStorageJS
 		LEFT JOIN site_deploy_audit AS a ON a.id = (
 			SELECT latest.id
 			FROM site_deploy_audit AS latest
-			WHERE latest.site = s.name AND latest.status = 'success'
+			WHERE latest.site = s.name AND latest.status = 'success' AND latest.action <> 'access'
 			ORDER BY latest.created_at DESC, latest.id DESC
 			LIMIT 1
 		)
@@ -978,29 +979,31 @@ const (
 		 auth_method, publisher_key_id, publisher_name, message)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
+	// Access-only changes are audited as action 'access'; they never describe
+	// deployed content, so the latest-deploy columns skip them.
 	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
 			COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			(s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'update', 'delete')
 				  AND status IN ('success', 'failed')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0)),
 			COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			COALESCE((SELECT auth_method FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			COALESCE((SELECT publisher_name FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), '')
 		FROM sites s
 		WHERE s.state = 'active' AND ((s.owner_email <> '' AND s.owner_email = ?)
@@ -1010,26 +1013,26 @@ const (
 	manageableSitesSQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			(s.state = 'active' AND (s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'recreate', 'update', 'delete')
 				  AND status IN ('success', 'failed')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0))),
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT auth_method FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT publisher_name FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action <> 'access'
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END
 		FROM sites s
 		WHERE s.state IN ('active', 'deleted')

@@ -48,6 +48,7 @@ type ownedSiteJSON struct {
 	TotalBytes      int64           `json:"total_bytes"`
 	Restricted      bool            `json:"restricted"`
 	AllowCount      int             `json:"allow_count"`
+	Allow           []string        `json:"allow"`
 	Cloudflare      any             `json:"cloudflare,omitempty"`
 	Owner           string          `json:"owner,omitempty"`
 	ManagementRole  string          `json:"management_role,omitempty"`
@@ -99,6 +100,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 		}
 		if site.State == SiteStateActive {
 			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = s.policySummaryForSite(r.Context(), site.Name)
+			entry.Allow = s.allowListForSite(r.Context(), site.Name)
 			contentHash := site.ContentHash
 			if site.ContentHashUncertain {
 				contentHash = ""
@@ -229,6 +231,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			TotalBytes:      site.TotalBytes,
 			Restricted:      restricted,
 			AllowCount:      allowCount,
+			Allow:           s.allowListForSite(r.Context(), site.Name),
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
