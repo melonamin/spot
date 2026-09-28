@@ -196,7 +196,7 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 			publicSiteJSON: publicSiteJSON{
 				Name: site.Name, URL: s.siteURL(r, site.Name), Title: site.Title,
 				Description: site.Description, Tags: cloneSiteTags(site.Tags),
-				DownloadAllowed: policy.AllowsDownload(), Owner: ownerDisplay(site), Yours: yours,
+				DownloadAllowed: policy.AllowsDownload(), Owner: ownerDisplay(site), OwnerEmail: site.OwnerEmail, Yours: yours,
 				Preview: preview, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			},
 			Restricted: restricted,

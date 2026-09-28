@@ -51,6 +51,7 @@ type ownedSiteJSON struct {
 	Allow           []string        `json:"allow"`
 	Cloudflare      any             `json:"cloudflare,omitempty"`
 	Owner           string          `json:"owner,omitempty"`
+	OwnerEmail      string          `json:"owner_email,omitempty"`
 	ManagementRole  string          `json:"management_role,omitempty"`
 	State           SiteState       `json:"state,omitempty"`
 	LastDeploy      *lastDeployJSON `json:"last_deploy,omitempty"`
@@ -95,7 +96,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			Description: site.Description, Tags: cloneSiteTags(site.Tags),
 			CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			FileCount: site.FileCount, TotalBytes: site.TotalBytes,
-			Owner: ownerDisplay(site.SiteRecord), ManagementRole: string(site.ManagementRole), State: site.State,
+			Owner: ownerDisplay(site.SiteRecord), OwnerEmail: site.OwnerEmail, ManagementRole: string(site.ManagementRole), State: site.State,
 			LastDeploy: lastDeployForSite(site.OwnedSite),
 		}
 		if site.State == SiteStateActive {
@@ -120,6 +121,7 @@ type publicSiteJSON struct {
 	Tags            []string  `json:"tags"`
 	DownloadAllowed bool      `json:"download_allowed"`
 	Owner           string    `json:"owner"`
+	OwnerEmail      string    `json:"owner_email,omitempty"`
 	Yours           bool      `json:"yours"`
 	Preview         string    `json:"preview,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -220,6 +222,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 		}
 		out = append(out, ownedSiteJSON{
 			Name:            site.Name,
+			OwnerEmail:      site.OwnerEmail,
 			URL:             s.siteURL(r, site.Name),
 			Title:           site.Title,
 			Description:     site.Description,
@@ -300,6 +303,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			Tags:            cloneSiteTags(site.Tags),
 			DownloadAllowed: downloadAllowed,
 			Owner:           ownerDisplay(site),
+			OwnerEmail:      site.OwnerEmail,
 			Yours:           site.OwnedBy(viewer),
 			Preview:         preview,
 			CreatedAt:       site.CreatedAt,

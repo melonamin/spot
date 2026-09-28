@@ -178,6 +178,9 @@ func TestVisibleSites(t *testing.T) {
 	if !got["platform"].Restricted || len(got["platform"].Allow) != 1 || got["platform"].Allow[0] != "platform" {
 		t.Fatalf("platform entry = %+v", got["platform"])
 	}
+	if got["platform"].OwnerEmail != "owner@example.com" {
+		t.Fatalf("platform owner_email = %q", got["platform"].OwnerEmail)
+	}
 	if !got["own"].Yours || got["own"].URL != "http://own.sites.localhost:8443/" {
 		t.Fatalf("own entry = %+v", got["own"])
 	}
@@ -199,8 +202,9 @@ func TestManageableSitesIncludeAllow(t *testing.T) {
 	rec := st.do(asForwardUser(sitesRequestFor("/api/sites/manageable"), "owner@example.com"))
 	var body struct {
 		Sites []struct {
-			Name  string    `json:"name"`
-			Allow *[]string `json:"allow"`
+			Name       string    `json:"name"`
+			OwnerEmail string    `json:"owner_email"`
+			Allow      *[]string `json:"allow"`
 		} `json:"sites"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
@@ -209,6 +213,9 @@ func TestManageableSitesIncludeAllow(t *testing.T) {
 	allow := map[string]*[]string{}
 	for _, site := range body.Sites {
 		allow[site.Name] = site.Allow
+		if site.OwnerEmail != "owner@example.com" {
+			t.Fatalf("manageable %s owner_email = %q", site.Name, site.OwnerEmail)
+		}
 	}
 	if allow["open"] != nil || allow["locked"] == nil || len(*allow["locked"]) != 2 {
 		t.Fatalf("manageable allow = %s", rec.Body.String())
