@@ -707,6 +707,8 @@ func preservePolicyOnFailure(current *AccessPolicy, currentErr error, next *Acce
 	return policyBroadens(current, next) || maintainersChanged(current, next)
 }
 
+// maintainersChanged compares the maintainer lists as sets of normalized
+// entries: order, case, duplicates and blank entries grant no authority.
 func maintainersChanged(current, next *AccessPolicy) bool {
 	var currentEntries, nextEntries []string
 	if current != nil {
@@ -715,15 +717,26 @@ func maintainersChanged(current, next *AccessPolicy) bool {
 	if next != nil {
 		nextEntries = next.Maintainers
 	}
-	if len(currentEntries) != len(nextEntries) {
+	currentSet, nextSet := maintainerSet(currentEntries), maintainerSet(nextEntries)
+	if len(currentSet) != len(nextSet) {
 		return true
 	}
-	for i := range currentEntries {
-		if !strings.EqualFold(strings.TrimSpace(currentEntries[i]), strings.TrimSpace(nextEntries[i])) {
+	for entry := range currentSet {
+		if _, ok := nextSet[entry]; !ok {
 			return true
 		}
 	}
 	return false
+}
+
+func maintainerSet(entries []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry = strings.ToLower(strings.TrimSpace(entry)); entry != "" {
+			set[entry] = struct{}{}
+		}
+	}
+	return set
 }
 
 func policyNarrowsAccess(current, next *AccessPolicy, hasNext bool) bool {

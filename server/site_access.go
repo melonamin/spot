@@ -29,7 +29,7 @@ func (s *Server) allowListForSite(ctx context.Context, site string) []string {
 
 // handleSiteAccess replaces a site's _access.json without redeploying its
 // content. It follows the deploy path's fencing: the site mutation lock, a
-// pending-transition reconcile, a management decision, and a generation-fenced
+// management decision, a pending-transition reconcile, and a generation-fenced
 // policy commit.
 func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSitesAPI(w, r) {
@@ -72,16 +72,15 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 	siteLock := s.siteMutationLock(site)
 	siteLock.Lock()
 	defer siteLock.Unlock()
-	if err := s.reconcilePolicyTransition(r.Context(), site, DeployPrincipal{Actor: actor}); err != nil {
-		if errors.Is(err, ErrSiteNotFound) {
-			httpError(w, http.StatusNotFound, "no active site named "+site)
-			return
-		}
-		log.Printf("access %s: reconcile policy transition: %v", site, err)
-		httpError(w, http.StatusServiceUnavailable, "the site's access policy needs owner or admin recovery")
-		return
-	}
+	// Authorize before reconciling, so a caller who cannot manage the site
+	// learns nothing about a pending policy transition. While one is pending
+	// the maintainers list is unknown, so only the owner or an admin passes.
 	decision, err := manager.ManagementDecision(r.Context(), site, actor)
+	denial := "actor is not the site owner, a maintainer, or a platform admin"
+	if errors.Is(err, ErrManagementPolicyUnresolved) && decision.State == SiteStateActive {
+		decision, err = ManagementDecision{State: decision.State}, nil
+		denial = "actor is not the site owner or a platform admin, and a pending policy transition hides the maintainers list"
+	}
 	switch {
 	case errors.Is(err, ErrSiteNotFound) || (err == nil && decision.State != SiteStateActive):
 		httpError(w, http.StatusNotFound, "no active site named "+site)
@@ -92,10 +91,18 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 		return
 	case !decision.Allowed:
 		s.recordDeployAudit(r, DeployAuditEvent{
-			Site: site, Actor: actor, Action: "access", Status: "denied",
-			Message: "actor is not the site owner, a maintainer, or a platform admin",
+			Site: site, Actor: actor, Action: "access", Status: "denied", Message: denial,
 		})
 		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can change this site's access")
+		return
+	}
+	if err := s.reconcilePolicyTransition(r.Context(), site, DeployPrincipal{Actor: actor}); err != nil {
+		if errors.Is(err, ErrSiteNotFound) {
+			httpError(w, http.StatusNotFound, "no active site named "+site)
+			return
+		}
+		log.Printf("access %s: reconcile policy transition: %v", site, err)
+		httpError(w, http.StatusServiceUnavailable, "the site's access policy needs owner or admin recovery")
 		return
 	}
 	current, currentErr := s.policyForSite(r.Context(), site)

@@ -214,3 +214,106 @@ func TestManageableSitesIncludeAllow(t *testing.T) {
 		t.Fatalf("manageable allow = %s", rec.Body.String())
 	}
 }
+
+func accessAuditCount(t *testing.T, st *loginTestStack, site, actor, status string) int {
+	t.Helper()
+	var n int
+	if err := st.registry.db.QueryRow(`SELECT count(*) FROM site_deploy_audit
+		WHERE site = ? AND actor_email = ? AND action = 'access' AND status = ?`, site, actor, status).Scan(&n); err != nil {
+		t.Fatal(err)
+	}
+	return n
+}
+
+// A caller who cannot manage the site gets 403 and a denied audit row even
+// while a policy transition is pending; only the owner or an admin reaches
+// the reconcile and its 503.
+func TestSiteAccessAuthorizesBeforeReconcile(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"],"maintainers":["maint@example.com"]}`)
+	ctx := context.Background()
+	generation, err := st.registry.SiteContentGeneration(ctx, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	// The stored policy matches neither side, so the transition cannot be
+	// reconciled automatically.
+	if err := st.registry.BeginPolicyTransition(ctx, "demo", generation, absentPolicyHash, "sha256:next"); err != nil {
+		t.Fatal(err)
+	}
+
+	rec := st.do(accessRequest("demo", "stranger@example.com", `{}`))
+	if rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "recovery") {
+		t.Fatalf("stranger during pending transition = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	if got := accessAuditCount(t, st, "demo", "stranger@example.com", "denied"); got != 1 {
+		t.Fatalf("stranger denied audit rows = %d, want 1", got)
+	}
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{}`)); rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("owner during unresolvable transition = %d %s, want 503", rec.Code, rec.Body.String())
+	}
+	// The pending transition hides the maintainers list, so a maintainer is
+	// indistinguishable from a stranger until the owner or an admin recovers.
+	if rec := st.do(accessRequest("demo", "maint@example.com", `{"allow":["owner@example.com"],"maintainers":["maint@example.com"]}`)); rec.Code != http.StatusForbidden {
+		t.Fatalf("maintainer during pending transition = %d %s, want 403", rec.Code, rec.Body.String())
+	}
+	if got := accessAuditCount(t, st, "demo", "owner@example.com", "denied"); got != 0 {
+		t.Fatalf("owner denied audit rows = %d, want 0", got)
+	}
+}
+
+// Maintainers compare as a set: a maintainer may reorder or re-case the list
+// but not add, remove or replace an entry.
+func TestSiteAccessMaintainerListIsASet(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo",
+		`{"allow":["owner@example.com"],"maintainers":["maint@example.com","ops"]}`)
+
+	for _, body := range []string{
+		`{"allow":["platform"],"maintainers":["ops","maint@example.com"]}`,
+		`{"allow":["platform"],"maintainers":[" MAINT@example.com ","Ops","ops"]}`,
+	} {
+		if rec := st.do(accessRequest("demo", "maint@example.com", body)); rec.Code != http.StatusOK {
+			t.Fatalf("maintainer same set %s = %d %s, want 200", body, rec.Code, rec.Body.String())
+		}
+	}
+	for _, body := range []string{
+		`{"allow":["platform"],"maintainers":["maint@example.com"]}`,
+		`{"allow":["platform"],"maintainers":["maint@example.com","ops","extra@example.com"]}`,
+		`{"allow":["platform"],"maintainers":["maint@example.com","admins"]}`,
+		`{"allow":["platform"]}`,
+	} {
+		if rec := st.do(accessRequest("demo", "maint@example.com", body)); rec.Code != http.StatusForbidden {
+			t.Fatalf("maintainer changed set %s = %d %s, want 403", body, rec.Code, rec.Body.String())
+		}
+	}
+	if got := accessAuditCount(t, st, "demo", "maint@example.com", "denied"); got != 4 {
+		t.Fatalf("maintainer denied audit rows = %d, want 4", got)
+	}
+	// The owner may change the set.
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["platform"],"maintainers":["ops"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("owner maintainers change = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestMaintainersChangedIgnoresOrderCaseAndBlanks(t *testing.T) {
+	policy := func(entries ...string) *AccessPolicy { return &AccessPolicy{Maintainers: entries} }
+	for _, tt := range []struct {
+		name          string
+		current, next *AccessPolicy
+		want          bool
+	}{
+		{"reordered", policy("a@x.com", "ops"), policy("ops", "a@x.com"), false},
+		{"case and space", policy("a@x.com"), policy(" A@X.com "), false},
+		{"duplicate and blank", policy("a@x.com"), policy("a@x.com", "a@x.com", " "), false},
+		{"both empty", nil, policy(), false},
+		{"added", policy("a@x.com"), policy("a@x.com", "b@x.com"), true},
+		{"removed", policy("a@x.com", "b@x.com"), policy("a@x.com"), true},
+		{"replaced same size", policy("a@x.com", "ops"), policy("a@x.com", "admins"), true},
+		{"cleared", policy("a@x.com"), nil, true},
+	} {
+		if got := maintainersChanged(tt.current, tt.next); got != tt.want {
+			t.Errorf("%s: maintainersChanged = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}

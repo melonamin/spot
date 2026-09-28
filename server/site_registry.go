@@ -19,6 +19,9 @@ var (
 	ErrExternalContentMutationActive    = errors.New("external content mutation already active")
 	ErrExternalContentMutationLeaseLost = errors.New("external content mutation lease lost")
 	ErrPolicyTransitionConflict         = errors.New("content generation changed or policy transition pending")
+	// ErrManagementPolicyUnresolved means only the owner or an admin can be
+	// recognized: a pending policy transition hides the maintainers list.
+	ErrManagementPolicyUnresolved = errors.New("stored management policy transition is unresolved")
 )
 
 type SiteState string
@@ -675,7 +678,7 @@ func (r *SiteRegistry) managementRole(ctx context.Context, record SiteRecord, ac
 		return "", nil
 	}
 	if record.PolicyTransitionGeneration != 0 {
-		return "", errors.New("stored management policy transition is unresolved")
+		return "", ErrManagementPolicyUnresolved
 	}
 	policy, err := r.policyResolver(ctx, record.Name)
 	if err != nil {
