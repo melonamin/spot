@@ -320,7 +320,10 @@ SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
    `/api/auth/logout` clears the cookie.
 
 The cookie is `SameSite=None; Secure; Partitioned` on HTTPS and `*.localhost`
-(named `__Host-spot_session` on HTTPS), and `SameSite=Lax` otherwise. In this
+(named `__Host-spot_session` on HTTPS), and `SameSite=Lax` otherwise. A request
+that carries the session cookie more than once is treated as signed out
+(`/api/auth/check` answers `400`), because on plain HTTP a sibling site can
+plant a parent-domain cookie. In this
 mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
 `shared-*` collections and rooms are disabled because sites belong to

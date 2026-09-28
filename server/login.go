@@ -268,22 +268,51 @@ func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.
 
 // sessionIdentity returns the viewer signed in on this site host. Session
 // cookies are honored only on site hosts; the apex has no viewer sessions.
+// A request carrying more than one session cookie is anonymous: on plain HTTP
+// a sibling site can plant a parent-Domain cookie next to the host-only one,
+// and the browser's ordering would let it choose the identity.
 func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
 	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" {
 		return Identity{}, false
 	}
+	values := s.sessionCookieValues(r)
+	if len(values) != 1 {
+		return Identity{}, false
+	}
+	id, ok := s.login.verifySession(values[0], s.loginHost(r))
+	if !ok {
+		return Identity{}, false
+	}
+	id.PeerIP = s.clientIP(r)
+	return id, true
+}
+
+func (s *Server) sessionCookieValues(r *http.Request) []string {
 	name := s.sessionCookieName(r)
-	host := s.loginHost(r)
+	var values []string
 	for _, cookie := range r.Cookies() {
-		if cookie.Name != name {
-			continue
-		}
-		if id, ok := s.login.verifySession(cookie.Value, host); ok {
-			id.PeerIP = s.clientIP(r)
-			return id, true
+		if cookie.Name == name {
+			values = append(values, cookie.Value)
 		}
 	}
-	return Identity{}, false
+	return values
+}
+
+const duplicateSessionCookiesMessage = "sign in required: the request carries more than one Spot session cookie, " +
+	"so another site may have set one; clear this site's cookies and sign in again"
+
+// hasDuplicateSessionCookies reports a site-host request that
+// sessionIdentity refuses because of conflicting session cookies.
+func (s *Server) hasDuplicateSessionCookies(r *http.Request) bool {
+	return s.login != nil && siteFromHost(s.requestHost(r), s.spotDomain) != "" && len(s.sessionCookieValues(r)) > 1
+}
+
+// signInRequiredMessage is the 401 text for an unidentified site visitor.
+func (s *Server) signInRequiredMessage(r *http.Request) string {
+	if s.hasDuplicateSessionCookies(r) {
+		return duplicateSessionCookiesMessage
+	}
+	return "sign in required"
 }
 
 // safeReturnPath accepts only a local absolute path, so the auth routes can
@@ -341,6 +370,11 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
+	if s.hasDuplicateSessionCookies(r) {
+		writeAuthPage(w, http.StatusBadRequest, "Sign-in failed",
+			"Your browser sent more than one Spot session cookie for this site, so another site may have set one. Clear this site's cookies and open it again.", "")
+		return
+	}
 	if _, ok := s.sessionIdentity(r); ok {
 		http.Redirect(w, r, returnTo, http.StatusFound)
 		return
@@ -392,7 +426,7 @@ func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, target.String(), http.StatusFound)
 		return
 	}
-	httpError(w, http.StatusUnauthorized, "sign in required")
+	httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 }
 
 // requireVisitor gates the SDK APIs in delegated login mode: every call needs
@@ -410,7 +444,7 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !found {
-			httpError(w, http.StatusUnauthorized, "sign in required")
+			httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 			return
 		}
 		next(w, r)

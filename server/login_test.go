@@ -587,3 +587,54 @@ func TestFileDownloadIsBoundToTheSiteHost(t *testing.T) {
 		t.Fatalf("apex download with forward auth = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// On plain HTTP a sibling site can plant a parent-Domain spot_session next to
+// the host-only one; a request carrying both must not pick either identity.
+func TestDelegatedLoginRejectsDuplicateSessionCookies(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com","mallory@example.com"]}`)
+	owner := st.signIn(t, host, "owner@example.com", "owner-dup")
+	planted := st.signIn(t, host, "mallory@example.com", "mallory-dup")
+
+	withCookies := func(req *http.Request, cookies ...*http.Cookie) *http.Request {
+		for _, cookie := range cookies {
+			req.AddCookie(cookie)
+		}
+		return req
+	}
+
+	// Allowed: exactly one valid session cookie.
+	if rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), owner)); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"email":"owner@example.com"`) {
+		t.Fatalf("single cookie /api/me = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Denied: two cookies, in either order, are anonymous everywhere.
+	for _, order := range [][]*http.Cookie{{owner, planted}, {planted, owner}, {owner, owner}} {
+		rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), order...))
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "more than one Spot session cookie") {
+			t.Fatalf("duplicate cookies /api/me = %d %s, want 401", rec.Code, rec.Body.String())
+		}
+		rec = st.do(withCookies(siteRequest(http.MethodGet, host, "/index.html"), order...))
+		if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "more than one Spot session cookie") {
+			t.Fatalf("duplicate cookies fetch = %d %s, want 401", rec.Code, rec.Body.String())
+		}
+		rec = st.do(withCookies(navigation(siteRequest(http.MethodGet, host, "/")), order...))
+		if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?") {
+			t.Fatalf("duplicate cookies navigation = %d %q, want login redirect", rec.Code, rec.Header().Get("Location"))
+		}
+		// The check page ends the login loop with an explanation.
+		rec = st.do(withCookies(siteRequest(http.MethodGet, host, "/api/auth/check?return_to=%2F"), order...))
+		if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" ||
+			!strings.Contains(rec.Body.String(), "more than one Spot session cookie") {
+			t.Fatalf("duplicate cookies check = %d %q %s, want 400", rec.Code, rec.Header().Get("Location"), rec.Body.String())
+		}
+	}
+
+	// A cookie with another name does not count as a duplicate.
+	other := &http.Cookie{Name: secureSessionCookieName, Value: planted.Value}
+	if rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), owner, other)); rec.Code != http.StatusOK {
+		t.Fatalf("session plus differently named cookie = %d %s", rec.Code, rec.Body.String())
+	}
+}
