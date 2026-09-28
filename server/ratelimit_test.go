@@ -92,7 +92,7 @@ func TestRateLimiterPruneRemovesIdle(t *testing.T) {
 	}
 }
 
-func TestLimitedHandlerKeysForwardAuthByIdentity(t *testing.T) {
+func TestLimitedHandlerExemptsSecretProvenForwardAuth(t *testing.T) {
 	limiter := NewRateLimiter(1, 1)
 	fa := NewForwardAuth("", "", "", "")
 	fa.Secret = "0123456789abcdef0123456789abcdef"
@@ -111,16 +111,12 @@ func TestLimitedHandlerKeysForwardAuthByIdentity(t *testing.T) {
 		return rec.Code
 	}
 
-	if code := call("a@example.com", fa.Secret); code != http.StatusOK {
-		t.Fatalf("first user: status %d", code)
+	for i := 0; i < 5; i++ {
+		if code := call("a@example.com", fa.Secret); code != http.StatusOK {
+			t.Fatalf("proven call %d: status %d, want 200", i, code)
+		}
 	}
-	if code := call("b@example.com", fa.Secret); code != http.StatusOK {
-		t.Fatalf("second user from the same proxy address: status %d, want 200", code)
-	}
-	if code := call("a@example.com", fa.Secret); code != http.StatusTooManyRequests {
-		t.Fatalf("repeat user: status %d, want 429", code)
-	}
-	// An unproven identity header falls back to the address bucket.
+	// A wrong secret proves nothing, so the address bucket applies.
 	if code := call("c@example.com", "wrong-secret-wrong-secret-wrong!"); code != http.StatusOK {
 		t.Fatalf("first unproven call: status %d", code)
 	}
