@@ -461,8 +461,9 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
 		log.Printf("authz: %v", err)
-		httpError(w, http.StatusServiceUnavailable,
-			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
+		s.denySiteAccess(w, r, http.StatusServiceUnavailable,
+			"this site's "+accessFileName+" is unreadable; access denied until it is fixed",
+			statusPage{Title: "This site is unavailable", Message: "Its access settings cannot be read, so nobody can open it until the owner fixes them."})
 		return false
 	}
 	if policy == nil || !policy.RestrictsAccess() {
@@ -484,8 +485,11 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 		return false
 	}
 	if !found || !policy.Allows(id) {
-		httpError(w, http.StatusForbidden,
-			"this site is restricted by its "+accessFileName)
+		page := statusPage{Title: "You don't have access to this site", Message: "Its owner has not shared it with you. Ask them to share it, or open it with an account that has access."}
+		if id.Email != "" {
+			page.Detail = "Signed in as " + id.Email
+		}
+		s.denySiteAccess(w, r, http.StatusForbidden, "this site is restricted by its "+accessFileName, page)
 		return false
 	}
 	return true

@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"html"
 	"log"
 	"net"
 	"net/http"
@@ -347,8 +346,11 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	id, err := s.login.verifyLoginToken(r.URL.Query().Get("token"), host)
 	if err != nil {
 		log.Printf("auth callback %s: %v", host, err)
-		writeAuthPage(w, http.StatusBadRequest, "Sign-in failed",
-			"This sign-in link is invalid, expired, or was already used. Open the site again to sign in.", "")
+		writeStatusPage(w, http.StatusBadRequest, statusPage{
+			Title:   "Sign-in failed",
+			Message: "This sign-in link is invalid, expired, or was already used. Open the site again to sign in.",
+			Links:   []statusPageLink{{Label: "Open the site again", URL: "/", Primary: true}},
+		})
 		return
 	}
 	value, err := s.login.signSession(id, host)
@@ -371,8 +373,10 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	}
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
 	if s.hasDuplicateSessionCookies(r) {
-		writeAuthPage(w, http.StatusBadRequest, "Sign-in failed",
-			"Your browser sent more than one Spot session cookie for this site, so another site may have set one. Clear this site's cookies and open it again.", "")
+		writeStatusPage(w, http.StatusBadRequest, statusPage{
+			Title:   "Sign-in failed",
+			Message: "Your browser sent more than one session cookie for this site, so another site may have set one. Clear this site's cookies and open it again.",
+		})
 		return
 	}
 	if _, ok := s.sessionIdentity(r); ok {
@@ -380,8 +384,11 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	siteURL := s.requestScheme(r) + "://" + s.requestHost(r) + returnTo
-	writeAuthPage(w, http.StatusOK, "Open this site in a new tab",
-		"Your browser did not keep the sign-in cookie for this site. Open it in a new tab.", siteURL)
+	writeStatusPage(w, http.StatusOK, statusPage{
+		Title:   "Open this site in a new tab",
+		Message: "Your browser did not keep the sign-in cookie for this site. This happens in some embedded previews.",
+		Links:   []statusPageLink{{Label: "Open in a new tab", URL: siteURL, NewTab: true, Primary: true}},
+	})
 }
 
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -390,20 +397,6 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	}
 	http.SetCookie(w, s.sessionCookie(r, "", -1))
 	http.Redirect(w, r, "/", http.StatusFound)
-}
-
-func writeAuthPage(w http.ResponseWriter, status int, title, message, link string) {
-	linkHTML := ""
-	if link != "" {
-		linkHTML = `<p><a href="` + html.EscapeString(link) + `" target="_blank" rel="noopener">Open in a new tab</a></p>`
-	}
-	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Header().Set("Cache-Control", "no-store")
-	w.WriteHeader(status)
-	fmt.Fprintf(w, `<!doctype html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>%s</title>
-<style>body{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto;padding:0 1rem;line-height:1.5}</style></head>
-<body><h1>%s</h1><p>%s</p>%s</body></html>
-`, html.EscapeString(title), html.EscapeString(title), html.EscapeString(message), linkHTML)
 }
 
 // isNavigation reports whether a request is a browser page load, which gets a

@@ -373,7 +373,7 @@ func TestDelegatedLoginCheckPageBreaksLoop(t *testing.T) {
 	}
 	body := rec.Body.String()
 	if !strings.Contains(body, "did not keep the sign-in cookie") || !strings.Contains(body, `target="_blank"`) ||
-		!strings.Contains(body, `href="http://demo.sites.localhost:8443/a&lt;b"`) {
+		!strings.Contains(body, `href="http://demo.sites.localhost:8443/a%3cb"`) {
 		t.Fatalf("check page = %s", body)
 	}
 }
@@ -627,7 +627,7 @@ func TestDelegatedLoginRejectsDuplicateSessionCookies(t *testing.T) {
 		// The check page ends the login loop with an explanation.
 		rec = st.do(withCookies(siteRequest(http.MethodGet, host, "/api/auth/check?return_to=%2F"), order...))
 		if rec.Code != http.StatusBadRequest || rec.Header().Get("Location") != "" ||
-			!strings.Contains(rec.Body.String(), "more than one Spot session cookie") {
+			!strings.Contains(rec.Body.String(), "more than one session cookie") {
 			t.Fatalf("duplicate cookies check = %d %q %s, want 400", rec.Code, rec.Header().Get("Location"), rec.Body.String())
 		}
 	}
@@ -738,4 +738,29 @@ func TestDelegatedLoginRedirectsAcceptOnlyAndHeadNavigations(t *testing.T) {
 	if rec := st.do(fetch); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("script fetch = %d, want 401", rec.Code)
 	}
+}
+
+func TestDelegatedLoginDeniedNavigationGetsStatusPage(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	host := "demo.sites.localhost:8443"
+	cookie := st.signIn(t, host, "stranger@example.com", "denied-page-jti")
+
+	rec := st.do(withCookie(navigation(siteRequest(http.MethodGet, host, "/")), cookie))
+	body := rec.Body.String()
+	if rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
+		!strings.Contains(body, "You don&#39;t have access to this site") || !strings.Contains(body, "Signed in as stranger@example.com") ||
+		strings.Contains(body, "owner@example.com") {
+		t.Fatalf("denied navigation = %d %q %s", rec.Code, rec.Header().Get("Content-Type"), body)
+	}
+
+	rec = st.do(withCookie(siteRequest(http.MethodGet, host, "/"), cookie))
+	if rec.Code != http.StatusForbidden || !strings.HasPrefix(rec.Header().Get("Content-Type"), "application/json") {
+		t.Fatalf("denied API call = %d %q, want JSON 403", rec.Code, rec.Header().Get("Content-Type"))
+	}
+}
+
+func withCookie(req *http.Request, cookie *http.Cookie) *http.Request {
+	req.AddCookie(cookie)
+	return req
 }

@@ -182,6 +182,14 @@ func (s *Server) serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, name
 }
 
 func (s *Server) serveEmbedded404(w http.ResponseWriter, r *http.Request) {
+	if s.login != nil {
+		writeStatusPage(w, http.StatusNotFound, statusPage{
+			Title:   "Page not found",
+			Message: "This site or page does not exist, or it was deleted.",
+			Links:   s.sitesLink(),
+		})
+		return
+	}
 	file, err := staticAssets.Open("static_assets/sdk/404.html")
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)
