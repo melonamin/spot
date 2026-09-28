@@ -638,3 +638,104 @@ func TestDelegatedLoginRejectsDuplicateSessionCookies(t *testing.T) {
 		t.Fatalf("session plus differently named cookie = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+// Session cookies exist only for site hosts; on the apex the platform APIs
+// must ignore them, even one signed for the apex host itself.
+func TestSiteSessionConfersNothingOnApex(t *testing.T) {
+	st := newLoginTestStack(t)
+	const apex = "sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	siteSession := st.signIn(t, "demo.sites.localhost:8443", "owner@example.com", "owner-apex")
+	apexValue, err := st.srv.login.signSession(Identity{Email: "owner@example.com", Groups: []string{}}, apex)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apexSession := &http.Cookie{Name: sessionCookieName, Value: apexValue}
+
+	for _, cookie := range []*http.Cookie{siteSession, apexSession} {
+		mine := siteRequest(http.MethodGet, apex, "/api/sites/mine")
+		mine.AddCookie(cookie)
+		if rec := st.do(mine); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no identity") {
+			t.Fatalf("apex /api/sites/mine with session = %d %s, want 404 no identity", rec.Code, rec.Body.String())
+		}
+		access := siteRequestWithBody(http.MethodPut, apex, "/api/sites/demo/access", `{}`)
+		access.AddCookie(cookie)
+		if rec := st.do(access); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no identity") {
+			t.Fatalf("apex access change with session = %d %s, want 404 no identity", rec.Code, rec.Body.String())
+		}
+	}
+	if _, found, err := st.srv.resolvePeer(func() *http.Request {
+		req := siteRequest(http.MethodGet, apex, "/")
+		req.AddCookie(apexSession)
+		return req
+	}()); err != nil || found {
+		t.Fatalf("apex session resolved = %v, %v", found, err)
+	}
+
+	// Allowed: the platform identity on the apex, and the session on its host.
+	if rec := st.do(asForwardUser(sitesRequestFor("/api/sites/mine"), "owner@example.com")); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"name":"demo"`) {
+		t.Fatalf("apex /api/sites/mine with forward auth = %d %s", rec.Code, rec.Body.String())
+	}
+	page := siteRequest(http.MethodGet, "demo.sites.localhost:8443", "/")
+	page.AddCookie(siteSession)
+	if rec := st.do(page); rec.Code != http.StatusOK {
+		t.Fatalf("site page with its session = %d", rec.Code)
+	}
+	// The access change above did nothing.
+	if rec := st.do(siteRequest(http.MethodGet, "demo.sites.localhost:8443", "/")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("private site anonymous after rejected apex change = %d, want 401", rec.Code)
+	}
+}
+
+func TestIsNavigation(t *testing.T) {
+	for _, tt := range []struct {
+		name, method, mode, accept string
+		want                       bool
+	}{
+		{"navigate mode", http.MethodGet, "navigate", "", true},
+		{"accept html only", http.MethodGet, "", "text/html,application/xhtml+xml", true},
+		{"head navigate", http.MethodHead, "navigate", "", true},
+		{"head accept html", http.MethodHead, "", "text/html", true},
+		{"fetch json", http.MethodGet, "cors", "application/json", false},
+		{"no hints", http.MethodGet, "", "", false},
+		{"post navigate", http.MethodPost, "navigate", "text/html", false},
+	} {
+		req := httptest.NewRequest(tt.method, "http://spot-api/", nil)
+		if tt.mode != "" {
+			req.Header.Set("Sec-Fetch-Mode", tt.mode)
+		}
+		if tt.accept != "" {
+			req.Header.Set("Accept", tt.accept)
+		}
+		if got := isNavigation(req); got != tt.want {
+			t.Errorf("%s: isNavigation = %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
+
+func TestDelegatedLoginRedirectsAcceptOnlyAndHeadNavigations(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+	isLoginRedirect := func(rec *httptest.ResponseRecorder) bool {
+		return rec.Code == http.StatusFound && strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?")
+	}
+
+	acceptOnly := siteRequest(http.MethodGet, host, "/")
+	acceptOnly.Header.Set("Accept", "text/html,*/*")
+	if rec := st.do(acceptOnly); !isLoginRedirect(rec) {
+		t.Fatalf("Accept-only navigation = %d %q, want login redirect", rec.Code, rec.Header().Get("Location"))
+	}
+	head := siteRequest(http.MethodHead, host, "/")
+	head.Header.Set("Sec-Fetch-Mode", "navigate")
+	if rec := st.do(head); !isLoginRedirect(rec) {
+		t.Fatalf("HEAD navigation = %d %q, want login redirect", rec.Code, rec.Header().Get("Location"))
+	}
+	fetch := siteRequest(http.MethodGet, host, "/")
+	fetch.Header.Set("Accept", "application/json")
+	fetch.Header.Set("Sec-Fetch-Mode", "cors")
+	if rec := st.do(fetch); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("script fetch = %d, want 401", rec.Code)
+	}
+}
