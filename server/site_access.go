@@ -132,6 +132,11 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusConflict, "the site changed while its access was being updated; retry")
 			return
 		}
+		// The new policy may already be stored; its outcome is unknown and
+		// requests now fail closed, so live sessions must not outlast it.
+		if errors.Is(err, errPolicyTransitionUnresolved) {
+			s.disconnectSiteRealtime(site)
+		}
 		log.Printf("access %s: commit policy: %v", site, err)
 		s.recordDeployAudit(r, DeployAuditEvent{
 			Site: site, Actor: actor, Action: "access", Status: "failed", AuthorizedAs: decision.Role,

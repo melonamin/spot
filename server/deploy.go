@@ -357,6 +357,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.commitPolicyObject(r.Context(), site, authz.ContentGeneration, data, false); err != nil {
+			if errors.Is(err, errPolicyTransitionUnresolved) {
+				s.disconnectSiteRealtime(site)
+			}
 			cancelAuthorization()
 			s.recordDeployFailureAs(r, site, actor, authz.Action, authz.AuthorizedAs, files, "could not store fail-closed policy")
 			httpError(w, http.StatusInternalServerError, "could not store fail-closed policy")

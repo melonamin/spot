@@ -324,3 +324,50 @@ func TestMaintainersChangedIgnoresOrderCaseAndBlanks(t *testing.T) {
 		}
 	}
 }
+
+// When the policy write lands but its transition cannot be cleared, the new
+// policy may be in force, so live realtime sessions must end at once: a retry
+// finds nothing left to narrow and would never revoke them.
+func TestSiteAccessUnresolvedCommitRevokesRealtime(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", "")
+	st.srv.hub = NewHub()
+	revoked := make(chan struct{})
+	if !st.srv.hub.RegisterSession("demo", "viewer", st.srv.hub.SiteEpoch("demo"), make(chan Event, 1), func() { close(revoked) }) {
+		t.Fatal("register session")
+	}
+	st.srv.deployAuth = &clearFailingRegistry{SiteRegistry: st.registry}
+
+	rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["owner@example.com"]}`))
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("access change with lost transition clear = %d %s, want 500", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-revoked:
+	default:
+		t.Fatal("realtime session survived an unresolved policy commit")
+	}
+}
+
+func TestDeployUnresolvedRestrictiveStagingRevokesRealtime(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", "")
+	st.srv.hub = NewHub()
+	revoked := make(chan struct{})
+	if !st.srv.hub.RegisterSession("demo", "viewer", st.srv.hub.SiteEpoch("demo"), make(chan Event, 1), func() { close(revoked) }) {
+		t.Fatal("register session")
+	}
+	st.srv.deployAuth = &clearFailingRegistry{SiteRegistry: st.registry}
+
+	rec := st.do(asForwardUser(deployRequest(t, "sites.localhost:8443", "demo", map[string]string{
+		"index.html": "<h1>demo</h1>", accessFileName: `{"allow":["owner@example.com"]}`,
+	}), "owner@example.com"))
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "fail-closed policy") {
+		t.Fatalf("restrictive deploy with lost transition clear = %d %s, want 500", rec.Code, rec.Body.String())
+	}
+	select {
+	case <-revoked:
+	default:
+		t.Fatal("realtime session survived an unresolved restrictive staging commit")
+	}
+}
