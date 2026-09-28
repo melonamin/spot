@@ -18,6 +18,9 @@ const (
 	testLoginTokenSecret = "login-token-secret-0123456789abcdef"
 	testSessionSecret    = "session-cookie-secret-0123456789abcdef"
 	testForwardSecret    = "forward-auth-secret-0123456789"
+	// testLoginState is a well-formed login state: 32 bytes, base64url.
+	testLoginState  = "c3BvdC1sb2dpbi1zdGF0ZS0wMTIzNDU2Nzg5YWJjZGU"
+	otherLoginState = "b3RoZXItbG9naW4tc3RhdGUtMDEyMzQ1Njc4OWFiY2Q"
 )
 
 func signTestLoginToken(t *testing.T, key string, header, claims map[string]any) string {
@@ -37,6 +40,7 @@ func testLoginClaims(host, jti string, now time.Time) map[string]any {
 	return map[string]any{
 		"aud": "spot-login", "host": host, "email": "Alice@Example.com", "name": "Alice",
 		"groups": []string{"platform"}, "iat": now.Unix(), "exp": now.Add(60 * time.Second).Unix(), "jti": jti,
+		"state": testLoginState,
 	}
 }
 
@@ -67,6 +71,8 @@ func TestVerifyLoginToken(t *testing.T) {
 		{name: "host without port", host: "demo.sites.localhost"},
 		{name: "missing email", mutate: func(c map[string]any) { delete(c, "email") }},
 		{name: "missing jti", mutate: func(c map[string]any) { delete(c, "jti") }},
+		{name: "missing state", mutate: func(c map[string]any) { delete(c, "state") }},
+		{name: "other browser's state", mutate: func(c map[string]any) { c["state"] = otherLoginState }},
 		{name: "expired", mutate: func(c map[string]any) {
 			c["iat"] = now.Add(-5 * time.Minute).Unix()
 			c["exp"] = now.Add(-31 * time.Second).Unix()
@@ -92,7 +98,7 @@ func TestVerifyLoginToken(t *testing.T) {
 			if tt.host != "" {
 				verifyHost = tt.host
 			}
-			if _, err := login.verifyLoginToken(signTestLoginToken(t, key, tt.header, claims), verifyHost); err == nil {
+			if _, err := login.verifyLoginToken(signTestLoginToken(t, key, tt.header, claims), verifyHost, testLoginState); err == nil {
 				t.Fatal("token accepted, want rejection")
 			}
 		})
@@ -101,14 +107,17 @@ func TestVerifyLoginToken(t *testing.T) {
 	t.Run("valid token is single use", func(t *testing.T) {
 		login := newTestDelegatedLogin(t)
 		token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims(host, "once", now))
-		id, err := login.verifyLoginToken(token, host)
+		if _, err := login.verifyLoginToken(token, host, ""); err == nil {
+			t.Fatal("token accepted without a browser state")
+		}
+		id, err := login.verifyLoginToken(token, host, testLoginState)
 		if err != nil {
 			t.Fatalf("valid token rejected: %v", err)
 		}
 		if id.Email != "alice@example.com" || id.Name != "Alice" || len(id.Groups) != 1 || id.Groups[0] != "platform" {
 			t.Fatalf("identity = %+v", id)
 		}
-		if _, err := login.verifyLoginToken(token, host); err == nil {
+		if _, err := login.verifyLoginToken(token, host, testLoginState); err == nil {
 			t.Fatal("replayed token accepted")
 		}
 	})
@@ -116,10 +125,13 @@ func TestVerifyLoginToken(t *testing.T) {
 	t.Run("rejected token does not burn its jti", func(t *testing.T) {
 		login := newTestDelegatedLogin(t)
 		claims := testLoginClaims(host, "shared-jti", now)
-		if _, err := login.verifyLoginToken(signTestLoginToken(t, testLoginTokenSecret, nil, claims), "other.sites.localhost:8443"); err == nil {
+		if _, err := login.verifyLoginToken(signTestLoginToken(t, testLoginTokenSecret, nil, claims), "other.sites.localhost:8443", testLoginState); err == nil {
 			t.Fatal("wrong-host token accepted")
 		}
-		if _, err := login.verifyLoginToken(signTestLoginToken(t, testLoginTokenSecret, nil, claims), host); err != nil {
+		if _, err := login.verifyLoginToken(signTestLoginToken(t, testLoginTokenSecret, nil, claims), host, otherLoginState); err == nil {
+			t.Fatal("token accepted for another browser's state")
+		}
+		if _, err := login.verifyLoginToken(signTestLoginToken(t, testLoginTokenSecret, nil, claims), host, testLoginState); err != nil {
 			t.Fatalf("valid token rejected after an invalid attempt: %v", err)
 		}
 	})
@@ -251,24 +263,44 @@ func navigation(req *http.Request) *http.Request {
 	return req
 }
 
+// withLoginState adds the login state cookie a login redirect would have set.
+func withLoginState(req *http.Request) *http.Request {
+	req.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: testLoginState})
+	return req
+}
+
+// responseCookie returns the named cookie a response set.
+func responseCookie(t *testing.T, rec *httptest.ResponseRecorder, name string) *http.Cookie {
+	t.Helper()
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == name {
+			return cookie
+		}
+	}
+	t.Fatalf("response did not set %s: %v", name, rec.Result().Cookies())
+	return nil
+}
+
 // signIn runs the callback on host and returns the session cookie it set.
 func (st *loginTestStack) signIn(t *testing.T, host, email, jti string) *http.Cookie {
 	t.Helper()
 	claims := testLoginClaims(host, jti, time.Now())
 	claims["email"] = email
 	token := signTestLoginToken(t, testLoginTokenSecret, nil, claims)
-	rec := st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token+"&return_to=%2Fpage%3Fx%3D1"))
+	rec := st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token+"&return_to=%2Fpage%3Fx%3D1")))
 	if rec.Code != http.StatusFound {
 		t.Fatalf("callback = %d %s", rec.Code, rec.Body.String())
 	}
 	if got := rec.Header().Get("Location"); got != "/api/auth/check?return_to=%2Fpage%3Fx%3D1" {
 		t.Fatalf("callback Location = %q", got)
 	}
-	cookies := rec.Result().Cookies()
-	if len(cookies) != 1 {
-		t.Fatalf("callback cookies = %+v", cookies)
+	if cookies := rec.Result().Cookies(); len(cookies) != 2 {
+		t.Fatalf("callback cookies = %+v, want the session and a cleared login state", cookies)
 	}
-	return cookies[0]
+	if state := responseCookie(t, rec, loginStateCookieName); state.MaxAge >= 0 {
+		t.Fatalf("login state cookie after sign-in = %+v, want cleared", state)
+	}
+	return responseCookie(t, rec, sessionCookieName)
 }
 
 func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
@@ -284,6 +316,11 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 	if err != nil || location.Host != "chat.example.com" || location.Path != "/sites/login" ||
 		location.Query().Get("return_to") != "http://"+host+"/docs/?q=1" {
 		t.Fatalf("login redirect = %q", rec.Header().Get("Location"))
+	}
+	state := responseCookie(t, rec, loginStateCookieName)
+	if state.Value == "" || location.Query().Get("state") != state.Value || !state.HttpOnly || !state.Secure ||
+		!state.Partitioned || state.SameSite != http.SameSiteNoneMode || state.Domain != "" || state.Path != "/" || state.MaxAge != 600 {
+		t.Fatalf("login state cookie = %+v, redirect state = %q", state, location.Query().Get("state"))
 	}
 	if rec := st.do(siteRequest(http.MethodGet, host, "/index.html")); rec.Code != http.StatusUnauthorized ||
 		!strings.Contains(rec.Body.String(), "sign in required") {
@@ -339,7 +376,7 @@ func TestDelegatedLoginCallbackRejectsBadInput(t *testing.T) {
 	const host = "private.sites.localhost:8443"
 	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
 
-	rec := st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?token=garbage&return_to=/"))
+	rec := st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token=garbage&return_to=/")))
 	if rec.Code != http.StatusBadRequest || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
 		rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("invalid token = %d %v", rec.Code, rec.Header())
@@ -347,14 +384,14 @@ func TestDelegatedLoginCallbackRejectsBadInput(t *testing.T) {
 
 	// A token minted for another site cannot sign in here.
 	token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims("other.sites.localhost:8443", "cross", time.Now()))
-	if rec := st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token)); rec.Code != http.StatusBadRequest {
+	if rec := st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token))); rec.Code != http.StatusBadRequest {
 		t.Fatalf("cross-host token = %d, want 400", rec.Code)
 	}
 
 	// An open redirect target falls back to the site root.
 	claims := testLoginClaims(host, "redirect", time.Now())
 	token = signTestLoginToken(t, testLoginTokenSecret, nil, claims)
-	rec = st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token+"&return_to=%2F%2Fevil.example"))
+	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token+"&return_to=%2F%2Fevil.example")))
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/api/auth/check?return_to=%2F" {
 		t.Fatalf("open redirect = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
@@ -388,10 +425,8 @@ func TestSessionCookieModes(t *testing.T) {
 		t.Fatalf("https cookie = %+v", got)
 	}
 
-	st.srv.spotDomain = "sites.example.com"
-	plain := siteRequest(http.MethodGet, "private.sites.example.com", "/api/auth/callback")
-	if got := st.srv.sessionCookie(plain, "v", 60); got.Name != sessionCookieName || got.Secure || got.Partitioned || got.SameSite != http.SameSiteLaxMode {
-		t.Fatalf("plain http cookie = %+v", got)
+	if got := st.srv.loginStateCookieName(https); got != secureLoginStateCookieName {
+		t.Fatalf("https login state cookie = %q", got)
 	}
 
 	// The login host drops only the scheme's default port.
@@ -763,4 +798,100 @@ func TestDelegatedLoginDeniedNavigationGetsStatusPage(t *testing.T) {
 func withCookie(req *http.Request, cookie *http.Cookie) *http.Request {
 	req.AddCookie(cookie)
 	return req
+}
+
+// Login CSRF: a token minted for the attacker's own account must not sign in
+// a browser that did not start that sign-in.
+func TestDelegatedLoginCallbackIsBoundToTheBrowser(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com","mallory@example.com"]}`)
+	victim := st.signIn(t, host, "owner@example.com", "victim-login")
+
+	claims := testLoginClaims(host, "mallory-login", time.Now())
+	claims["email"] = "mallory@example.com"
+	claims["state"] = otherLoginState
+	attackerLink := "/api/auth/callback?token=" + signTestLoginToken(t, testLoginTokenSecret, nil, claims) + "&return_to=%2F"
+
+	// Denied: a signed-in victim with no pending sign-in keeps their session.
+	rec := st.do(withCookie(siteRequest(http.MethodGet, host, attackerLink), victim))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Open this site in a new tab") ||
+		len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("callback without login state = %d %v", rec.Code, rec.Result().Cookies())
+	}
+	// Denied: a victim mid-sign-in holds a different state.
+	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, attackerLink)))
+	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("callback with another browser's state = %d %v", rec.Code, rec.Result().Cookies())
+	}
+	// Denied: conflicting state cookies.
+	dup := withLoginState(siteRequest(http.MethodGet, host, attackerLink))
+	dup.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: otherLoginState})
+	if rec := st.do(dup); rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("callback with duplicate login states = %d %v", rec.Code, rec.Result().Cookies())
+	}
+	if rec := st.do(withCookie(siteRequest(http.MethodGet, host, "/api/me"), victim)); !strings.Contains(rec.Body.String(), `"email":"owner@example.com"`) {
+		t.Fatalf("victim identity after attack = %s", rec.Body.String())
+	}
+
+	// Allowed: the browser that holds the matching state; rejected attempts
+	// did not burn the token.
+	own := siteRequest(http.MethodGet, host, attackerLink)
+	own.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: otherLoginState})
+	if rec := st.do(own); rec.Code != http.StatusFound {
+		t.Fatalf("callback with matching state = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestDelegatedLoginReusesPendingState(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+
+	rec := st.do(withLoginState(navigation(siteRequest(http.MethodGet, host, "/"))))
+	if got := responseCookie(t, rec, loginStateCookieName).Value; got != testLoginState {
+		t.Fatalf("second tab state = %q, want the pending %q", got, testLoginState)
+	}
+	malformed := navigation(siteRequest(http.MethodGet, host, "/"))
+	malformed.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: "short"})
+	rec = st.do(malformed)
+	if got := responseCookie(t, rec, loginStateCookieName).Value; got == "short" || len(got) != 43 {
+		t.Fatalf("state after malformed cookie = %q, want a fresh one", got)
+	}
+}
+
+// Off HTTPS and *.localhost a sibling site can plant cookies, so delegated
+// login neither issues nor honors sessions there.
+func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.example.com"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+	st.srv.spotDomain = "sites.example.com"
+
+	rec := st.do(navigation(siteRequest(http.MethodGet, host, "/")))
+	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "secure connection") || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("plain http navigation = %d %s", rec.Code, rec.Body.String())
+	}
+	token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims(host, "plain", time.Now()))
+	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token)))
+	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("plain http callback = %d %v", rec.Code, rec.Result().Cookies())
+	}
+	value, err := st.srv.login.signSession(Identity{Email: "owner@example.com", Groups: []string{}}, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	page := siteRequest(http.MethodGet, host, "/")
+	page.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+	if rec := st.do(page); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("plain http session = %d, want 401", rec.Code)
+	}
+
+	// Allowed: the same session over HTTPS.
+	secure := siteRequest(http.MethodGet, host, "/")
+	secure.Header.Set("X-Forwarded-Proto", "https")
+	secure.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: value})
+	if rec := st.do(secure); rec.Code != http.StatusOK {
+		t.Fatalf("https session = %d %s", rec.Code, rec.Body.String())
+	}
 }

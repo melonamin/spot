@@ -2,7 +2,9 @@ package main
 
 import (
 	"crypto/hmac"
+	"crypto/rand"
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -21,6 +23,10 @@ import (
 // app authenticates the browser and sends it back to /api/auth/callback on the
 // same site host with a short HS256 login token. Spot then issues its own
 // signed, host-only session cookie, so each site host has a separate session.
+//
+// The redirect carries a random state that Spot also stores in a host-only
+// cookie; the token must echo it. Without that binding anyone could mint a
+// token for their own account and sign a victim's browser in as themselves.
 
 const (
 	loginTokenAudience = "spot-login"
@@ -28,11 +34,16 @@ const (
 	loginTokenLeeway   = 30 * time.Second
 	minLoginSecretLen  = 32
 
-	// sessionCookieName is used on plain HTTP (including *.localhost). HTTPS
-	// uses the __Host- prefix, which a sibling site cannot set with a parent
-	// Domain, so one untrusted site cannot plant a session on another.
-	sessionCookieName       = "spot_session"
-	secureSessionCookieName = "__Host-spot_session"
+	// Delegated login needs HTTPS or *.localhost (a browser secure context).
+	// The plain names serve *.localhost; HTTPS uses the __Host- prefix, which
+	// a sibling site cannot set with a parent Domain, so one untrusted site
+	// cannot plant a session or login state on another.
+	sessionCookieName          = "spot_session"
+	secureSessionCookieName    = "__Host-spot_session"
+	loginStateCookieName       = "spot_login_state"
+	secureLoginStateCookieName = "__Host-spot_login_state"
+	loginStateMaxAge           = 10 * time.Minute
+	loginStateBytes            = 32
 )
 
 type DelegatedLogin struct {
@@ -81,14 +92,16 @@ type loginTokenClaims struct {
 	Iat    int64    `json:"iat"`
 	Exp    int64    `json:"exp"`
 	JTI    string   `json:"jti"`
+	State  string   `json:"state"`
 }
 
 var errInvalidLoginToken = errors.New("invalid login token")
 
-// verifyLoginToken checks a compact HS256 JWS and consumes its jti. The jti is
-// marked used only after every other check passes, so a rejected token cannot
-// burn a legitimate one.
-func (l *DelegatedLogin) verifyLoginToken(token, host string) (Identity, error) {
+// verifyLoginToken checks a compact HS256 JWS against the host and the
+// browser's login state, and consumes its jti. The jti is marked used only
+// after every other check passes, so a rejected token cannot burn a
+// legitimate one.
+func (l *DelegatedLogin) verifyLoginToken(token, host, state string) (Identity, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Identity{}, fmt.Errorf("%w: malformed", errInvalidLoginToken)
@@ -130,6 +143,8 @@ func (l *DelegatedLogin) verifyLoginToken(token, host string) (Identity, error) 
 		return Identity{}, fmt.Errorf("%w: email required", errInvalidLoginToken)
 	case claims.JTI == "":
 		return Identity{}, fmt.Errorf("%w: jti required", errInvalidLoginToken)
+	case state == "" || subtle.ConstantTimeCompare([]byte(claims.State), []byte(state)) != 1:
+		return Identity{}, fmt.Errorf("%w: state does not match this browser", errInvalidLoginToken)
 	case claims.Iat == 0 || claims.Exp <= claims.Iat || claims.Exp-claims.Iat > int64(loginTokenMaxLife/time.Second):
 		return Identity{}, fmt.Errorf("%w: lifetime", errInvalidLoginToken)
 	case time.Unix(claims.Iat, 0).After(now.Add(loginTokenLeeway)):
@@ -238,10 +253,10 @@ func (s *Server) loginHost(r *http.Request) string {
 	return net.JoinHostPort(host, port)
 }
 
-// sessionCookieSecure reports whether the session cookie can be
-// SameSite=None; Secure; Partitioned, which lets a cross-site preview frame
-// keep it. Browsers treat *.localhost as a secure context even over HTTP.
-func (s *Server) sessionCookieSecure(r *http.Request) bool {
+// loginTransportSecure reports whether delegated login may run on this
+// request: over HTTPS, or on *.localhost, which browsers treat as a secure
+// context even over HTTP. Elsewhere a sibling site could plant cookies.
+func (s *Server) loginTransportSecure(r *http.Request) bool {
 	return s.requestScheme(r) == "https" || localSpotDomain(cleanHost(s.requestHost(r)))
 }
 
@@ -252,17 +267,24 @@ func (s *Server) sessionCookieName(r *http.Request) string {
 	return sessionCookieName
 }
 
+func (s *Server) loginStateCookieName(r *http.Request) string {
+	if s.requestScheme(r) == "https" {
+		return secureLoginStateCookieName
+	}
+	return loginStateCookieName
+}
+
+// loginCookie builds a host-only delegated login cookie. SameSite=None with
+// Partitioned lets a cross-site preview frame keep it.
+func loginCookie(name, value string, maxAge int) *http.Cookie {
+	return &http.Cookie{
+		Name: name, Value: value, Path: "/", HttpOnly: true, MaxAge: maxAge,
+		SameSite: http.SameSiteNoneMode, Secure: true, Partitioned: true,
+	}
+}
+
 func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
-	cookie := &http.Cookie{
-		Name: s.sessionCookieName(r), Value: value, Path: "/", HttpOnly: true, MaxAge: maxAge,
-		SameSite: http.SameSiteLaxMode,
-	}
-	if s.sessionCookieSecure(r) {
-		cookie.SameSite = http.SameSiteNoneMode
-		cookie.Secure = true
-		cookie.Partitioned = true
-	}
-	return cookie
+	return loginCookie(s.sessionCookieName(r), value, maxAge)
 }
 
 // sessionIdentity returns the viewer signed in on this site host. Session
@@ -271,7 +293,7 @@ func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.
 // a sibling site can plant a parent-Domain cookie next to the host-only one,
 // and the browser's ordering would let it choose the identity.
 func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
-	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" {
+	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" || !s.loginTransportSecure(r) {
 		return Identity{}, false
 	}
 	values := s.sessionCookieValues(r)
@@ -287,7 +309,10 @@ func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
 }
 
 func (s *Server) sessionCookieValues(r *http.Request) []string {
-	name := s.sessionCookieName(r)
+	return cookieValues(r, s.sessionCookieName(r))
+}
+
+func cookieValues(r *http.Request, name string) []string {
 	var values []string
 	for _, cookie := range r.Cookies() {
 		if cookie.Name == name {
@@ -342,8 +367,24 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
+	if !s.loginTransportSecure(r) {
+		writeStatusPage(w, http.StatusBadRequest, insecureLoginPage)
+		return
+	}
 	host := s.loginHost(r)
-	id, err := s.login.verifyLoginToken(r.URL.Query().Get("token"), host)
+	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
+	states := cookieValues(r, s.loginStateCookieName(r))
+	if len(states) == 0 {
+		// The browser dropped the state cookie (third-party cookie blocking
+		// in a frame), or it never started this sign-in.
+		s.writeOpenInNewTab(w, r, returnTo)
+		return
+	}
+	state := ""
+	if len(states) == 1 {
+		state = states[0]
+	}
+	id, err := s.login.verifyLoginToken(r.URL.Query().Get("token"), host, state)
 	if err != nil {
 		log.Printf("auth callback %s: %v", host, err)
 		writeStatusPage(w, http.StatusBadRequest, statusPage{
@@ -359,14 +400,30 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not create the session")
 		return
 	}
+	http.SetCookie(w, loginCookie(s.loginStateCookieName(r), "", -1))
 	http.SetCookie(w, s.sessionCookie(r, value, int(s.login.sessionTTL/time.Second)))
-	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
 	http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
 }
 
+var insecureLoginPage = statusPage{
+	Title:   "Sign-in needs a secure connection",
+	Message: "This Spot deployment signs visitors in only over HTTPS. Ask its operator to serve sites over HTTPS.",
+}
+
+// writeOpenInNewTab ends a login loop when the browser drops Spot's cookies,
+// typically third-party cookie blocking inside a frame.
+func (s *Server) writeOpenInNewTab(w http.ResponseWriter, r *http.Request, returnTo string) {
+	siteURL := s.requestScheme(r) + "://" + s.requestHost(r) + returnTo
+	writeStatusPage(w, http.StatusOK, statusPage{
+		Title:   "Open this site in a new tab",
+		Message: "Your browser did not keep the sign-in cookie for this site. This happens in some embedded previews.",
+		Links:   []statusPageLink{{Label: "Open in a new tab", URL: siteURL, NewTab: true, Primary: true}},
+	})
+}
+
 // handleAuthCheck breaks the login loop when the browser drops the session
-// cookie (typically third-party cookie blocking inside a frame): instead of
-// redirecting to the login URL again, it asks the viewer to open a new tab.
+// cookie: instead of redirecting to the login URL again, it asks the viewer
+// to open a new tab.
 func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
@@ -383,12 +440,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, returnTo, http.StatusFound)
 		return
 	}
-	siteURL := s.requestScheme(r) + "://" + s.requestHost(r) + returnTo
-	writeStatusPage(w, http.StatusOK, statusPage{
-		Title:   "Open this site in a new tab",
-		Message: "Your browser did not keep the sign-in cookie for this site. This happens in some embedded previews.",
-		Links:   []statusPageLink{{Label: "Open in a new tab", URL: siteURL, NewTab: true, Primary: true}},
-	})
+	s.writeOpenInNewTab(w, r, returnTo)
 }
 
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
@@ -409,17 +461,46 @@ func isNavigation(r *http.Request) bool {
 }
 
 // denyAnonymousVisitor answers a site request that needs a signed-in viewer.
+// A page load starts a sign-in: it gets a login state cookie and a redirect
+// to the login URL carrying that state.
 func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
-	if isNavigation(r) {
-		target := *s.login.loginURL
-		query := target.Query()
-		query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+r.URL.RequestURI())
-		target.RawQuery = query.Encode()
-		w.Header().Set("Cache-Control", "no-store")
-		http.Redirect(w, r, target.String(), http.StatusFound)
+	if !isNavigation(r) {
+		httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 		return
 	}
-	httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
+	if !s.loginTransportSecure(r) {
+		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
+		return
+	}
+	state, err := s.loginState(r)
+	if err != nil {
+		log.Printf("login state: %v", err)
+		httpError(w, http.StatusInternalServerError, "could not start sign-in")
+		return
+	}
+	http.SetCookie(w, loginCookie(s.loginStateCookieName(r), state, int(loginStateMaxAge/time.Second)))
+	target := *s.login.loginURL
+	query := target.Query()
+	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+r.URL.RequestURI())
+	query.Set("state", state)
+	target.RawQuery = query.Encode()
+	w.Header().Set("Cache-Control", "no-store")
+	http.Redirect(w, r, target.String(), http.StatusFound)
+}
+
+// loginState reuses the browser's pending login state, so sign-ins started
+// in several tabs can all complete, or creates a new one.
+func (s *Server) loginState(r *http.Request) (string, error) {
+	if values := cookieValues(r, s.loginStateCookieName(r)); len(values) == 1 {
+		if raw, err := base64.RawURLEncoding.DecodeString(values[0]); err == nil && len(raw) == loginStateBytes {
+			return values[0], nil
+		}
+	}
+	raw := make([]byte, loginStateBytes)
+	if _, err := rand.Read(raw); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
 
 // requireVisitor gates the SDK APIs in delegated login mode: every call needs

@@ -306,24 +306,34 @@ SPOT_FRAME_ANCESTORS='self' https://app.example.com
 SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
 ```
 
-1. A browser opens a restricted site with no identity. Spot redirects it to
-   `SPOT_LOGIN_URL?return_to=<site URL>`. Other requests get `401`.
+1. A browser opens a restricted site with no identity. Spot sets a
+   short-lived login state cookie on that host and redirects it to
+   `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other requests get
+   `401`.
 2. The login app authenticates the browser and redirects it to
    `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`. The token is
    a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
    (`spot-login`), `host` (the exact site host, lowercase, with any non-default
-   port), `email`, optional `name` and `groups`, `iat`, `exp` (at most 300 s
-   after `iat`), and a single-use `jti`.
+   port), `state` (the `state` query value, unchanged), `email`, optional
+   `name` and `groups`, `iat`, `exp` (at most 300 s after `iat`), and a
+   single-use `jti`. The callback accepts the token only in the browser that
+   holds the matching state, so a token minted for one account cannot sign
+   someone else's browser in.
 3. Spot sets a signed session cookie for that host only and continues to
    `/api/auth/check`, which shows an "open in a new tab" page instead of
    looping when the browser dropped the cookie (for example in a frame).
    `/api/auth/logout` clears the cookie.
 
-The cookie is `SameSite=None; Secure; Partitioned` on HTTPS and `*.localhost`
-(named `__Host-spot_session` on HTTPS), and `SameSite=Lax` otherwise. A request
-that carries the session cookie more than once is treated as signed out
-(`/api/auth/check` answers `400`), because on plain HTTP a sibling site can
-plant a parent-domain cookie. In this
+Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
+site could plant cookies, so Spot shows a "needs a secure connection" page and
+ignores session cookies. Behind a TLS proxy, make sure Spot sees
+`X-Forwarded-Proto: https` from a trusted proxy. The cookies are
+`SameSite=None; Secure; Partitioned` and host-only, named
+`__Host-spot_session` and `__Host-spot_login_state` on HTTPS. A request that
+carries the session cookie more than once is treated as signed out
+(`/api/auth/check` answers `400`). The session keeps the `name` and `groups`
+from the login token for `SPOT_SESSION_TTL`, so group changes apply at the next
+sign-in; allowlist changes apply immediately. In this
 mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
 `shared-*` collections and rooms are disabled because sites belong to
