@@ -27,6 +27,9 @@ type Server struct {
 	store             *DocStore
 	resolver          IdentityResolver
 	forwardAuth       *ForwardAuth
+	login             *DelegatedLogin
+	frameAncestors    string
+	apexRedirectURL   string
 	policies          *PolicyStore
 	hub               *Hub
 	roomHub           *RoomHub
@@ -171,17 +174,21 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})
-	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
+	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.requireVisitor(s.handleMe)))
 	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
-	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
-	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
-	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCount)))
-	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
-	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
-	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
-	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.handleIncrement)))
-	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
+	mux.HandleFunc("GET /api/auth/callback", s.limited(s.dbLimit, s.handleAuthCallback))
+	mux.HandleFunc("GET /api/auth/check", s.handleAuthCheck)
+	mux.HandleFunc("GET /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/tls/ask", s.handleTLSAsk)
+	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.requireVisitor(s.handleWS)))
+	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleList))))
+	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleCount))))
+	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleCreate))))
+	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleGet))))
+	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleUpdate))))
+	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleIncrement))))
+	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleDelete))))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
 	mux.HandleFunc("GET /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
 	mux.HandleFunc("POST /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
@@ -199,29 +206,46 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sites/{name}/cloudflare/legacy/resolve", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflareResolveLegacy)))
 	mux.HandleFunc("DELETE /api/sites/{name}/cloudflare", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflareUnpublish)))
 	mux.HandleFunc("DELETE /api/sites/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeleteSite)))
-	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileList)))
-	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
-	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
-	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileDelete)))
-	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
-	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChatStream)))
-	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIImage)))
-	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limited(s.slackLimit, s.handleSlackSend)))
+	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleFileList))))
+	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleUpload))))
+	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.requireVisitor(s.handleDownload))
+	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleFileDelete))))
+	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIChat))))
+	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIChatStream))))
+	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIImage))))
+	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limited(s.slackLimit, s.requireVisitor(s.handleSlackSend))))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
 	if s.serveStatic {
 		mux.HandleFunc("/", s.handleStatic)
 	}
-	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(mux))
+	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(s.siteResponseHeaders(mux)))
 }
 
 func (s *Server) rejectUnknownHosts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" || validSpotHost(s.requestHost(r), s.spotDomain) {
+		// Caddy's on-demand TLS check addresses the service by its internal name.
+		if r.URL.Path == "/health" || r.URL.Path == "/api/tls/ask" || validSpotHost(s.requestHost(r), s.spotDomain) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		httpError(w, http.StatusBadRequest, "request host is not part of this Spot domain")
+	})
+}
+
+// siteResponseHeaders adds the deployment's framing policy to every site-host
+// response, so only the configured origins can embed site content.
+func (s *Server) siteResponseHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if siteFromHost(s.requestHost(r), s.spotDomain) != "" {
+			if s.frameAncestors != "" {
+				w.Header().Add("Content-Security-Policy", "frame-ancestors "+s.frameAncestors)
+			}
+			if s.login != nil {
+				w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -352,6 +376,9 @@ func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
 	if id, ok := s.forwardAuthIdentity(r); ok {
 		return id, true, nil
 	}
+	if id, ok := s.sessionIdentity(r); ok {
+		return id, true, nil
+	}
 	if s.resolver == nil {
 		return Identity{}, false, nil
 	}
@@ -370,7 +397,7 @@ func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
-	if s.resolver == nil && s.forwardAuth == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
@@ -427,7 +454,7 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
-	if s.resolver == nil && s.forwardAuth == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"site is restricted but the identity resolver is not configured")
 		return false
@@ -436,6 +463,10 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	if err != nil {
 		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
+		return false
+	}
+	if !found && s.login != nil {
+		s.denyAnonymousVisitor(w, r)
 		return false
 	}
 	if !found || !policy.Allows(id) {
@@ -670,7 +701,7 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// response, and only allow inline rendering for known-safe media —
 	// everything else (HTML, SVG, unknown) downloads instead of renders.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Add("Content-Security-Policy", "sandbox; default-src 'none'")
 	disposition := "attachment"
 	if inlineSafe(contentType) {
 		disposition = "inline"
@@ -934,7 +965,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			switch req.Type {
 			case "subscribe":
-				scope, err := scopeFor(site, req.Collection)
+				scope, err := s.collectionScope(site, req.Collection)
 				if err != nil {
 					writeWSError(ctx, conn, err.Error())
 					continue
@@ -947,7 +978,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "unsubscribe":
-				scope, err := scopeFor(site, req.Collection)
+				scope, err := s.collectionScope(site, req.Collection)
 				if err != nil {
 					writeWSError(ctx, conn, err.Error())
 					continue
@@ -1026,7 +1057,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, site, room string) (string, bool) {
-	scope, err := roomScopeFor(site, room)
+	scope, err := s.roomScope(site, room)
 	if err != nil {
 		writeWSError(ctx, conn, err.Error())
 		return "", false
@@ -1036,6 +1067,9 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
 	if id, ok := s.forwardAuthIdentity(r); ok {
+		return id, true
+	}
+	if id, ok := s.sessionIdentity(r); ok {
 		return id, true
 	}
 	if s.resolver == nil {
@@ -1080,7 +1114,7 @@ func (s *Server) scope(w http.ResponseWriter, r *http.Request) (string, string, 
 	if !s.authorizeSiteAccess(w, r, site) {
 		return "", "", false
 	}
-	scope, err := scopeFor(site, collection)
+	scope, err := s.collectionScope(site, collection)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return "", "", false

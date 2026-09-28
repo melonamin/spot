@@ -48,6 +48,11 @@ func (s *Server) handleApexStatic(w http.ResponseWriter, r *http.Request) {
 		s.serveAgentDoc(w, r)
 		return
 	}
+	// An embedding product can own the platform pages; APIs and assets stay.
+	if s.apexRedirectURL != "" && strings.HasSuffix(name, ".html") {
+		http.Redirect(w, r, s.apexRedirectURL, http.StatusFound)
+		return
+	}
 	s.serveEmbeddedAsset(w, r, name)
 }
 
