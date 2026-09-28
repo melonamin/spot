@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"encoding/base64"
@@ -179,7 +180,7 @@ func TestSafeReturnPath(t *testing.T) {
 }
 
 // loginTestStack is a full server in delegated login mode with forward auth,
-// a real registry, and local storage.
+// a real registry, and local site and upload storage.
 type loginTestStack struct {
 	srv      *Server
 	handler  http.Handler
@@ -193,12 +194,16 @@ func newLoginTestStack(t *testing.T) *loginTestStack {
 	if err != nil {
 		t.Fatal(err)
 	}
+	uploads, err := NewLocalFileStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	db := openTestDB(t)
 	registry := NewSiteRegistry(db, nil)
 	forwardAuth := NewForwardAuth("", "", "", "")
 	forwardAuth.Secret = testForwardSecret
 	srv := &Server{
-		store: &DocStore{db: db, hub: NewHub()}, sites: sites, policies: NewPolicyStore(root, time.Minute),
+		store: &DocStore{db: db, hub: NewHub()}, sites: sites, files: uploads, policies: NewPolicyStore(root, time.Minute),
 		deployAuth: registry, siteAdmin: registry, siteManager: registry,
 		forwardAuth: forwardAuth, login: newTestDelegatedLogin(t),
 		frameAncestors: "'self' https://chat.example.com", apexRedirectURL: "https://chat.example.com/sites",
@@ -524,5 +529,61 @@ func TestDelegatedLoginAcceptsForwardAuthFirst(t *testing.T) {
 	id, found, err := st.srv.resolvePeer(asForwardUser(siteRequest(http.MethodGet, "sites.localhost:8443", "/"), "owner@example.com"))
 	if err != nil || !found || id.Email != "owner@example.com" {
 		t.Fatalf("apex forward-auth identity = %+v %v %v", id, found, err)
+	}
+}
+
+// A malicious site must not read another site's uploads through its own
+// origin with the visitor's session: identity on a site host belongs to that
+// host's site only.
+func TestFileDownloadIsBoundToTheSiteHost(t *testing.T) {
+	st := newLoginTestStack(t)
+	const (
+		evilHost   = "evil.sites.localhost:8443"
+		victimHost = "victim.sites.localhost:8443"
+	)
+	st.deploy(t, "mallory@example.com", "evil", "")
+	st.deploy(t, "owner@example.com", "victim", `{"allow":["alice@example.com"]}`)
+	secret, err := st.srv.files.Put(context.Background(), "victim", "secret.txt", "text/plain", strings.NewReader("victim secret"), 13)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := st.srv.files.Put(context.Background(), "evil", "own.txt", "text/plain", strings.NewReader("evil file"), 9)
+	if err != nil {
+		t.Fatal(err)
+	}
+	evilSession := st.signIn(t, evilHost, "alice@example.com", "alice-evil")
+	victimSession := st.signIn(t, victimHost, "alice@example.com", "alice-victim")
+
+	download := func(host, url string, cookie *http.Cookie) *httptest.ResponseRecorder {
+		req := siteRequest(http.MethodGet, host, url)
+		if cookie != nil {
+			req.AddCookie(cookie)
+		}
+		return st.do(req)
+	}
+
+	// Denied: the evil origin fetching the victim's upload with the visitor's
+	// evil-host session, or with an ambient forward-auth identity.
+	if rec := download(evilHost, secret.URL, evilSession); rec.Code != http.StatusNotFound || strings.Contains(rec.Body.String(), "victim secret") {
+		t.Fatalf("cross-site download with session = %d %s, want 404", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(asForwardUser(siteRequest(http.MethodGet, evilHost, secret.URL), "alice@example.com")); rec.Code != http.StatusNotFound {
+		t.Fatalf("cross-site download with forward auth = %d, want 404", rec.Code)
+	}
+	// A site-host session confers nothing on the apex.
+	if rec := download("sites.localhost:8443", secret.URL, victimSession); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("apex download with a site session = %d, want 401", rec.Code)
+	}
+
+	// Allowed: each site's own uploads on its own host, and the apex with a
+	// platform identity.
+	if rec := download(victimHost, secret.URL, victimSession); rec.Code != http.StatusOK || rec.Body.String() != "victim secret" {
+		t.Fatalf("same-site download = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := download(evilHost, own.URL, evilSession); rec.Code != http.StatusOK || rec.Body.String() != "evil file" {
+		t.Fatalf("own-site download = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(asForwardUser(siteRequest(http.MethodGet, "sites.localhost:8443", secret.URL), "alice@example.com")); rec.Code != http.StatusOK {
+		t.Fatalf("apex download with forward auth = %d %s", rec.Code, rec.Body.String())
 	}
 }

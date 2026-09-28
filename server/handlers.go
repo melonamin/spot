@@ -694,6 +694,13 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid file site")
 		return
 	}
+	// On a site host the caller's identity (session cookie or ambient mesh
+	// identity) belongs to that host's site, so another site's uploads are
+	// out of reach there. The apex serves any site's uploads.
+	if hostSite := siteFromHost(s.requestHost(r), s.spotDomain); hostSite != "" && hostSite != site {
+		httpError(w, http.StatusNotFound, "file not found")
+		return
+	}
 	if !s.authorizeSiteAccess(w, r, site) {
 		return
 	}

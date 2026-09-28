@@ -205,7 +205,9 @@ Deploy and upload storage are intentionally separate:
 
 - Deployed site files are the immutable-ish contents of a site deployment.
 - Uploads are user-generated files addressed by random IDs under
-  `/api/files/<site>/<id>/<name>`.
+  `/api/files/<site>/<id>/<name>`. A site host serves only its own site's
+  uploads (another site's path is `404`), because the caller's identity there
+  belongs to that host; the apex serves any site's uploads.
 
 Deleting a site purges deployed files, uploads, and private document scope. An
 owner or platform admin also frees the registry row. A maintainer delete keeps
