@@ -15,7 +15,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - A site update that ships no `_access.json` now keeps the stored access policy instead of removing it; send `preserve_access=false` (`spot deploy --replace-access`) to remove it.
-- Delegated login binds each sign-in to the browser that started it: the login app must copy the redirect's `state` into the token's `state` claim. Open-site pages start a sign-in at `/api/auth/login`, sign-out requires a page load, and delegated login requires HTTPS or `*.localhost`.
+- Delegated login binds each sign-in to the browser that started it: the login app must copy the redirect's `state` into the token's `state` claim. Open-site pages start a sign-in at `/api/auth/login`, sign-out requires a page load, and delegated login requires HTTPS or `*.localhost` and always uses `__Host-` cookies.
 
 ## [0.5.0] - 2026-08-28
 

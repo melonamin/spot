@@ -427,14 +427,12 @@ func TestSessionCookieModes(t *testing.T) {
 	st := newLoginTestStack(t)
 	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
 
-	https := siteRequest(http.MethodGet, "private.sites.localhost", "/api/auth/callback")
-	https.Header.Set("X-Forwarded-Proto", "https")
-	if got := st.srv.sessionCookie(https, "v", 60); got.Name != secureSessionCookieName || !got.Secure || !got.Partitioned || got.SameSite != http.SameSiteNoneMode {
-		t.Fatalf("https cookie = %+v", got)
-	}
-
-	if got := st.srv.loginStateCookieName(https); got != secureLoginStateCookieName {
-		t.Fatalf("https login state cookie = %q", got)
+	// Both schemes use __Host- names, which a sibling site cannot set.
+	for _, got := range []*http.Cookie{sessionCookie("v", 60), loginCookie(loginStateCookieName, "v", 60)} {
+		if !strings.HasPrefix(got.Name, "__Host-") || !got.Secure || got.Path != "/" || got.Domain != "" ||
+			!got.Partitioned || got.SameSite != http.SameSiteNoneMode {
+			t.Fatalf("login cookie = %+v", got)
+		}
 	}
 
 	// The login host drops only the scheme's default port.
@@ -671,8 +669,9 @@ func TestFileDownloadIsBoundToTheSiteHost(t *testing.T) {
 	}
 }
 
-// On plain HTTP a sibling site can plant a parent-Domain spot_session next to
-// the host-only one; a request carrying both must not pick either identity.
+// A request carrying two session cookies must not pick either identity, and
+// an unprefixed spot_session, which a sibling site can set with a parent
+// Domain, carries none.
 func TestDelegatedLoginRejectsDuplicateSessionCookies(t *testing.T) {
 	st := newLoginTestStack(t)
 	const host = "private.sites.localhost:8443"
@@ -715,10 +714,14 @@ func TestDelegatedLoginRejectsDuplicateSessionCookies(t *testing.T) {
 		}
 	}
 
-	// A cookie with another name does not count as a duplicate.
-	other := &http.Cookie{Name: secureSessionCookieName, Value: planted.Value}
-	if rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), owner, other)); rec.Code != http.StatusOK {
-		t.Fatalf("session plus differently named cookie = %d %s", rec.Code, rec.Body.String())
+	// A planted unprefixed cookie neither counts as a duplicate nor signs in.
+	unprefixed := &http.Cookie{Name: "spot_session", Value: planted.Value}
+	if rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), owner, unprefixed)); rec.Code != http.StatusOK ||
+		!strings.Contains(rec.Body.String(), `"email":"owner@example.com"`) {
+		t.Fatalf("session plus unprefixed cookie = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(withCookies(siteRequest(http.MethodGet, host, "/api/me"), unprefixed)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("unprefixed cookie alone = %d %s, want 401", rec.Code, rec.Body.String())
 	}
 }
 
@@ -946,7 +949,7 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 	// Allowed: the same session over HTTPS.
 	secure := siteRequest(http.MethodGet, host, "/")
 	secure.Header.Set("X-Forwarded-Proto", "https")
-	secure.AddCookie(&http.Cookie{Name: secureSessionCookieName, Value: value})
+	secure.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
 	if rec := st.do(secure); rec.Code != http.StatusOK {
 		t.Fatalf("https session = %d %s", rec.Code, rec.Body.String())
 	}

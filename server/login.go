@@ -34,16 +34,14 @@ const (
 	loginTokenLeeway   = 30 * time.Second
 	minLoginSecretLen  = 32
 
-	// Delegated login needs HTTPS or *.localhost (a browser secure context).
-	// The plain names serve *.localhost; HTTPS uses the __Host- prefix, which
-	// a sibling site cannot set with a parent Domain, so one untrusted site
-	// cannot plant a session or login state on another.
-	sessionCookieName          = "spot_session"
-	secureSessionCookieName    = "__Host-spot_session"
-	loginStateCookieName       = "spot_login_state"
-	secureLoginStateCookieName = "__Host-spot_login_state"
-	loginStateMaxAge           = 10 * time.Minute
-	loginStateBytes            = 32
+	// Delegated login cookies always use the __Host- prefix, which browsers
+	// accept over HTTPS and on *.localhost (a secure context even over HTTP).
+	// A sibling site cannot set a __Host- cookie with a parent Domain, so one
+	// untrusted site cannot plant a session or login state on another.
+	sessionCookieName    = "__Host-spot_session"
+	loginStateCookieName = "__Host-spot_login_state"
+	loginStateMaxAge     = 10 * time.Minute
+	loginStateBytes      = 32
 )
 
 type DelegatedLogin struct {
@@ -260,22 +258,9 @@ func (s *Server) loginTransportSecure(r *http.Request) bool {
 	return s.requestScheme(r) == "https" || localSpotDomain(cleanHost(s.requestHost(r)))
 }
 
-func (s *Server) sessionCookieName(r *http.Request) string {
-	if s.requestScheme(r) == "https" {
-		return secureSessionCookieName
-	}
-	return sessionCookieName
-}
-
-func (s *Server) loginStateCookieName(r *http.Request) string {
-	if s.requestScheme(r) == "https" {
-		return secureLoginStateCookieName
-	}
-	return loginStateCookieName
-}
-
 // loginCookie builds a host-only delegated login cookie. SameSite=None with
-// Partitioned lets a cross-site preview frame keep it.
+// Partitioned lets a cross-site preview frame keep it. __Host- names require
+// Secure, Path=/ and no Domain, which this always sets.
 func loginCookie(name, value string, maxAge int) *http.Cookie {
 	return &http.Cookie{
 		Name: name, Value: value, Path: "/", HttpOnly: true, MaxAge: maxAge,
@@ -283,15 +268,15 @@ func loginCookie(name, value string, maxAge int) *http.Cookie {
 	}
 }
 
-func (s *Server) sessionCookie(r *http.Request, value string, maxAge int) *http.Cookie {
-	return loginCookie(s.sessionCookieName(r), value, maxAge)
+func sessionCookie(value string, maxAge int) *http.Cookie {
+	return loginCookie(sessionCookieName, value, maxAge)
 }
 
 // sessionIdentity returns the viewer signed in on this site host. Session
 // cookies are honored only on site hosts; the apex has no viewer sessions.
-// A request carrying more than one session cookie is anonymous: on plain HTTP
-// a sibling site can plant a parent-Domain cookie next to the host-only one,
-// and the browser's ordering would let it choose the identity.
+// A request carrying more than one session cookie is anonymous: the browser's
+// ordering would choose the identity, and a browser that does not enforce the
+// __Host- prefix could let a sibling site add one.
 func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
 	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" || !s.loginTransportSecure(r) {
 		return Identity{}, false
@@ -309,7 +294,7 @@ func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
 }
 
 func (s *Server) sessionCookieValues(r *http.Request) []string {
-	return cookieValues(r, s.sessionCookieName(r))
+	return cookieValues(r, sessionCookieName)
 }
 
 func cookieValues(r *http.Request, name string) []string {
@@ -373,7 +358,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	host := s.loginHost(r)
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
-	states := cookieValues(r, s.loginStateCookieName(r))
+	states := cookieValues(r, loginStateCookieName)
 	if len(states) == 0 {
 		// The browser dropped the state cookie (third-party cookie blocking
 		// in a frame), or it never started this sign-in.
@@ -400,8 +385,8 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not create the session")
 		return
 	}
-	http.SetCookie(w, loginCookie(s.loginStateCookieName(r), "", -1))
-	http.SetCookie(w, s.sessionCookie(r, value, int(s.login.sessionTTL/time.Second)))
+	http.SetCookie(w, loginCookie(loginStateCookieName, "", -1))
+	http.SetCookie(w, sessionCookie(value, int(s.login.sessionTTL/time.Second)))
 	http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
 }
 
@@ -457,7 +442,7 @@ func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "sign out by opening /api/auth/logout in the browser")
 		return
 	}
-	http.SetCookie(w, s.sessionCookie(r, "", -1))
+	http.SetCookie(w, sessionCookie("", -1))
 	http.Redirect(w, r, "/", http.StatusFound)
 }
 
@@ -502,7 +487,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath s
 		httpError(w, http.StatusInternalServerError, "could not start sign-in")
 		return
 	}
-	http.SetCookie(w, loginCookie(s.loginStateCookieName(r), state, int(loginStateMaxAge/time.Second)))
+	http.SetCookie(w, loginCookie(loginStateCookieName, state, int(loginStateMaxAge/time.Second)))
 	target := *s.login.loginURL
 	query := target.Query()
 	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+returnPath)
@@ -515,7 +500,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath s
 // loginState reuses the browser's pending login state, so sign-ins started
 // in several tabs can all complete, or creates a new one.
 func (s *Server) loginState(r *http.Request) (string, error) {
-	if values := cookieValues(r, s.loginStateCookieName(r)); len(values) == 1 {
+	if values := cookieValues(r, loginStateCookieName); len(values) == 1 {
 		if raw, err := base64.RawURLEncoding.DecodeString(values[0]); err == nil && len(raw) == loginStateBytes {
 			return values[0], nil
 		}
