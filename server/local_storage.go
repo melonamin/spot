@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 var fileIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -204,7 +206,8 @@ func (s *LocalSiteStore) Open(_ context.Context, site, path string) (io.ReadClos
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
 	file, err := os.OpenInRoot(s.root, filepath.Join(site, filepath.FromSlash(path)))
-	if os.IsNotExist(err) {
+	// ENOTDIR: a path below a file, such as "page.html/index.html", names nothing.
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
 	if err != nil {

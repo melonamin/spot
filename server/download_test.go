@@ -167,7 +167,7 @@ func TestSiteStaticHidesAccessPolicy(t *testing.T) {
 	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1>shared</h1>") {
 		t.Fatalf("allowed viewer index = %d %q, want 200 with the page", rec.Code, rec.Body.String())
 	}
-	for _, target := range []string{"/_access.json", "/_ACCESS.JSON", "/_Access.Json", "/%5Faccess.json", "/x/../_access.json"} {
+	for _, target := range []string{"/_access.json", "/_ACCESS.JSON", "/_Access.Json", "/%5Faccess.json", "/x/../_access.json", "/_access.json/"} {
 		rec := get(target)
 		if loc := rec.Header().Get("Location"); rec.Code/100 == 3 && loc != "" {
 			rec = get(loc)
