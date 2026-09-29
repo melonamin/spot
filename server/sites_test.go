@@ -332,6 +332,7 @@ func TestSitesAPIRequiresIdentity(t *testing.T) {
 		{http.MethodGet, "/api/sites/mine"},
 		{http.MethodGet, "/api/sites/manageable"},
 		{http.MethodGet, "/api/sites/public"},
+		{http.MethodGet, "/api/sites/stats"},
 		{http.MethodDelete, "/api/sites/demo"},
 	} {
 		rec := httptest.NewRecorder()
@@ -366,6 +367,7 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	srv := &Server{
 		siteAdmin:      admin,
 		policies:       NewPolicyStore(dir, time.Minute),
+		resolver:       NewStaticResolver("viewer@example.com", "Viewer", nil),
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 	}
@@ -397,16 +399,40 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	}
 }
 
-func TestSiteStatsDoesNotRequireIdentity(t *testing.T) {
+// Stats need an identified caller, as the sibling listings do; the embedding
+// product's admin calls them through forward auth with the shared secret.
+func TestSiteStatsRequiresForwardAuthIdentity(t *testing.T) {
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "super-secret-proxy-key-1234"
 	srv := &Server{
 		siteAdmin:      &fakeSiteAdmin{},
+		forwardAuth:    fa,
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 	}
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/stats"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("site stats without identity = %d %s, want 200", rec.Code, rec.Body.String())
+	for _, tt := range []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"anonymous", nil, http.StatusUnauthorized},
+		{"wrong secret", map[string]string{"Remote-Email": "admin@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusUnauthorized},
+		{"admin with secret", map[string]string{
+			"Remote-Email": "admin@corp.com", "Remote-Groups": "platform-admin",
+			"X-Spot-Forward-Auth-Secret": "super-secret-proxy-key-1234",
+		}, http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sitesRequest(http.MethodGet, "/api/sites/stats")
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("site stats = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+		})
 	}
 }
 
