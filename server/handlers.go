@@ -388,6 +388,9 @@ func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	if id, ok := r.Context().Value(resolvedPeerKey{}).(Identity); ok {
+		return id, true, nil
+	}
 	if id, ok := s.forwardAuthIdentity(r); ok {
 		return id, true, nil
 	}

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -520,7 +521,7 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		_, found, err := s.resolvePeer(r)
+		id, found, err := s.resolvePeer(r)
 		if err != nil {
 			log.Printf("visitor identity: resolve %s: %v", s.clientIP(r), err)
 			httpError(w, http.StatusServiceUnavailable, "could not verify identity")
@@ -530,6 +531,14 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 			return
 		}
-		next(w, r)
+		next(w, withResolvedPeer(r, id))
 	}
+}
+
+type resolvedPeerKey struct{}
+
+// withResolvedPeer records the identity already resolved for this request, so
+// the handler's own resolvePeer does not ask the mesh resolver again.
+func withResolvedPeer(r *http.Request, id Identity) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), resolvedPeerKey{}, id))
 }

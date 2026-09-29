@@ -961,3 +961,30 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 		t.Fatalf("https session = %d %s", rec.Code, rec.Body.String())
 	}
 }
+
+type countingResolver struct {
+	id    Identity
+	calls int
+}
+
+func (c *countingResolver) Resolve(context.Context, string) (Identity, bool, error) {
+	c.calls++
+	return c.id, true, nil
+}
+
+// requireVisitor hands its identity to the handler instead of asking the mesh
+// resolver a second time.
+func TestRequireVisitorResolvesOnce(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "open", "")
+	resolver := &countingResolver{id: Identity{Email: "mesh@example.com", Groups: []string{}}}
+	st.srv.resolver = resolver
+
+	rec := st.do(siteRequest(http.MethodGet, "open.sites.localhost:8443", "/api/me"))
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"mesh@example.com"`) {
+		t.Fatalf("mesh /api/me = %d %s", rec.Code, rec.Body.String())
+	}
+	if resolver.calls != 1 {
+		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
+	}
+}
