@@ -463,12 +463,13 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 
 // handleAuthLogout signs the viewer out. Only a page load from this site, or
 // one the viewer typed, may do it, so another page cannot sign a viewer out
-// with an image, a fetch, or a link.
+// with an image, a fetch, or a link. That needs Sec-Fetch-Site, which every
+// current browser sends; without it the request is refused.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
-	if site := r.Header.Get("Sec-Fetch-Site"); !isNavigation(r) || (site != "" && site != "same-origin" && site != "none") {
+	if site := r.Header.Get("Sec-Fetch-Site"); !isNavigation(r) || (site != "same-origin" && site != "none") {
 		httpError(w, http.StatusForbidden, "sign out by opening /api/auth/logout in the browser")
 		return
 	}

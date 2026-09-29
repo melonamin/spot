@@ -370,11 +370,15 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 
 	// Only a page load from this site signs out, so another page cannot do it
 	// with an image or a link.
-	link := navigation(siteRequest(http.MethodGet, host, "/api/auth/logout"))
-	link.Header.Set("Sec-Fetch-Site", "cross-site")
-	link.AddCookie(cookie)
-	if rec := st.do(link); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("logout from another site's link = %d %v, want 403", rec.Code, rec.Result().Cookies())
+	for _, fetchSite := range []string{"cross-site", "same-site", ""} {
+		link := navigation(siteRequest(http.MethodGet, host, "/api/auth/logout"))
+		if fetchSite != "" {
+			link.Header.Set("Sec-Fetch-Site", fetchSite)
+		}
+		link.AddCookie(cookie)
+		if rec := st.do(link); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
+			t.Fatalf("logout with Sec-Fetch-Site %q = %d %v, want 403", fetchSite, rec.Code, rec.Result().Cookies())
+		}
 	}
 	image := siteRequest(http.MethodGet, host, "/api/auth/logout")
 	image.Header.Set("Sec-Fetch-Mode", "no-cors")
