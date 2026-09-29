@@ -106,7 +106,7 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 	} else {
 		indexPath = path.Join(requestPath, "index.html")
 	}
-	if !validSitePath(requestPath) {
+	if !validSitePath(requestPath) || isSiteAccessFile(requestPath) {
 		s.serveEmbedded404(w, r)
 		return
 	}

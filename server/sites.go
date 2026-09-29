@@ -249,6 +249,9 @@ func (s *Server) handleSiteStats(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSitesAPI(w, r) {
 		return
 	}
+	if _, ok := s.resolveIdentity(w, r, "site stats"); !ok {
+		return
+	}
 	all, err := s.siteAdmin.AllSites(r.Context())
 	if err != nil {
 		log.Printf("site stats: %v", err)

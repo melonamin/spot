@@ -1293,8 +1293,10 @@ func TestCloudflarePublishIgnoresPrivateMeshAccessPolicy(t *testing.T) {
 	cf := &fakeCloudflareAPI{}
 	srv, repo := newCloudflareTestServer(t, cf)
 	internalPolicy := []byte(`{"allow":["alice@example.com"],"download":false}`)
-	if err := srv.sites.Put(context.Background(), "demo", accessFileName, "application/json", internalPolicy); err != nil {
-		t.Fatal(err)
+	for _, name := range []string{accessFileName, "_ACCESS.JSON"} {
+		if err := srv.sites.Put(context.Background(), "demo", name, "application/json", internalPolicy); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rec := httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, cloudflarePublishRequestWithBody(
@@ -1303,7 +1305,7 @@ func TestCloudflarePublishIgnoresPrivateMeshAccessPolicy(t *testing.T) {
 		t.Fatalf("publish site with internal policy = %d %s, want 200", rec.Code, rec.Body.String())
 	}
 	for _, uploaded := range cf.uploaded {
-		if uploaded == accessFileName {
+		if isSiteAccessFile(uploaded) {
 			t.Fatalf("uploaded files = %v, private mesh policy must not leave Spot", cf.uploaded)
 		}
 	}

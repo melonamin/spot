@@ -49,8 +49,8 @@ func TestSiteAccessUpdate(t *testing.T) {
 
 	// Denied paths: anonymous, stranger, invalid policy, unknown site, and
 	// site-host callers.
-	if rec := st.do(accessRequest("demo", "", `{}`)); rec.Code != http.StatusNotFound {
-		t.Fatalf("anonymous access change = %d, want 404 (no identity)", rec.Code)
+	if rec := st.do(accessRequest("demo", "", `{}`)); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous access change = %d, want 401 (no identity)", rec.Code)
 	}
 	if rec := st.do(accessRequest("demo", "stranger@example.com", `{}`)); rec.Code != http.StatusForbidden {
 		t.Fatalf("stranger access change = %d, want 403", rec.Code)
@@ -205,8 +205,8 @@ func TestVisibleSites(t *testing.T) {
 		t.Fatalf("outsider sees %v, want only the open site", outsider)
 	}
 
-	if rec := st.do(sitesRequestFor("/api/sites/visible")); rec.Code != http.StatusNotFound {
-		t.Fatalf("anonymous visible = %d, want 404 (no identity)", rec.Code)
+	if rec := st.do(sitesRequestFor("/api/sites/visible")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous visible = %d, want 401 (no identity)", rec.Code)
 	}
 }
 

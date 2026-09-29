@@ -148,13 +148,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"the deploy API is served on the platform root, not on site subdomains")
 		return
 	}
-	var principal DeployPrincipal
-	if len(r.Header.Values("Authorization")) > 0 {
-		var ok bool
-		principal, ok = s.requireDeployPrincipal(w, r)
-		if !ok {
-			return
-		}
+	// Authenticate before reading the body: an anonymous caller must not make
+	// the server buffer up to maxDeploySize.
+	principal, ok := s.requireDeployPrincipal(w, r)
+	if !ok {
+		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxDeploySize)
 	mr, err := r.MultipartReader()
@@ -168,7 +166,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// An update that ships no _access.json keeps the stored policy, which may
 	// have been set through PUT /api/sites/{name}/access rather than a bundle.
 	// Only an explicit preserve_access=false lets the deploy remove it.
+	// preserve_access=require also refuses a deploy that has no stored policy to
+	// keep (a new or inactive site, or an active one without a policy), so a
+	// caller never publishes a site without one.
 	preserveAccess := true
+	requireActiveAccess := false
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -192,11 +194,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				deployReadError(w, err)
 				return
 			}
+			if strings.EqualFold(strings.TrimSpace(string(raw)), "require") {
+				preserveAccess, requireActiveAccess = true, true
+				continue
+			}
 			var ok bool
 			if preserveAccess, ok = parseDeployBool(string(raw)); !ok {
-				httpError(w, http.StatusBadRequest, "preserve_access must be true or false")
+				httpError(w, http.StatusBadRequest, "preserve_access must be true, false or require")
 				return
 			}
+			requireActiveAccess = false
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -243,16 +250,13 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	incomingPolicy, hasIncomingPolicy, incomingPolicyErr := deployAccessPolicy(site, files)
 	restricted := policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+	if requireActiveAccess && hasIncomingPolicy {
+		httpError(w, http.StatusBadRequest, "preserve_access=require keeps the stored "+accessFileName+"; do not send one")
+		return
+	}
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
-	}
-	if actorKey(principal.Actor) == "" {
-		var ok bool
-		principal, ok = s.requireDeployPrincipal(w, r)
-		if !ok {
-			return
-		}
 	}
 	r = withDeployPrincipal(r, principal)
 	actor := principal.Actor
@@ -311,6 +315,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("deploy %s: cancel authorization: %v", site, err)
 		}
 	}
+	noPolicyToKeep := "site " + site + " has no stored access policy to keep; deploy it with an explicit " + accessFileName
+	if requireActiveAccess && (authz.Action != "update" || authz.PreviousState != SiteStateActive) {
+		cancelAuthorization()
+		httpError(w, http.StatusConflict, noPolicyToKeep)
+		return
+	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
 		preserved, err := s.preserveExistingAccessPolicy(r.Context(), site, files)
 		if err != nil {
@@ -335,6 +345,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		incomingPolicy, hasIncomingPolicy, incomingPolicyErr = deployAccessPolicy(site, files)
 		restricted = policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+		if requireActiveAccess && !hasIncomingPolicy {
+			cancelAuthorization()
+			httpError(w, http.StatusConflict, noPolicyToKeep)
+			return
+		}
 	}
 	var policyOnFailure *failurePolicyCache
 	var previousPolicy *AccessPolicy
@@ -1146,10 +1161,6 @@ func (s *Server) failPolicyCommit(r *http.Request, site string, actor Identity, 
 		return
 	}
 	s.failDeployStorage(r, site, actor, authz, files, policyOnFailure, message)
-}
-
-func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
-	s.recordDeployFailureAs(r, site, actor, action, "", files, message)
 }
 
 func (s *Server) recordDeployFailureAs(r *http.Request, site string, actor Identity, action string, role ManagementRole, files []deployFile, message string) {
