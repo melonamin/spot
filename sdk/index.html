@@ -1035,6 +1035,11 @@
       let accessPolicyFields = {};
       let accessAllowPresent = false;
       let accessMaintainersPresent = false;
+      // A redeploy without _access.json keeps the site's stored policy, so
+      // Clear must ask the server to drop it (preserve_access=false), and an
+      // uploaded policy is always sent, even an empty {}.
+      let accessCleared = false;
+      let accessFileSupplied = false;
       let accessFileWarning = ''; // set when an uploaded _access.json can't be read
       let launching = false;
 
@@ -1090,6 +1095,8 @@
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
+        accessCleared = false;
+        accessFileSupplied = false;
         accessSearch.value = '';
         directoryOptions = [];
         accessFileWarning = '';
@@ -1098,6 +1105,7 @@
         // rather than silently dropped (which would publish the site).
         const accessFile = list.find((f) => f.path === '_access.json');
         if (accessFile) {
+          accessFileSupplied = true;
           const parsed = await readAccessPolicy(accessFile.file);
           selectedAccess = parsed.entries;
           selectedMaintainers = parsed.maintainers;
@@ -1324,7 +1332,11 @@
           accessNote.textContent = 'No one can open it on the mesh. Clear to remove the restriction.';
         } else if (count === 0) {
           accessStatus.textContent = 'Mesh · everyone';
-          accessNote.textContent = accessFileWarning || 'No _access.json will be deployed.';
+          accessNote.textContent = accessFileWarning || (accessFileSupplied
+            ? 'Deploys an _access.json without an allowlist, so everyone on the mesh can open it.'
+            : accessCleared
+              ? "Removes the site's stored _access.json, so everyone on the mesh can open it."
+              : "Keeps a redeployed site's current access; new sites are open to everyone.");
         } else if (count === 1) {
           accessStatus.textContent = 'Mesh · 1 invited';
           accessNote.textContent = 'Only ' + selectedAccess[0].label + ' can open it on the mesh. Deploys _access.json.';
@@ -1368,7 +1380,7 @@
         const policy = { ...accessPolicyFields };
         if (selectedAccess.length || accessAllowPresent) policy.allow = selectedAccess.map((entry) => entry.value);
         if (selectedMaintainers.length || accessMaintainersPresent) policy.maintainers = selectedMaintainers.map((entry) => entry.value);
-        if (!Object.keys(policy).length) return null;
+        if (!Object.keys(policy).length && !accessFileSupplied) return null;
         return new File(
           [JSON.stringify(policy, null, 2) + '\n'],
           '_access.json',
@@ -1392,6 +1404,7 @@
       });
       accessClear.addEventListener('click', () => {
         accessFileWarning = '';
+        accessCleared = true;
         if (accessMode === 'maintainers') {
           selectedMaintainers = [];
           accessMaintainersPresent = false;
@@ -1465,6 +1478,8 @@
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
+        accessCleared = false;
+        accessFileSupplied = false;
         accessSearch.value = '';
         clearError();
         show(idle);
@@ -1569,6 +1584,7 @@
         }
         const policy = accessPolicyFile();
         if (policy) form.append('files', policy, '_access.json');
+        else if (accessCleared) form.append('preserve_access', 'false');
 
         launching = true;
         launchBtn.disabled = true;

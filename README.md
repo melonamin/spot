@@ -278,7 +278,11 @@ Notes:
 - To run the proxy off-mesh (where its source IP isn't a reliable identifier),
   set `SPOT_FORWARD_AUTH_SECRET` to a long random value and have the proxy send
   it in the `X-Spot-Forward-Auth-Secret` header. When set, the secret is
-  required and replaces the source-IP check.
+  required and replaces the source-IP check. Requests that prove the secret
+  and assert an identity skip Spot's per-IP rate limits, because the proxy
+  speaks for all its users from one address; the proxy must throttle its own
+  users. AI and Slack, which spend server-side credentials, still limit those
+  requests per asserted user.
 - Pangolin only emits identity headers under SSO. PIN, password, and
   shareable links authenticate but carry no identity, so restricted sites
   behind Pangolin require SSO.
@@ -290,6 +294,78 @@ Notes:
   entrypoint, or strip and re-inject identity headers only after auth.
 - Email is the principal: a user keeps the same site ownership whether they
   arrive via the proxy or the mesh, as long as the email matches.
+
+### Delegated Login (embedding Spot in another app)
+
+Use this when another application owns sign-in and hosts Spot sites for its
+users. That application calls the Spot API with forward-auth headers and a
+shared secret, and signs browsers in to restricted sites:
+
+```env
+SPOT_LOGIN_URL=https://app.example.com/sites/login
+SPOT_LOGIN_TOKEN_SECRET=<32+ random chars>
+SPOT_SESSION_SECRET=<32+ random chars, different>
+SPOT_SESSION_TTL=12h
+SPOT_FRAME_ANCESTORS="'self' https://app.example.com"
+SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
+```
+
+`docker-compose.yml` passes these through. Its default
+`SPOT_DEV_IDENTITY_EMAIL=dev@spot.local` cannot be combined with delegated
+login, so clear it in a compose override (`SPOT_DEV_IDENTITY_EMAIL: ""`), as
+the mesh and homelab overlays do.
+
+1. A browser opens a restricted site with no identity. Spot sets a
+   short-lived login state cookie on that host and redirects it to
+   `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other requests get
+   `401`.
+2. The login app authenticates the browser and redirects it to
+   `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`; `return_to`
+   may be the path or the site URL from step 1 unchanged. The token is
+   a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
+   (`spot-login`), `host` (the exact site host, lowercase, with any non-default
+   port), `state` (the `state` query value, unchanged), `email`, optional
+   `name` and `groups`, `iat`, `exp` (at most 300 s after `iat`), and a
+   single-use `jti`. The callback accepts the token only in the browser that
+   holds the matching state, so a token minted for one account cannot sign
+   someone else's browser in.
+3. Spot sets a signed session cookie for that host only and continues to
+   `/api/auth/check`, which shows an "open in a new tab" page instead of
+   looping when the browser dropped the cookie (for example in a frame).
+   `/api/auth/logout`, opened as a page from the site itself (the browser
+   must send `Sec-Fetch-Site: same-origin` or `none`), clears the cookie;
+   other sites cannot sign a viewer out.
+
+Open sites serve their pages without sign-in, so a page that needs the SDK
+APIs starts the flow itself by navigating to
+`/api/auth/login?return_to=<path>` on its own host; step 2 onward is the same.
+
+Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
+site could plant cookies, so Spot shows a "needs a secure connection" page and
+ignores session cookies. Behind a TLS proxy, make sure Spot sees
+`X-Forwarded-Proto: https` from a trusted proxy. The cookies are
+`__Host-spot_session` and `__Host-spot_login_state`, `SameSite=None; Secure;
+Partitioned` and host-only; the `__Host-` prefix, which Chrome and Firefox
+accept on `http://*.localhost` too (Safari needs HTTPS), stops a sibling site
+from setting them. A request that
+carries the session cookie more than once is treated as signed out
+(`/api/auth/check` answers `400`). The session keeps the `name` and `groups`
+from the login token for `SPOT_SESSION_TTL`, so group changes apply at the next
+sign-in; allowlist changes apply immediately. A realtime connection opened with
+a session closes when the session expires. Sessions are signed cookies with no
+server-side store: sign-out clears the browser's copy, and a stolen cookie
+stays valid until `SPOT_SESSION_TTL` runs out, so keep the TTL short and
+revoke access through the allowlist when needed. In this
+mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
+`/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
+`shared-*` collections and rooms are disabled because sites belong to
+different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
+site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
+embedding app. `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
+for the apex and active site names; it answers only requests addressed to the
+service's internal name with no forwarded headers (as Caddy's `ask` URL
+does) and returns `404` for anything that came through a proxy or names a Spot
+host, so outsiders cannot list site names.
 
 ### Single-User Homelab
 
@@ -501,6 +577,15 @@ broken policy fails closed. `allow` and `maintainers` are independent: a
 maintainer can deploy, delete, and manage Cloudflare for an active site but
 cannot visit a restricted site unless `allow` also matches them.
 
+A redeploy that ships no `_access.json` keeps the stored policy, including one
+set through `PUT /api/sites/{name}/access`. To open a site, deploy an
+`_access.json` without `allow`, change it through the API, or deploy with the
+form field `preserve_access=false` (`spot deploy --replace-access`, or Clear
+in the web deployer), which removes the stored policy. The field accepts only
+`true`/`false` (or `1`/`0`, `yes`/`no`, `on`/`off`); anything else is refused
+with `400`. A stored policy that no longer parses also blocks a plain
+redeploy; repair it the same ways.
+
 The first deploy claims a site name for an immutable original owner. Later
 deploys, active-site deletes, Cloudflare operations, and owner-mode AI or Slack
 may be performed by that owner, a platform admin from `SPOT_ADMIN_EMAILS` or
@@ -558,6 +643,16 @@ Important APIs:
 - `GET /api/sites/manageable` lists sites the caller can manage and includes
   `management_role`, immutable owner attribution, and lifecycle state.
 - `GET /api/sites/public` lists unrestricted sites.
+- `GET /api/sites/visible` lists every active site the caller may view (open,
+  allowed, or managed) with `restricted`, and with `allow` for sites the
+  caller owns or manages. `owner_email` appears on the caller's own sites and
+  on restricted sites listed for them; `GET /api/sites/public` includes it
+  only for the caller's own sites. `mine` and `manageable` entries also carry `allow`
+  (`null` when the site has no `allow` field).
+- `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
+  redeploy. The owner, an admin, or a maintainer may call it, with the same
+  rights as a deploy, including changing `maintainers`. A concurrent content
+  change returns `409`.
 - `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
   publication status.
 - `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site

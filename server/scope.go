@@ -91,3 +91,20 @@ func roomScopeFor(site, room string) (string, error) {
 	}
 	return site, nil
 }
+
+// collectionScope and roomScope apply the deployment's sharing rule on top of
+// scopeFor and roomScopeFor. In delegated login mode sites belong to different
+// users, so the global shared-* namespace is disabled.
+func (s *Server) collectionScope(site, collection string) (string, error) {
+	if s.login != nil && strings.HasPrefix(collection, "shared-") {
+		return "", fmt.Errorf("shared-* collections are disabled on this Spot deployment; use a site-private collection name")
+	}
+	return scopeFor(site, collection)
+}
+
+func (s *Server) roomScope(site, room string) (string, error) {
+	if s.login != nil && strings.HasPrefix(room, "shared-") {
+		return "", fmt.Errorf("shared-* rooms are disabled on this Spot deployment; use a site-private room name")
+	}
+	return roomScopeFor(site, room)
+}

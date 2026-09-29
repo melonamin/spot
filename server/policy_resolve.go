@@ -56,7 +56,11 @@ func siteObjectNotFound(err error) bool {
 }
 
 func (s *Server) policySummaryForSite(ctx context.Context, site string) (bool, int, bool) {
-	policy, err := s.policyForSite(ctx, site)
+	return policySummary(s.policyForSite(ctx, site))
+}
+
+// policySummary is policySummaryForSite for an already resolved policy.
+func policySummary(policy *AccessPolicy, err error) (bool, int, bool) {
 	if err != nil {
 		return true, 0, false
 	}

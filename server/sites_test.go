@@ -487,11 +487,12 @@ func TestPublicSitesFiltersRestrictedAndMarksYours(t *testing.T) {
 		t.Fatalf("sites = %+v, want locked and broken filtered out", body.Sites)
 	}
 	mine, theirs := body.Sites[0], body.Sites[1]
-	if mine.Name != "mine" || !mine.Yours || mine.Owner != "Alice" {
+	if mine.Name != "mine" || !mine.Yours || mine.Owner != "Alice" || mine.OwnerEmail != "alice@example.com" {
 		t.Errorf("own site = %+v", mine)
 	}
-	// No owner name on record: the gallery falls back to the email.
-	if theirs.Name != "theirs" || theirs.Yours || theirs.Owner != "bob@example.com" {
+	// No owner name on record: the gallery falls back to the email. The
+	// owner_email field is only for the viewer's own sites.
+	if theirs.Name != "theirs" || theirs.Yours || theirs.Owner != "bob@example.com" || theirs.OwnerEmail != "" {
 		t.Errorf("other site = %+v", theirs)
 	}
 }

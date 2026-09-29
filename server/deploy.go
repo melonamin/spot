@@ -165,7 +165,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var site string
 	var files []deployFile
-	preserveAccess := false
+	// An update that ships no _access.json keeps the stored policy, which may
+	// have been set through PUT /api/sites/{name}/access rather than a bundle.
+	// Only an explicit preserve_access=false lets the deploy remove it.
+	preserveAccess := true
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -189,7 +192,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				deployReadError(w, err)
 				return
 			}
-			preserveAccess = parseDeployBool(string(raw))
+			var ok bool
+			if preserveAccess, ok = parseDeployBool(string(raw)); !ok {
+				httpError(w, http.StatusBadRequest, "preserve_access must be true or false")
+				return
+			}
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -305,13 +312,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
-		files, err = s.preserveExistingAccessPolicy(r.Context(), site, files)
+		preserved, err := s.preserveExistingAccessPolicy(r.Context(), site, files)
 		if err != nil {
 			cancelAuthorization()
 			log.Printf("deploy %s: preserve access: %v", site, err)
+			// A read-only failure: audit it without marking content ambiguous.
+			s.recordDeployFailureAs(r, site, actor, "deploy", authz.AuthorizedAs, files, "could not preserve existing "+accessFileName)
 			httpError(w, http.StatusInternalServerError, "could not preserve existing "+accessFileName)
 			return
 		}
+		files = preserved
 		if len(files) > maxDeployFiles {
 			cancelAuthorization()
 			httpError(w, http.StatusBadRequest,
@@ -357,6 +367,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.commitPolicyObject(r.Context(), site, authz.ContentGeneration, data, false); err != nil {
+			if errors.Is(err, errPolicyTransitionUnresolved) {
+				s.disconnectSiteRealtime(site)
+			}
 			cancelAuthorization()
 			s.recordDeployFailureAs(r, site, actor, authz.Action, authz.AuthorizedAs, files, "could not store fail-closed policy")
 			httpError(w, http.StatusInternalServerError, "could not store fail-closed policy")
@@ -595,12 +608,16 @@ func conflictingStalePaths(existing []string, files []deployFile, keep map[strin
 	return out
 }
 
-func parseDeployBool(raw string) bool {
+// parseDeployBool reads a boolean form field strictly: false removes a
+// stored _access.json, so a typo or an empty value must not mean false.
+func parseDeployBool(raw string) (value, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
-		return true
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
 	default:
-		return false
+		return false, false
 	}
 }
 
@@ -707,6 +724,8 @@ func preservePolicyOnFailure(current *AccessPolicy, currentErr error, next *Acce
 	return policyBroadens(current, next) || maintainersChanged(current, next)
 }
 
+// maintainersChanged compares the maintainer lists as sets of normalized
+// entries: order, case, duplicates and blank entries grant no authority.
 func maintainersChanged(current, next *AccessPolicy) bool {
 	var currentEntries, nextEntries []string
 	if current != nil {
@@ -715,15 +734,26 @@ func maintainersChanged(current, next *AccessPolicy) bool {
 	if next != nil {
 		nextEntries = next.Maintainers
 	}
-	if len(currentEntries) != len(nextEntries) {
+	currentSet, nextSet := maintainerSet(currentEntries), maintainerSet(nextEntries)
+	if len(currentSet) != len(nextSet) {
 		return true
 	}
-	for i := range currentEntries {
-		if !strings.EqualFold(strings.TrimSpace(currentEntries[i]), strings.TrimSpace(nextEntries[i])) {
+	for entry := range currentSet {
+		if _, ok := nextSet[entry]; !ok {
 			return true
 		}
 	}
 	return false
+}
+
+func maintainerSet(entries []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry = strings.ToLower(strings.TrimSpace(entry)); entry != "" {
+			set[entry] = struct{}{}
+		}
+	}
+	return set
 }
 
 func policyNarrowsAccess(current, next *AccessPolicy, hasNext bool) bool {

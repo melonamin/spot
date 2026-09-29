@@ -205,7 +205,9 @@ Deploy and upload storage are intentionally separate:
 
 - Deployed site files are the immutable-ish contents of a site deployment.
 - Uploads are user-generated files addressed by random IDs under
-  `/api/files/<site>/<id>/<name>`.
+  `/api/files/<site>/<id>/<name>`. A site host serves only its own site's
+  uploads (another site's path is `404`), because the caller's identity there
+  belongs to that host; the apex serves any site's uploads.
 
 Deleting a site purges deployed files, uploads, and private document scope. An
 owner or platform admin also frees the registry row. A maintainer delete keeps
@@ -264,7 +266,9 @@ Deploy invariants:
   hashes; ambiguous storage outcomes fence site traffic and maintainer-derived
   management until reconciliation or owner/admin repair.
 - Sync semantics are used: uploaded files replace the site, and stale files are
-  removed.
+  removed. The exception is `_access.json`: an update that omits it keeps the
+  stored policy (which may come from the access API) unless the deploy sends
+  `preserve_access=false`.
 - Deploy audit rows are recorded for success, failure, and denied attempts.
   They include the authentication method and, for publishing keys, the key ID
   and human-readable publisher name. Public gallery responses omit this data.
@@ -381,8 +385,10 @@ unlocks the site.
 
 ## Identity Model
 
-Spot does not manage browser login sessions. Authentication is ambient network
-identity from a mesh, or a configured single-user/static identity.
+Authentication is ambient network identity from a mesh, forward-auth headers
+from a trusted proxy, or a configured single-user/static identity. The optional
+delegated login mode (`server/login.go`) adds per-site-host browser sessions
+that an external application issues through a short HS256 login token.
 
 Core type:
 
@@ -397,6 +403,9 @@ Resolvers:
   identities.
 - `StaticResolver`: returns one configured identity for local dev or
   single-user installs.
+
+`resolvePeer` checks forward auth first, then the delegated-login session
+cookie (site hosts only), then the mesh resolver.
 
 Handlers call `resolveIdentity` using `clientIP`. If a trusted proxy is in
 front, `clientIP` may use trusted forwarded headers; otherwise it uses the

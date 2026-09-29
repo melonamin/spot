@@ -62,6 +62,12 @@ type config struct {
 	SingleUserEmail      string
 	SingleUserName       string
 	SingleUserGroups     []string
+	LoginURL             string
+	LoginTokenSecret     string
+	SessionSecret        string
+	SessionTTL           string
+	FrameAncestors       string
+	ApexRedirectURL      string
 	Cloudflare           cloudflareConfig
 }
 
@@ -136,6 +142,12 @@ func defaultConfigFromEnv() config {
 		SingleUserEmail:   envOr("SPOT_SINGLE_USER_EMAIL", "owner@spot.local"),
 		SingleUserName:    envOr("SPOT_SINGLE_USER_NAME", "Spot Owner"),
 		SingleUserGroups:  splitList(os.Getenv("SPOT_SINGLE_USER_GROUPS")),
+		LoginURL:          strings.TrimSpace(os.Getenv("SPOT_LOGIN_URL")),
+		LoginTokenSecret:  os.Getenv("SPOT_LOGIN_TOKEN_SECRET"),
+		SessionSecret:     os.Getenv("SPOT_SESSION_SECRET"),
+		SessionTTL:        envOr("SPOT_SESSION_TTL", "12h"),
+		FrameAncestors:    strings.Join(strings.Fields(os.Getenv("SPOT_FRAME_ANCESTORS")), " "),
+		ApexRedirectURL:   strings.TrimSpace(os.Getenv("SPOT_APEX_REDIRECT_URL")),
 		Cloudflare:        loadCloudflareConfigFromEnv(),
 	}
 }
@@ -156,10 +168,55 @@ func finalizeConfig(cfg *config) error {
 	if cfg.SlackAccess != slackAccessOwners && cfg.SlackAccess != slackAccessVisitors {
 		return fmt.Errorf("SPOT_SLACK_ACCESS must be %q or %q", slackAccessOwners, slackAccessVisitors)
 	}
+	if err := validateDelegatedLogin(*cfg); err != nil {
+		return err
+	}
+	if cfg.ApexRedirectURL != "" {
+		if _, err := parseAbsoluteURL(cfg.ApexRedirectURL); err != nil {
+			return fmt.Errorf("SPOT_APEX_REDIRECT_URL: %w", err)
+		}
+	}
 	if err := validateDeploymentSafety(*cfg); err != nil {
 		return err
 	}
 	return nil
+}
+
+func delegatedLoginConfigured(cfg config) bool {
+	return cfg.LoginURL != ""
+}
+
+func validateDelegatedLogin(cfg config) error {
+	if !delegatedLoginConfigured(cfg) {
+		if cfg.LoginTokenSecret != "" || cfg.SessionSecret != "" {
+			return errors.New("SPOT_LOGIN_TOKEN_SECRET and SPOT_SESSION_SECRET require SPOT_LOGIN_URL")
+		}
+		return nil
+	}
+	if _, err := parseAbsoluteURL(cfg.LoginURL); err != nil {
+		return fmt.Errorf("SPOT_LOGIN_URL: %w", err)
+	}
+	if len(cfg.LoginTokenSecret) < minLoginSecretLen {
+		return fmt.Errorf("SPOT_LOGIN_TOKEN_SECRET must be at least %d characters", minLoginSecretLen)
+	}
+	if len(cfg.SessionSecret) < minLoginSecretLen {
+		return fmt.Errorf("SPOT_SESSION_SECRET must be at least %d characters", minLoginSecretLen)
+	}
+	if cfg.LoginTokenSecret == cfg.SessionSecret {
+		return errors.New("SPOT_LOGIN_TOKEN_SECRET and SPOT_SESSION_SECRET must differ")
+	}
+	if _, err := parseSessionTTL(cfg.SessionTTL); err != nil {
+		return err
+	}
+	return nil
+}
+
+func parseSessionTTL(raw string) (time.Duration, error) {
+	ttl, err := time.ParseDuration(strings.TrimSpace(raw))
+	if err != nil || ttl <= 0 {
+		return 0, fmt.Errorf("SPOT_SESSION_TTL must be a positive Go duration such as 12h, got %q", raw)
+	}
+	return ttl, nil
 }
 
 func applyCLIFlags(cfg *config, args []string) error {
@@ -211,6 +268,7 @@ func validateDeploymentSafety(cfg config) error {
 	netbird := netbirdConfigured(cfg)
 	tailscale := tailscaleConfigured(cfg)
 	forwardAuth := cfg.ForwardAuth
+	delegatedLogin := delegatedLoginConfigured(cfg)
 	if cfg.ForwardAuthSecret != "" {
 		if !forwardAuth {
 			return errors.New("SPOT_FORWARD_AUTH_SECRET requires SPOT_FORWARD_AUTH=1")
@@ -229,17 +287,20 @@ func validateDeploymentSafety(cfg config) error {
 		return errors.New("Tailscale OAuth requires TAILSCALE_OAUTH_CLIENT_ID and TAILSCALE_OAUTH_CLIENT_SECRET")
 	}
 	if mode == authModeSingleUser {
-		if netbird || tailscale || forwardAuth {
-			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_*, TAILSCALE_*, or SPOT_FORWARD_AUTH")
+		if netbird || tailscale || forwardAuth || delegatedLogin {
+			return errors.New("SPOT_AUTH_MODE=single-user cannot be combined with NETBIRD_*, TAILSCALE_*, SPOT_FORWARD_AUTH, or SPOT_LOGIN_URL")
 		}
 		if strings.TrimSpace(cfg.SingleUserEmail) == "" {
 			return errors.New("SPOT_SINGLE_USER_EMAIL is required when SPOT_AUTH_MODE=single-user")
 		}
 		return nil
 	}
-	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale || forwardAuth
+	shared := !localSpotDomain(cfg.SpotDomain) || netbird || tailscale || forwardAuth || delegatedLogin
 	if !shared {
 		return nil
+	}
+	if cfg.DevIdentityEmail != "" && delegatedLogin {
+		return errors.New("SPOT_DEV_IDENTITY_EMAIL cannot be combined with SPOT_LOGIN_URL: it would sign in every visitor")
 	}
 	if cfg.DevIdentityEmail != "" && !localSpotDomain(cfg.SpotDomain) && !forwardAuth {
 		return errors.New("SPOT_DEV_IDENTITY_EMAIL is only allowed for .localhost deployments")
@@ -247,8 +308,8 @@ func validateDeploymentSafety(cfg config) error {
 	if netbird && (cfg.NetbirdAPIURL == "" || cfg.NetbirdAPIToken == "") {
 		return errors.New("NetBird deployments require NETBIRD_API_URL and NETBIRD_API_TOKEN")
 	}
-	if !netbird && !tailscale && !forwardAuth {
-		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, or SPOT_FORWARD_AUTH")
+	if !netbird && !tailscale && !forwardAuth && !delegatedLogin {
+		return errors.New("shared deployments require NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or SPOT_LOGIN_URL")
 	}
 	if storageMode == storageModeS3 && cfg.S3Endpoint != "" && (cfg.S3AccessKey == "rustfsadmin" || cfg.S3SecretKey == "rustfsadmin") {
 		return errors.New("shared deployments must replace the default RustFS credentials")
@@ -454,6 +515,29 @@ func main() {
 		log.Printf("identity: forward auth trusting %s/%s/%s/%s via %s",
 			forwardAuth.UserHeader, forwardAuth.EmailHeader, forwardAuth.NameHeader, forwardAuth.GroupsHeader, proof)
 	}
+	var login *DelegatedLogin
+	if delegatedLoginConfigured(cfg) {
+		ttl, err := parseSessionTTL(cfg.SessionTTL)
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		login, err = NewDelegatedLogin(cfg.LoginURL, cfg.LoginTokenSecret, cfg.SessionSecret, ttl)
+		if err != nil {
+			log.Fatalf("config: %v", err)
+		}
+		log.Printf("identity: delegated login via %s (session TTL %s); shared-* collections and rooms are disabled", cfg.LoginURL, ttl)
+		// Sessions exist only on site hosts; the apex platform APIs need
+		// another identity source, or publishing keys for deploys.
+		if resolver == nil && forwardAuth == nil {
+			log.Printf("identity: warning: delegated login is the only identity source, so only publishing keys can deploy; set SPOT_FORWARD_AUTH or a mesh provider for the platform APIs")
+		}
+	}
+	if cfg.FrameAncestors != "" {
+		log.Printf("sites: frame-ancestors %s", cfg.FrameAncestors)
+	}
+	if cfg.ApexRedirectURL != "" {
+		log.Printf("apex: platform pages redirect to %s", cfg.ApexRedirectURL)
+	}
 	var adminPolicy *AccessPolicy
 	if len(cfg.AdminAllow) > 0 {
 		adminPolicy = &AccessPolicy{Allow: cfg.AdminAllow}
@@ -482,6 +566,9 @@ func main() {
 		store:            store,
 		resolver:         resolver,
 		forwardAuth:      forwardAuth,
+		login:            login,
+		frameAncestors:   cfg.FrameAncestors,
+		apexRedirectURL:  cfg.ApexRedirectURL,
 		policies:         policies,
 		hub:              hub,
 		files:            files,

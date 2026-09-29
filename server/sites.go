@@ -48,8 +48,10 @@ type ownedSiteJSON struct {
 	TotalBytes      int64           `json:"total_bytes"`
 	Restricted      bool            `json:"restricted"`
 	AllowCount      int             `json:"allow_count"`
+	Allow           []string        `json:"allow"`
 	Cloudflare      any             `json:"cloudflare,omitempty"`
 	Owner           string          `json:"owner,omitempty"`
+	OwnerEmail      string          `json:"owner_email,omitempty"`
 	ManagementRole  string          `json:"management_role,omitempty"`
 	State           SiteState       `json:"state,omitempty"`
 	LastDeploy      *lastDeployJSON `json:"last_deploy,omitempty"`
@@ -94,11 +96,13 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			Description: site.Description, Tags: cloneSiteTags(site.Tags),
 			CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			FileCount: site.FileCount, TotalBytes: site.TotalBytes,
-			Owner: ownerDisplay(site.SiteRecord), ManagementRole: string(site.ManagementRole), State: site.State,
+			Owner: ownerDisplay(site.SiteRecord), OwnerEmail: site.OwnerEmail, ManagementRole: string(site.ManagementRole), State: site.State,
 			LastDeploy: lastDeployForSite(site.OwnedSite),
 		}
 		if site.State == SiteStateActive {
-			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = s.policySummaryForSite(r.Context(), site.Name)
+			policy, policyErr := s.policyForSite(r.Context(), site.Name)
+			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = policySummary(policy, policyErr)
+			entry.Allow = allowListFor(policy, policyErr)
 			contentHash := site.ContentHash
 			if site.ContentHashUncertain {
 				contentHash = ""
@@ -118,6 +122,7 @@ type publicSiteJSON struct {
 	Tags            []string  `json:"tags"`
 	DownloadAllowed bool      `json:"download_allowed"`
 	Owner           string    `json:"owner"`
+	OwnerEmail      string    `json:"owner_email,omitempty"`
 	Yours           bool      `json:"yours"`
 	Preview         string    `json:"preview,omitempty"`
 	CreatedAt       time.Time `json:"created_at"`
@@ -211,13 +216,15 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ownedSiteJSON, 0, len(owned))
 	for _, site := range owned {
-		restricted, allowCount, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
+		policy, policyErr := s.policyForSite(r.Context(), site.Name)
+		restricted, allowCount, downloadAllowed := policySummary(policy, policyErr)
 		contentHash := site.ContentHash
 		if site.ContentHashUncertain {
 			contentHash = ""
 		}
 		out = append(out, ownedSiteJSON{
 			Name:            site.Name,
+			OwnerEmail:      site.OwnerEmail,
 			URL:             s.siteURL(r, site.Name),
 			Title:           site.Title,
 			Description:     site.Description,
@@ -229,6 +236,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			TotalBytes:      site.TotalBytes,
 			Restricted:      restricted,
 			AllowCount:      allowCount,
+			Allow:           allowListFor(policy, policyErr),
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
@@ -289,6 +297,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 		if s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
+		yours := site.OwnedBy(viewer)
 		out = append(out, publicSiteJSON{
 			Name:            site.Name,
 			URL:             s.siteURL(r, site.Name),
@@ -297,7 +306,8 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			Tags:            cloneSiteTags(site.Tags),
 			DownloadAllowed: downloadAllowed,
 			Owner:           ownerDisplay(site),
-			Yours:           site.OwnedBy(viewer),
+			OwnerEmail:      ownerEmailFor(site, yours),
+			Yours:           yours,
 			Preview:         preview,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
@@ -743,6 +753,17 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerDisplay is the name the gallery shows for a site's owner.
+// ownerEmailFor returns the owner's email for a listing entry only when the
+// viewer has a relationship with the site: it is theirs, they manage it, or
+// its owner shared it with them. Unrelated viewers of an open site get the
+// display name alone.
+func ownerEmailFor(site SiteRecord, related bool) string {
+	if !related {
+		return ""
+	}
+	return site.OwnerEmail
+}
+
 func ownerDisplay(site SiteRecord) string {
 	if site.OwnerName != "" {
 		return site.OwnerName
