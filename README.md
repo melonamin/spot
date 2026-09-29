@@ -345,13 +345,17 @@ site could plant cookies, so Spot shows a "needs a secure connection" page and
 ignores session cookies. Behind a TLS proxy, make sure Spot sees
 `X-Forwarded-Proto: https` from a trusted proxy. The cookies are
 `__Host-spot_session` and `__Host-spot_login_state`, `SameSite=None; Secure;
-Partitioned` and host-only; the `__Host-` prefix, which browsers accept on
-`http://*.localhost` too, stops a sibling site from setting them. A request that
+Partitioned` and host-only; the `__Host-` prefix, which Chrome and Firefox
+accept on `http://*.localhost` too (Safari needs HTTPS), stops a sibling site
+from setting them. A request that
 carries the session cookie more than once is treated as signed out
 (`/api/auth/check` answers `400`). The session keeps the `name` and `groups`
 from the login token for `SPOT_SESSION_TTL`, so group changes apply at the next
 sign-in; allowlist changes apply immediately. A realtime connection opened with
-a session closes when the session expires. In this
+a session closes when the session expires. Sessions are signed cookies with no
+server-side store: sign-out clears the browser's copy, and a stolen cookie
+stays valid until `SPOT_SESSION_TTL` runs out, so keep the TTL short and
+revoke access through the allowlist when needed. In this
 mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
 `shared-*` collections and rooms are disabled because sites belong to
