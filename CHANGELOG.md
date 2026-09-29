@@ -7,16 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-09-29
+
 ### Added
 
-- Added delegated login (`SPOT_LOGIN_URL`) so an embedding application can sign viewers in to restricted sites with short single-use tokens and per-site session cookies, plus `SPOT_FRAME_ANCESTORS`, `SPOT_APEX_REDIRECT_URL`, and a Caddy on-demand TLS check at `/api/tls/ask`.
-- Added `PUT /api/sites/{name}/access` to change a site's access policy without redeploying, `GET /api/sites/visible`, and `allow` in site listings.
+- Added delegated login (`SPOT_LOGIN_URL`) so an embedding application can sign viewers in to restricted sites with short single-use tokens and per-site session cookies, plus `SPOT_FRAME_ANCESTORS`, `SPOT_APEX_REDIRECT_URL`, and a Caddy on-demand TLS check at `/api/tls/ask`. (#22)
+- Added `PUT /api/sites/{name}/access` to change a site's access policy without redeploying, `GET /api/sites/visible`, and `allow` in site listings. (#22)
 
 ### Changed
 
 - A site update that ships no `_access.json` now keeps the stored access policy instead of removing it; send `preserve_access=false` (`spot deploy --replace-access`, or Clear in the web deployer) to remove it.
 - A site host serves only its own site's uploads (`/api/files/<other-site>/…` answers `404`) in every identity mode, because the visitor's identity there would otherwise let one site read another's restricted uploads. The apex still serves any site's uploads.
 - Delegated login binds each sign-in to the browser that started it: the login app must copy the redirect's `state` into the token's `state` claim. Open-site pages start a sign-in at `/api/auth/login`, sign-out requires a page load, and delegated login requires HTTPS or `*.localhost` and always uses `__Host-` cookies.
+- Formatted storage usage on the stats page with human-readable units.
+
+### Fixed
+
+- Kept the homepage GitHub link aligned with the other header actions. (#21)
 
 ## [0.5.0] - 2026-08-28
 
@@ -84,7 +91,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/melonamin/spot/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/melonamin/spot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/melonamin/spot/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/melonamin/spot/compare/v0.2.0...v0.3.0

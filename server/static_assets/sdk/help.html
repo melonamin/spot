@@ -865,18 +865,23 @@
             </div>
 
             <article class="release">
-              <p class="mini-label release-date"><span class="release-version">v0.5.0</span><time datetime="2026-08-28">August 28, 2026</time></p>
-              <h3>Automation arrived. Reports grew up.</h3>
-              <p class="release-summary">Spot is easier to put in a delivery pipeline and much better at presenting the result—with scoped repository credentials, richer visual reports, and dependable previews.</p>
+              <p class="mini-label release-date"><span class="release-version">v0.6.0</span><time datetime="2026-09-29">September 29, 2026</time></p>
+              <h3>Private sites fit into your app.</h3>
+              <p class="release-summary">An embedding application can now sign viewers in to restricted spots, control which pages can frame them, and update site access without redeploying.</p>
               <ul>
-                <li><strong>Deploy safely from CI</strong> with named publishing keys limited to one repository-friendly site prefix.</li>
-                <li><strong>Build reports that explain themselves</strong> with upgraded Mermaid, code, terminal, diff, image, HTML, and agent-trace blocks.</li>
-                <li><strong>Trust the gallery preview</strong> now that screenshot capture waits for deferred rendering, rejects incomplete images, and cannot hang forever.</li>
-                <li><strong>See who delivered the update</strong> through clearer peer names and publishing-key attribution in <a href="/spots">My spots</a>.</li>
+                <li><strong>Sign viewers in from your application</strong> with short-lived, single-use delegated login tokens and per-site sessions.</li>
+                <li><strong>Change who can visit</strong> through the site access API without uploading the site again.</li>
+                <li><strong>Keep access rules across updates</strong> when a deploy omits <code>_access.json</code>; clear them explicitly when needed.</li>
+                <li><strong>Embed restricted sites safely</strong> with configurable frame ancestors and site-scoped upload access.</li>
               </ul>
-              <a class="release-source" href="https://github.com/melonamin/spot/releases/tag/v0.5.0">Read the full v0.5.0 release →</a>
+              <a class="release-source" href="https://github.com/melonamin/spot/releases/tag/v0.6.0">Read the full v0.6.0 release →</a>
             </article>
             <div class="release-history" aria-label="Earlier releases">
+              <article class="older-release">
+                <div class="older-release-meta"><span>v0.5.0</span><time datetime="2026-08-28">August 28, 2026</time></div>
+                <div><h3>Automation arrived. Reports grew up.</h3><p>Spot added scoped repository publishing keys, richer visual reports, reliable previews, and clearer publisher attribution.</p></div>
+                <a href="https://github.com/melonamin/spot/releases/tag/v0.5.0">Full release →</a>
+              </article>
               <article class="older-release">
                 <div class="older-release-meta"><span>v0.4.0</span><time datetime="2026-07-18">July 18, 2026</time></div>
                 <div><h3>More ways to share. Less to babysit.</h3><p>Spot added internet publishing, teammate controls, visual reports, activity stats, and a field guide for finding the right workflow.</p></div>
