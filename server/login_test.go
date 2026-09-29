@@ -608,6 +608,13 @@ func TestTLSAsk(t *testing.T) {
 		}
 	}
 
+	// Denied: a proxied request naming the internal host, as a client can by
+	// pairing a valid site SNI with Host: sites:8080.
+	proxied := siteRequest(http.MethodGet, "sites:8080", "/api/tls/ask?domain=live.sites.localhost")
+	if rec := st.do(proxied); rec.Code != http.StatusNotFound {
+		t.Fatalf("tls ask with forwarded internal host = %d, want 404", rec.Code)
+	}
+
 	// Not rate-limited: Caddy asks from one address for every unknown name.
 	st.srv.dbLimit = NewRateLimiter(1, 1)
 	st.handler = st.srv.routes()

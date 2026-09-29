@@ -355,8 +355,9 @@ different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
 site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
 embedding app. `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
 for the apex and active site names; it answers only requests addressed to the
-service's internal name (as Caddy's `ask` URL does) and returns `404` through
-any Spot host, so outsiders cannot list site names.
+service's internal name with no forwarded headers (as Caddy's `ask` URL
+does) and returns `404` for anything that came through a proxy or names a Spot
+host, so outsiders cannot list site names.
 
 ### Single-User Homelab
 
