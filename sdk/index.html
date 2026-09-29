@@ -1035,6 +1035,9 @@
       let accessPolicyFields = {};
       let accessAllowPresent = false;
       let accessMaintainersPresent = false;
+      // A redeploy without _access.json keeps the site's stored policy, so
+      // Clear must ask the server to drop it (preserve_access=false).
+      let accessCleared = false;
       let accessFileWarning = ''; // set when an uploaded _access.json can't be read
       let launching = false;
 
@@ -1090,6 +1093,7 @@
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
+        accessCleared = false;
         accessSearch.value = '';
         directoryOptions = [];
         accessFileWarning = '';
@@ -1324,7 +1328,9 @@
           accessNote.textContent = 'No one can open it on the mesh. Clear to remove the restriction.';
         } else if (count === 0) {
           accessStatus.textContent = 'Mesh · everyone';
-          accessNote.textContent = accessFileWarning || 'No _access.json will be deployed.';
+          accessNote.textContent = accessFileWarning || (accessCleared
+            ? "Removes the site's stored _access.json, so everyone on the mesh can open it."
+            : "Keeps a redeployed site's current access; new sites are open to everyone.");
         } else if (count === 1) {
           accessStatus.textContent = 'Mesh · 1 invited';
           accessNote.textContent = 'Only ' + selectedAccess[0].label + ' can open it on the mesh. Deploys _access.json.';
@@ -1392,6 +1398,7 @@
       });
       accessClear.addEventListener('click', () => {
         accessFileWarning = '';
+        accessCleared = true;
         if (accessMode === 'maintainers') {
           selectedMaintainers = [];
           accessMaintainersPresent = false;
@@ -1465,6 +1472,7 @@
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
+        accessCleared = false;
         accessSearch.value = '';
         clearError();
         show(idle);
@@ -1569,6 +1577,7 @@
         }
         const policy = accessPolicyFile();
         if (policy) form.append('files', policy, '_access.json');
+        else if (accessCleared) form.append('preserve_access', 'false');
 
         launching = true;
         launchBtn.disabled = true;
