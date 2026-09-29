@@ -166,7 +166,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// An update that ships no _access.json keeps the stored policy, which may
 	// have been set through PUT /api/sites/{name}/access rather than a bundle.
 	// Only an explicit preserve_access=false lets the deploy remove it.
+	// preserve_access=require also refuses a deploy that has no active site to
+	// keep a policy from, so a caller never publishes a new site without one.
 	preserveAccess := true
+	requireActiveAccess := false
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -190,11 +193,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				deployReadError(w, err)
 				return
 			}
+			if strings.EqualFold(strings.TrimSpace(string(raw)), "require") {
+				preserveAccess, requireActiveAccess = true, true
+				continue
+			}
 			var ok bool
 			if preserveAccess, ok = parseDeployBool(string(raw)); !ok {
-				httpError(w, http.StatusBadRequest, "preserve_access must be true or false")
+				httpError(w, http.StatusBadRequest, "preserve_access must be true, false or require")
 				return
 			}
+			requireActiveAccess = false
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -301,6 +309,17 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if err := canceler.CancelDeployAuthorization(ctx, site, authz); err != nil {
 			log.Printf("deploy %s: cancel authorization: %v", site, err)
 		}
+	}
+	if requireActiveAccess && (authz.Action != "update" || authz.PreviousState != SiteStateActive) {
+		cancelAuthorization()
+		httpError(w, http.StatusConflict,
+			"site "+site+" has no active access policy to keep; deploy it with an explicit "+accessFileName)
+		return
+	}
+	if requireActiveAccess && hasIncomingPolicy {
+		cancelAuthorization()
+		httpError(w, http.StatusBadRequest, "preserve_access=require keeps the stored "+accessFileName+"; do not send one")
+		return
 	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
 		preserved, err := s.preserveExistingAccessPolicy(r.Context(), site, files)

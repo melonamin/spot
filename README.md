@@ -582,9 +582,11 @@ A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an
 `_access.json` without `allow`, change it through the API, or deploy with the
 form field `preserve_access=false` (`spot deploy --replace-access`, or Clear
-in the web deployer), which removes the stored policy. The field accepts only
-`true`/`false` (or `1`/`0`, `yes`/`no`, `on`/`off`); anything else is refused
-with `400`. A stored policy that no longer parses also blocks a plain
+in the web deployer), which removes the stored policy. The field accepts
+`true`/`false` (or `1`/`0`, `yes`/`no`, `on`/`off`) and `require`, which keeps
+the stored policy like `true` but answers `409` when there is no active site
+to keep it from, so a client that must never publish without a policy can
+send its own on a first deploy; anything else is refused with `400`. A stored policy that no longer parses also blocks a plain
 redeploy; repair it the same ways.
 
 The first deploy claims a site name for an immutable original owner. Later

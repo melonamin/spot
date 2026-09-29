@@ -603,6 +603,53 @@ func TestDeployPreserveAccessKeepsExistingPolicy(t *testing.T) {
 	}
 }
 
+func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		action        string
+		previousState SiteState
+		files         [][2]string
+		want          int
+	}{
+		{"active update keeps the policy", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}}, http.StatusOK},
+		{"a new site has none to keep", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}}, http.StatusConflict},
+		{"a recovering site has none to keep", "update", SiteStateProvisioning, [][2]string{{"index.html", "<h1>re</h1>"}}, http.StatusConflict},
+		{"a sent policy contradicts require", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sites := newTestSiteStore(t)
+			if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"allow":["alice@example.com"]}`)); err != nil {
+				t.Fatal(err)
+			}
+			srv := &Server{
+				sites: sites, deployAuth: &recordingDeployAuth{action: tt.action, previousState: tt.previousState},
+				resolver: NewStaticResolver("dev@spot.local", "Spot Dev", nil), spotDomain: "spot.localhost",
+				trustedProxies: testTrustedProxies(t), deployLimit: NewRateLimiter(1000, 1000),
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, deployRequestOrderedFields(t, "spot.localhost", "secret", tt.files,
+				map[string]string{"preserve_access": "require"}))
+			if rec.Code != tt.want {
+				t.Fatalf("deploy = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+			rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
+			if err != nil {
+				t.Fatalf("open %s: %v", accessFileName, err)
+			}
+			data, _ := io.ReadAll(rc)
+			rc.Close()
+			if string(data) != `{"allow":["alice@example.com"]}` {
+				t.Fatalf("policy after deploy = %s", data)
+			}
+			if tt.want != http.StatusOK {
+				if _, _, err := sites.Open(context.Background(), "secret", "index.html"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("refused deploy wrote index.html: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestDeployDoesNotPreserveAccessWhileRecoveringProvisioningSite(t *testing.T) {
 	sites := newTestSiteStore(t)
 	if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"maintainers":["stale@example.com"]}`)); err != nil {
