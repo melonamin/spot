@@ -361,7 +361,7 @@ func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc
 // speaks for all of them from one address, so an address bucket would make
 // every user share one small budget.
 func (s *Server) exemptFromRateLimit(r *http.Request) bool {
-	if s.forwardAuth == nil || s.forwardAuth.Secret == "" || !s.forwardAuth.authorized(r, false) {
+	if s.forwardAuth == nil || s.forwardAuth.Secret == "" {
 		return false
 	}
 	_, ok := s.forwardAuthIdentity(r)
@@ -1092,30 +1092,20 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 }
 
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
-	if id, ok := s.forwardAuthIdentity(r); ok {
-		return id, true
-	}
-	if id, ok := s.sessionIdentity(r); ok {
-		return id, true
-	}
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		writeWSError(ctx, conn,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(ctx, ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("realtime: resolve %s: %v", ip, err)
+		log.Printf("realtime: resolve %s: %v", s.clientIP(r), err)
 		writeWSError(ctx, conn, "could not reach the identity resolver")
 		return Identity{}, false
 	}
 	if !found {
-		writeWSError(ctx, conn, "no identity matches "+ip)
+		writeWSError(ctx, conn, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	return id, true
 }

@@ -192,7 +192,9 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 		}
 		restricted := policy.RestrictsAccess()
 		yours := site.OwnedBy(viewer)
-		manages := yours || s.canManageSite(r.Context(), site.Name, viewer)
+		// Only a restricted site has an allowlist to hide, so only there does
+		// management need resolving.
+		manages := restricted && (yours || s.canManageSite(r.Context(), site.Name, viewer))
 		if restricted && !manages && !policy.Allows(viewer) {
 			continue
 		}
