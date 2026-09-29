@@ -347,7 +347,8 @@ Partitioned` and host-only; the `__Host-` prefix, which browsers accept on
 carries the session cookie more than once is treated as signed out
 (`/api/auth/check` answers `400`). The session keeps the `name` and `groups`
 from the login token for `SPOT_SESSION_TTL`, so group changes apply at the next
-sign-in; allowlist changes apply immediately. In this
+sign-in; allowlist changes apply immediately. A realtime connection opened with
+a session closes when the session expires. In this
 mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
 `shared-*` collections and rooms are disabled because sites belong to

@@ -208,31 +208,34 @@ func (l *DelegatedLogin) sessionMAC(payload string) []byte {
 	return mac.Sum(nil)
 }
 
-func (l *DelegatedLogin) verifySession(value, host string) (Identity, bool) {
+// verifySession checks a session cookie value for host and returns its
+// identity and expiry.
+func (l *DelegatedLogin) verifySession(value, host string) (Identity, time.Time, bool) {
 	payload, sig, ok := strings.Cut(value, ".")
 	if !ok {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
 	gotMAC, err := base64.RawURLEncoding.DecodeString(sig)
 	if err != nil || !hmac.Equal(gotMAC, l.sessionMAC(payload)) {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(payload)
 	if err != nil {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
 	var session sessionPayload
 	if err := json.Unmarshal(raw, &session); err != nil {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
-	if session.Host != host || session.Email == "" || !time.Unix(session.Exp, 0).After(l.now()) {
-		return Identity{}, false
+	expires := time.Unix(session.Exp, 0)
+	if session.Host != host || session.Email == "" || !expires.After(l.now()) {
+		return Identity{}, time.Time{}, false
 	}
 	groups := session.Groups
 	if groups == nil {
 		groups = []string{}
 	}
-	return Identity{Email: session.Email, Name: session.Name, Groups: groups}, true
+	return Identity{Email: session.Email, Name: session.Name, Groups: groups}, expires, true
 }
 
 // loginHost is the site host as the browser addressed it: lowercase, without
@@ -279,19 +282,34 @@ func sessionCookie(value string, maxAge int) *http.Cookie {
 // ordering would choose the identity, and a browser that does not enforce the
 // __Host- prefix could let a sibling site add one.
 func (s *Server) sessionIdentity(r *http.Request) (Identity, bool) {
+	id, _, ok := s.verifiedSession(r)
+	return id, ok
+}
+
+func (s *Server) verifiedSession(r *http.Request) (Identity, time.Time, bool) {
 	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" || !s.loginTransportSecure(r) {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
 	values := s.sessionCookieValues(r)
 	if len(values) != 1 {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
-	id, ok := s.login.verifySession(values[0], s.loginHost(r))
+	id, expires, ok := s.login.verifySession(values[0], s.loginHost(r))
 	if !ok {
-		return Identity{}, false
+		return Identity{}, time.Time{}, false
 	}
 	id.PeerIP = s.clientIP(r)
-	return id, true
+	return id, expires, true
+}
+
+// sessionExpiry reports when the request's identity lapses, if it comes from
+// a delegated session: resolvePeer prefers forward auth, then the session.
+func (s *Server) sessionExpiry(r *http.Request) (time.Time, bool) {
+	if _, ok := s.forwardAuthIdentity(r); ok {
+		return time.Time{}, false
+	}
+	_, expires, ok := s.verifiedSession(r)
+	return expires, ok
 }
 
 func (s *Server) sessionCookieValues(r *http.Request) []string {

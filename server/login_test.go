@@ -6,12 +6,16 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/coder/websocket"
+	"github.com/coder/websocket/wsjson"
 )
 
 const (
@@ -154,22 +158,23 @@ func TestSessionCookieSignature(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id, ok := login.verifySession(value, "demo.sites.localhost"); !ok || id.Email != "alice@example.com" {
-		t.Fatalf("valid session = %+v, %v", id, ok)
+	if id, expires, ok := login.verifySession(value, "demo.sites.localhost"); !ok || id.Email != "alice@example.com" ||
+		expires.Before(time.Now().Add(59*time.Minute)) {
+		t.Fatalf("valid session = %+v, %v, expires %v", id, ok, expires)
 	}
-	if _, ok := login.verifySession(value, "other.sites.localhost"); ok {
+	if _, _, ok := login.verifySession(value, "other.sites.localhost"); ok {
 		t.Fatal("session accepted on another host")
 	}
 	payload, sig, _ := strings.Cut(value, ".")
 	forged, _ := json.Marshal(sessionPayload{Email: "mallory@example.com", Host: "demo.sites.localhost", Exp: time.Now().Add(time.Hour).Unix()})
-	if _, ok := login.verifySession(base64.RawURLEncoding.EncodeToString(forged)+"."+sig, "demo.sites.localhost"); ok {
+	if _, _, ok := login.verifySession(base64.RawURLEncoding.EncodeToString(forged)+"."+sig, "demo.sites.localhost"); ok {
 		t.Fatal("forged payload accepted")
 	}
-	if _, ok := login.verifySession(payload, "demo.sites.localhost"); ok {
+	if _, _, ok := login.verifySession(payload, "demo.sites.localhost"); ok {
 		t.Fatal("unsigned payload accepted")
 	}
 	login.now = func() time.Time { return time.Now().Add(2 * time.Hour) }
-	if _, ok := login.verifySession(value, "demo.sites.localhost"); ok {
+	if _, _, ok := login.verifySession(value, "demo.sites.localhost"); ok {
 		t.Fatal("expired session accepted")
 	}
 }
@@ -1035,5 +1040,45 @@ func TestApexNavigationDoesNotStartSignIn(t *testing.T) {
 	rec = st.do(navigation(siteRequest(http.MethodGet, "private.sites.localhost:8443", "/")))
 	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?") {
 		t.Fatalf("site host navigation = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}
+
+// A realtime socket opened with a delegated session must close when the
+// session expires; otherwise it outlives SPOT_SESSION_TTL indefinitely.
+func TestDelegatedSessionExpiryClosesWebSocket(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "open.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "open", "")
+	st.srv.login.sessionTTL = 2 * time.Second
+	value, err := st.srv.login.signSession(Identity{Email: "viewer@example.com", Groups: []string{}}, host)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ts := httptest.NewServer(st.handler)
+	defer ts.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 6*time.Second)
+	defer cancel()
+	conn, _, err := websocket.Dial(ctx, "ws"+strings.TrimPrefix(ts.URL, "http")+"/api/ws", &websocket.DialOptions{
+		HTTPHeader: http.Header{
+			"X-Forwarded-Host": []string{host},
+			"Cookie":           []string{sessionCookieName + "=" + value},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.CloseNow()
+	if err := wsjson.Write(ctx, conn, wsRequest{Type: "subscribe", Collection: "posts"}); err != nil {
+		t.Fatal(err)
+	}
+	var ack map[string]string
+	if err := wsjson.Read(ctx, conn, &ack); err != nil || ack["type"] != "subscribed" {
+		t.Fatalf("subscribe ack = %v, %v", ack, err)
+	}
+
+	var message any
+	err = wsjson.Read(ctx, conn, &message)
+	if err == nil || errors.Is(err, context.DeadlineExceeded) || ctx.Err() != nil {
+		t.Fatalf("websocket after session expiry: read %#v, %v; want it closed", message, err)
 	}
 }

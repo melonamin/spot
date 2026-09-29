@@ -956,6 +956,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.hub.UnregisterSession(site, sessionID)
+	// A delegated session ends at its expiry, and the socket with it.
+	if expires, ok := s.sessionExpiry(r); ok {
+		expiry := time.AfterFunc(time.Until(expires), revoke)
+		defer expiry.Stop()
+	}
 	defer s.hub.UnsubscribeAll(docOut)
 	defer s.roomHub.LeaveAll(sessionID)
 
