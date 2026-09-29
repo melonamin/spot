@@ -169,7 +169,9 @@ type visibleSiteJSON struct {
 // restricted sites whose allowlist matches the caller, and sites the caller
 // manages. Sites with an unreadable policy are omitted, as authz fails closed.
 // Only the owner and managers see the allowlist; a viewer does not learn who
-// else may view the site.
+// else may view the site. A listed restricted site was shared with the caller
+// or is managed by them, so its entry carries the owner's email; an open site
+// carries it only for its owner.
 func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSitesAPI(w, r) {
 		return
@@ -210,7 +212,7 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 			publicSiteJSON: publicSiteJSON{
 				Name: site.Name, URL: s.siteURL(r, site.Name), Title: site.Title,
 				Description: site.Description, Tags: cloneSiteTags(site.Tags),
-				DownloadAllowed: policy.AllowsDownload(), Owner: ownerDisplay(site), OwnerEmail: site.OwnerEmail, Yours: yours,
+				DownloadAllowed: policy.AllowsDownload(), Owner: ownerDisplay(site), OwnerEmail: ownerEmailFor(site, yours || restricted), Yours: yours,
 				Preview: preview, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
 			},
 			Restricted: restricted,

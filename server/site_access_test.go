@@ -188,8 +188,16 @@ func TestVisibleSites(t *testing.T) {
 	if allow := visible("owner@example.com", "")["platform"].Allow; len(allow) != 1 || allow[0] != "platform" {
 		t.Fatalf("platform entry for its owner allow = %v", allow)
 	}
+	// The owner's email goes to viewers a site was shared with, not to every
+	// viewer of an open site.
 	if got["platform"].OwnerEmail != "owner@example.com" {
 		t.Fatalf("platform owner_email = %q", got["platform"].OwnerEmail)
+	}
+	if got["open"].OwnerEmail != "" || got["open"].Owner == "" {
+		t.Fatalf("open entry for another user = %+v, want owner name without email", got["open"])
+	}
+	if email := visible("owner@example.com", "")["open"].OwnerEmail; email != "owner@example.com" {
+		t.Fatalf("open entry for its owner owner_email = %q", email)
 	}
 	if !got["own"].Yours || got["own"].URL != "http://own.sites.localhost:8443/" {
 		t.Fatalf("own entry = %+v", got["own"])

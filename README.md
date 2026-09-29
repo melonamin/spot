@@ -627,7 +627,9 @@ Important APIs:
 - `GET /api/sites/public` lists unrestricted sites.
 - `GET /api/sites/visible` lists every active site the caller may view (open,
   allowed, or managed) with `restricted`, and with `allow` for sites the
-  caller owns or manages. `mine` and `manageable` entries also carry `allow`
+  caller owns or manages. `owner_email` appears on the caller's own sites and
+  on restricted sites listed for them; `GET /api/sites/public` includes it
+  only for the caller's own sites. `mine` and `manageable` entries also carry `allow`
   (`null` when the site has no `allow` field).
 - `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
   redeploy. The owner, an admin, or a maintainer may call it; a maintainer

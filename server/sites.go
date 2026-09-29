@@ -295,6 +295,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 		if s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
+		yours := site.OwnedBy(viewer)
 		out = append(out, publicSiteJSON{
 			Name:            site.Name,
 			URL:             s.siteURL(r, site.Name),
@@ -303,8 +304,8 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			Tags:            cloneSiteTags(site.Tags),
 			DownloadAllowed: downloadAllowed,
 			Owner:           ownerDisplay(site),
-			OwnerEmail:      site.OwnerEmail,
-			Yours:           site.OwnedBy(viewer),
+			OwnerEmail:      ownerEmailFor(site, yours),
+			Yours:           yours,
 			Preview:         preview,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
@@ -750,6 +751,17 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 }
 
 // ownerDisplay is the name the gallery shows for a site's owner.
+// ownerEmailFor returns the owner's email for a listing entry only when the
+// viewer has a relationship with the site: it is theirs, they manage it, or
+// its owner shared it with them. Unrelated viewers of an open site get the
+// display name alone.
+func ownerEmailFor(site SiteRecord, related bool) string {
+	if !related {
+		return ""
+	}
+	return site.OwnerEmail
+}
+
 func ownerDisplay(site SiteRecord) string {
 	if site.OwnerName != "" {
 		return site.OwnerName
