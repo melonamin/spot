@@ -26,6 +26,7 @@ sdk = root / "sdk"
 class Handler(http.server.SimpleHTTPRequestHandler):
     deploys = 0
     last_authorization = ""
+    last_body = b""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(sdk), **kwargs)
@@ -35,7 +36,7 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self.send_error(404)
             return
         length = int(self.headers.get("content-length", "0"))
-        self.rfile.read(length)
+        Handler.last_body = self.rfile.read(length)
         Handler.deploys += 1
         Handler.last_authorization = self.headers.get("Authorization", "")
         self.send_response(200)
@@ -197,6 +198,11 @@ try:
         assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
         assert publishing_key not in keyed.stdout and publishing_key not in keyed.stderr
         assert not curl_trace.exists(), "secret-bearing curl loaded the default .curlrc"
+        # A plain deploy leaves the stored _access.json to the server default;
+        # --replace-access asks the server to remove it.
+        assert b'name="preserve_access"' not in Handler.last_body, Handler.last_body[:300]
+        run(["./cli/spot", "deploy", "--replace-access", "keydemo", str(out)])
+        assert b'name="preserve_access"\r\n\r\nfalse\r\n' in Handler.last_body, Handler.last_body[:300]
         fake_bin = pathlib.Path(tmp) / "fake-bin"
         fake_bin.mkdir()
         chromium = fake_bin / "chromium"

@@ -70,9 +70,11 @@ usage() {
 usage: spot <command>
 
 commands:
-  deploy [--screenshot] [name] [path]
+  deploy [--screenshot] [--replace-access] [name] [path]
                         sync a directory or index.html (default .) to
-                        the site <name> (default: current directory name)
+                        the site <name> (default: current directory name);
+                        a stored _access.json stays unless the upload has
+                        one or --replace-access removes it
   show init [json]      write a starter Spot Show JSON file
   show validate [json]  validate a Show and its local image assets
   show build [json] [out]
@@ -261,14 +263,15 @@ deploy_upload() {
 
     # One -F part per file, the filename carrying the site-relative path
     # — the shape /api/deploy expects. The server syncs: files absent
-    # from the upload are removed from the live site. Dot directories
-    # (.git and friends) stay home; the server drops them anyway.
+    # from the upload are removed from the live site, except a stored
+    # _access.json, which stays unless preserve_access=false (--replace-access).
+    # Dot directories (.git and friends) stay home; the server drops them anyway.
     #
     # Quote the path and filename= values so curl does not treat ';' ','
     # or '@' in a filename as -F metacharacters.
     set -- -F "site=$name"
-    if [ "$preserve_access" = 1 ]; then
-        set -- "$@" -F "preserve_access=true"
+    if [ -n "$preserve_access" ]; then
+        set -- "$@" -F "preserve_access=$preserve_access"
     fi
     if [ -f "$src" ]; then
         set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
@@ -320,12 +323,13 @@ EOF
 
 deploy() {
     deploy_screenshot=0
-    preserve_access=0
+    preserve_access=
     while [ $# -gt 0 ]; do
         case $1 in
             --screenshot) deploy_screenshot=1; shift ;;
             --no-screenshot) deploy_screenshot=0; shift ;;
-            --preserve-access) preserve_access=1; shift ;;
+            --preserve-access) preserve_access=true; shift ;;
+            --replace-access) preserve_access=false; shift ;;
             --help|-h) usage ;;
             -*) echo "error: unknown deploy option '$1'" >&2; exit 1 ;;
             *) break ;;

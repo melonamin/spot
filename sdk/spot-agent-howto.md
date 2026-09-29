@@ -455,7 +455,8 @@ deployment's server-side credentials. Add `"download":false` to disable source
 ZIP downloads while keeping normal page access unchanged.
 
 A redeploy without `_access.json` keeps the site's stored policy. To open a
-restricted site, deploy an `_access.json` without `allow`.
+restricted site, deploy an `_access.json` without `allow`, or remove the
+stored policy with `spot deploy --replace-access`.
 
 The first deploy of a site claims an immutable owner. Later deploys, including
 changes to `_access.json`, require that owner, a platform admin, or a maintainer

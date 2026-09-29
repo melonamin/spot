@@ -562,7 +562,8 @@ cannot visit a restricted site unless `allow` also matches them.
 A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an
 `_access.json` without `allow`, change it through the API, or deploy with the
-form field `preserve_access=false`, which removes the stored policy.
+form field `preserve_access=false` (`spot deploy --replace-access`), which
+removes the stored policy.
 
 The first deploy claims a site name for an immutable original owner. Later
 deploys, active-site deletes, Cloudflare operations, and owner-mode AI or Slack
