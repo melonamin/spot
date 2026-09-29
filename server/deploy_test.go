@@ -369,6 +369,7 @@ func deployRequestOrderedFields(t *testing.T, host, site string, files [][2]stri
 func TestDeployValidation(t *testing.T) {
 	srv := &Server{
 		sites:          newTestSiteStore(t),
+		resolver:       NewStaticResolver("owner@spot.local", "Owner", nil),
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 		// Every request here comes from the same test client IP; the
@@ -426,6 +427,59 @@ func TestDeployValidation(t *testing.T) {
 	if code, body := call(plain); code != http.StatusBadRequest ||
 		!strings.Contains(body, "multipart") {
 		t.Errorf("non-multipart = %d %s, want 400 multipart", code, body)
+	}
+}
+
+// readCountingBody records whether the handler touched the request body.
+type readCountingBody struct {
+	r     io.Reader
+	reads int
+}
+
+func (b *readCountingBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.r.Read(p)
+}
+
+// An anonymous deploy is refused before its body is read, so it cannot make
+// the server buffer a large upload.
+func TestDeployRefusesUnauthenticatedBeforeReadingBody(t *testing.T) {
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "super-secret-proxy-key-1234"
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		forwardAuth:    fa,
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	for _, tt := range []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"no identity", nil, http.StatusNotFound},
+		{"forward-auth without secret", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusNotFound},
+		{"forward-auth with wrong secret", map[string]string{"Remote-Email": "alice@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusNotFound},
+		{"invalid publishing key", map[string]string{"Authorization": "Bearer spot_pk_invalid"}, http.StatusUnauthorized},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			form := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
+			body := &readCountingBody{r: form.Body}
+			req := httptest.NewRequest(http.MethodPost, "http://spot-api/api/deploy", body)
+			req.Header = form.Header.Clone()
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+			if body.reads != 0 {
+				t.Fatalf("handler read the body %d times before authenticating", body.reads)
+			}
+		})
 	}
 }
 

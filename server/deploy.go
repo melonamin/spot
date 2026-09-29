@@ -148,13 +148,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"the deploy API is served on the platform root, not on site subdomains")
 		return
 	}
-	var principal DeployPrincipal
-	if len(r.Header.Values("Authorization")) > 0 {
-		var ok bool
-		principal, ok = s.requireDeployPrincipal(w, r)
-		if !ok {
-			return
-		}
+	// Authenticate before reading the body: an anonymous caller must not make
+	// the server buffer up to maxDeploySize.
+	principal, ok := s.requireDeployPrincipal(w, r)
+	if !ok {
+		return
 	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxDeploySize)
 	mr, err := r.MultipartReader()
@@ -246,13 +244,6 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
-	}
-	if actorKey(principal.Actor) == "" {
-		var ok bool
-		principal, ok = s.requireDeployPrincipal(w, r)
-		if !ok {
-			return
-		}
 	}
 	r = withDeployPrincipal(r, principal)
 	actor := principal.Actor
