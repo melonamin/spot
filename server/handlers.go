@@ -388,30 +388,37 @@ func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
-	if id, ok := r.Context().Value(resolvedPeerKey{}).(Identity); ok {
-		return id, true, nil
+	id, _, found, err := s.resolvePeerSession(r)
+	return id, found, err
+}
+
+// resolvePeerSession is resolvePeer that also reports when the identity
+// lapses: the expiry of the delegated session it came from, or zero.
+func (s *Server) resolvePeerSession(r *http.Request) (Identity, time.Time, bool, error) {
+	if peer, ok := r.Context().Value(resolvedPeerKey{}).(resolvedPeer); ok {
+		return peer.id, peer.expires, true, nil
 	}
 	if id, ok := s.forwardAuthIdentity(r); ok {
-		return id, true, nil
+		return id, time.Time{}, true, nil
 	}
-	if id, ok := s.sessionIdentity(r); ok {
-		return id, true, nil
+	if id, expires, ok := s.verifiedSession(r); ok {
+		return id, expires, true, nil
 	}
 	if s.resolver == nil {
-		return Identity{}, false, nil
+		return Identity{}, time.Time{}, false, nil
 	}
 	ip := s.clientIP(r)
 	id, found, err := s.resolver.Resolve(r.Context(), ip)
 	if err != nil {
-		return Identity{}, false, err
+		return Identity{}, time.Time{}, false, err
 	}
 	if !found {
-		return Identity{}, false, nil
+		return Identity{}, time.Time{}, false, nil
 	}
 	if id.PeerIP == "" {
 		id.PeerIP = ip
 	}
-	return id, true, nil
+	return id, time.Time{}, true, nil
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {

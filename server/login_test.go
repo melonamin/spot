@@ -1082,3 +1082,22 @@ func TestDelegatedSessionExpiryClosesWebSocket(t *testing.T) {
 		t.Fatalf("websocket after session expiry: read %#v, %v; want it closed", message, err)
 	}
 }
+
+// The expiry comes from the identity requireVisitor resolved, not a second
+// look at the cookie: a session that lapses in between would otherwise leave
+// the connection with no deadline while resolvePeer keeps the cached identity.
+func TestSessionExpiryUsesResolvedIdentity(t *testing.T) {
+	st := newLoginTestStack(t)
+	expired := time.Now().Add(-time.Second)
+	req := withResolvedPeer(siteRequest(http.MethodGet, "open.sites.localhost:8443", "/api/ws"),
+		Identity{Email: "viewer@example.com"}, expired)
+	if got, ok := st.srv.sessionExpiry(req); !ok || !got.Equal(expired) {
+		t.Fatalf("session expiry = %v, %v; want the resolved %v", got, ok, expired)
+	}
+	// Forward auth and mesh identities carry no session deadline.
+	req = withResolvedPeer(siteRequest(http.MethodGet, "open.sites.localhost:8443", "/api/ws"),
+		Identity{Email: "viewer@example.com"}, time.Time{})
+	if _, ok := st.srv.sessionExpiry(req); ok {
+		t.Fatal("identity without a session reported an expiry")
+	}
+}
