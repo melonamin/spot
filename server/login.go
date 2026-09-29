@@ -356,7 +356,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginTransportSecure(r) {
-		writeStatusPage(w, http.StatusBadRequest, insecureLoginPage)
+		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
 		return
 	}
 	host := s.loginHost(r)
@@ -423,7 +423,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !s.loginTransportSecure(r) {
-		writeStatusPage(w, http.StatusBadRequest, insecureLoginPage)
+		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
 		return
 	}
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
@@ -538,7 +538,8 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			return
 		}
 		if !found {
-			httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
+			// A page load, such as an opened upload link, starts a sign-in.
+			s.denyAnonymousVisitor(w, r)
 			return
 		}
 		next(w, withResolvedPeer(r, id))

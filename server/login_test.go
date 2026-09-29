@@ -959,7 +959,7 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 	}
 	token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims(host, "plain", time.Now()))
 	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token)))
-	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
+	if rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("plain http callback = %d %v", rec.Code, rec.Result().Cookies())
 	}
 	value, err := st.srv.login.signSession(Identity{Email: "owner@example.com", Groups: []string{}}, host)
@@ -973,7 +973,7 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 	}
 	check := siteRequest(http.MethodGet, host, "/api/auth/check")
 	check.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
-	if rec := st.do(check); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "secure connection") {
+	if rec := st.do(check); rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "secure connection") {
 		t.Fatalf("plain http check = %d %s, want the secure-connection page", rec.Code, rec.Body.String())
 	}
 
@@ -1026,7 +1026,12 @@ func TestApexNavigationDoesNotStartSignIn(t *testing.T) {
 	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
 		t.Fatalf("apex navigation = %d %q %v, want JSON 401", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
 	}
-	// Allowed: the same page load on the site host starts a sign-in.
+	// Allowed: on the site host, opening the upload link, or any page, starts
+	// a sign-in.
+	rec = st.do(navigation(siteRequest(http.MethodGet, "private.sites.localhost:8443", upload.URL)))
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?") {
+		t.Fatalf("site host upload link = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 	rec = st.do(navigation(siteRequest(http.MethodGet, "private.sites.localhost:8443", "/")))
 	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?") {
 		t.Fatalf("site host navigation = %d %q", rec.Code, rec.Header().Get("Location"))

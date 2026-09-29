@@ -18,8 +18,7 @@ import (
 // address for every unknown TLS name, and a shared bucket would let anyone
 // block issuance.
 func (s *Server) handleTLSAsk(w http.ResponseWriter, r *http.Request) {
-	proxied := r.Header.Get("X-Forwarded-For") != "" || r.Header.Get("X-Forwarded-Host") != "" || r.Header.Get("Forwarded") != ""
-	if proxied || validSpotHost(s.requestHost(r), s.spotDomain) {
+	if hasForwardedHeaders(r) || validSpotHost(s.requestHost(r), s.spotDomain) {
 		http.NotFound(w, r)
 		return
 	}

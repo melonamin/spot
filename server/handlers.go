@@ -546,7 +546,7 @@ func (s *Server) requireDeployIdentity(w http.ResponseWriter, r *http.Request) (
 		return Identity{}, false
 	}
 	if actorKey(id) == "" {
-		httpError(w, http.StatusForbidden, "deploy requires an identified mesh user or peer")
+		httpError(w, http.StatusForbidden, "this request requires an identified user or mesh peer")
 		return Identity{}, false
 	}
 	return id, true

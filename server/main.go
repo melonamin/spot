@@ -526,6 +526,11 @@ func main() {
 			log.Fatalf("config: %v", err)
 		}
 		log.Printf("identity: delegated login via %s (session TTL %s); shared-* collections and rooms are disabled", cfg.LoginURL, ttl)
+		// Sessions exist only on site hosts; the apex platform APIs need
+		// another identity source, or publishing keys for deploys.
+		if resolver == nil && forwardAuth == nil {
+			log.Printf("identity: warning: delegated login is the only identity source, so only publishing keys can deploy; set SPOT_FORWARD_AUTH or a mesh provider for the platform APIs")
+		}
 	}
 	if cfg.FrameAncestors != "" {
 		log.Printf("sites: frame-ancestors %s", cfg.FrameAncestors)
