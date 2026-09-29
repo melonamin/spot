@@ -504,7 +504,7 @@ func isNavigation(r *http.Request) bool {
 // A page load on a site host starts a sign-in; anything else, including the
 // apex, which has no viewer sessions, gets a JSON 401.
 func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
-	if !isNavigation(r) || siteFromHost(s.requestHost(r), s.spotDomain) == "" {
+	if !isNavigation(r) || siteFromHost(s.requestHost(r), s.spotDomain) == "" || r.Context().Value(noLoginRedirectKey{}) != nil {
 		httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 		return
 	}
@@ -593,4 +593,12 @@ type resolvedPeer struct {
 // both see the same session expiry.
 func withResolvedPeer(r *http.Request, id Identity, expires time.Time) *http.Request {
 	return r.WithContext(context.WithValue(r.Context(), resolvedPeerKey{}, resolvedPeer{id: id, expires: expires}))
+}
+
+type noLoginRedirectKey struct{}
+
+// withoutLoginRedirect marks a request whose anonymous answer must be a plain
+// 401, because its URI is not a page the visitor could return to.
+func withoutLoginRedirect(r *http.Request) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), noLoginRedirectKey{}, true))
 }

@@ -1143,3 +1143,24 @@ func TestReturnPathAcceptsSameOriginURLs(t *testing.T) {
 		t.Fatalf("callback with echoed return_to = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
+
+// /api/authz answers a proxy's access check for the visitor's page, so an
+// anonymous page load gets 401 there, not a sign-in that returns to /api/authz.
+func TestAuthzDoesNotStartSignIn(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+	rec := st.do(navigation(siteRequest(http.MethodGet, host, "/api/authz")))
+	if rec.Code != http.StatusUnauthorized || rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("anonymous authz = %d %q %v, want 401", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
+	}
+	// Allowed: a signed-in viewer on the allowlist.
+	cookie := st.signIn(t, host, "owner@example.com", "authz-owner")
+	if rec := st.do(withCookie(navigation(siteRequest(http.MethodGet, host, "/api/authz")), cookie)); rec.Code != http.StatusOK {
+		t.Fatalf("signed-in authz = %d %s", rec.Code, rec.Body.String())
+	}
+	// Page loads elsewhere on the site still start a sign-in.
+	if rec := st.do(navigation(siteRequest(http.MethodGet, host, "/"))); rec.Code != http.StatusFound {
+		t.Fatalf("anonymous page = %d, want login redirect", rec.Code)
+	}
+}

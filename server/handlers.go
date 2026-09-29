@@ -922,7 +922,9 @@ func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if s.authorizeSiteAccess(w, r, site) {
+	// A proxy asks here on the visitor's behalf; the request URI is this
+	// endpoint, not the page, so a sign-in must not start from it.
+	if s.authorizeSiteAccess(w, withoutLoginRedirect(r), site) {
 		w.WriteHeader(http.StatusOK)
 	}
 }
