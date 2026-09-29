@@ -10,7 +10,16 @@ import (
 
 // handleTLSAsk answers Caddy's on-demand TLS permission check: certificates
 // are issued only for the apex and the names of active sites.
+//
+// Caddy asks by the service's internal name. A request addressed to a Spot
+// host came through the public proxy and gets 404, so outsiders cannot list
+// site names. The check is not rate-limited: Caddy asks from one address for
+// every unknown TLS name, and a shared bucket would let anyone block issuance.
 func (s *Server) handleTLSAsk(w http.ResponseWriter, r *http.Request) {
+	if validSpotHost(s.requestHost(r), s.spotDomain) {
+		http.NotFound(w, r)
+		return
+	}
 	domain := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(r.URL.Query().Get("domain"))), ".")
 	apex := strings.TrimSuffix(strings.ToLower(s.spotDomain), ".")
 	if domain != "" && domain == apex {

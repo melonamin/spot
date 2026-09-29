@@ -589,14 +589,21 @@ func TestTLSAsk(t *testing.T) {
 		t.Fatalf("other API on internal host = %d, want 400", rec.Code)
 	}
 
-	// It is reachable from outside, so it is rate-limited like other lookups.
+	// Denied: the same question through the public proxy, on a site host or
+	// the apex, so outsiders cannot list site names.
+	for _, host := range []string{"live.sites.localhost:8443", "sites.localhost:8443"} {
+		if rec := st.do(siteRequest(http.MethodGet, host, "/api/tls/ask?domain=live.sites.localhost")); rec.Code != http.StatusNotFound {
+			t.Fatalf("tls ask via %s = %d, want 404", host, rec.Code)
+		}
+	}
+
+	// Not rate-limited: Caddy asks from one address for every unknown name.
 	st.srv.dbLimit = NewRateLimiter(1, 1)
 	st.handler = st.srv.routes()
-	ask := func() int {
-		return st.do(httptest.NewRequest(http.MethodGet, "http://sites:8080/api/tls/ask?domain=live.sites.localhost", nil)).Code
-	}
-	if first, second := ask(), ask(); first != http.StatusOK || second != http.StatusTooManyRequests {
-		t.Fatalf("tls ask burst = %d then %d, want 200 then 429", first, second)
+	for i := 0; i < 3; i++ {
+		if rec := st.do(httptest.NewRequest(http.MethodGet, "http://sites:8080/api/tls/ask?domain=live.sites.localhost", nil)); rec.Code != http.StatusOK {
+			t.Fatalf("tls ask %d = %d, want 200", i, rec.Code)
+		}
 	}
 }
 
