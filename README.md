@@ -305,9 +305,14 @@ SPOT_LOGIN_URL=https://app.example.com/sites/login
 SPOT_LOGIN_TOKEN_SECRET=<32+ random chars>
 SPOT_SESSION_SECRET=<32+ random chars, different>
 SPOT_SESSION_TTL=12h
-SPOT_FRAME_ANCESTORS='self' https://app.example.com
+SPOT_FRAME_ANCESTORS="'self' https://app.example.com"
 SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
 ```
+
+`docker-compose.yml` passes these through. Its default
+`SPOT_DEV_IDENTITY_EMAIL=dev@spot.local` cannot be combined with delegated
+login, so clear it in a compose override (`SPOT_DEV_IDENTITY_EMAIL: ""`), as
+the mesh and homelab overlays do.
 
 1. A browser opens a restricted site with no identity. Spot sets a
    short-lived login state cookie on that host and redirects it to
