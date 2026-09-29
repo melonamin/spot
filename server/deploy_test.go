@@ -21,7 +21,13 @@ type recordingDeployAuth struct {
 	action        string
 	previousState SiteState
 	auths         []string
+	cancels       []string
 	events        []DeployAuditEvent
+}
+
+func (a *recordingDeployAuth) CancelDeployAuthorization(_ context.Context, site string, authz DeployAuthorization) error {
+	a.cancels = append(a.cancels, site+":"+authz.Action)
+	return nil
 }
 
 func (a *recordingDeployAuth) AuthorizeDeploy(_ context.Context, site string, actor Identity) (DeployAuthorization, error) {
@@ -610,17 +616,21 @@ func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *
 		previousState SiteState
 		files         [][2]string
 		want          int
+		noPolicy      bool
 	}{
-		{"active update keeps the policy", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}}, http.StatusOK},
-		{"a new site has none to keep", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}}, http.StatusConflict},
-		{"a recovering site has none to keep", "update", SiteStateProvisioning, [][2]string{{"index.html", "<h1>re</h1>"}}, http.StatusConflict},
-		{"a sent policy contradicts require", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest},
-		{"a sent policy contradicts require on a new site too", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest},
+		{"active update keeps the policy", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}}, http.StatusOK, false},
+		{"a new site has none to keep", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}}, http.StatusConflict, false},
+		{"a recovering site has none to keep", "update", SiteStateProvisioning, [][2]string{{"index.html", "<h1>re</h1>"}}, http.StatusConflict, false},
+		{"an active site without a stored policy has none to keep", "update", SiteStateActive, [][2]string{{"index.html", "<h1>open</h1>"}}, http.StatusConflict, true},
+		{"a sent policy contradicts require", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest, false},
+		{"a sent policy contradicts require on a new site too", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest, false},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			sites := newTestSiteStore(t)
-			if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"allow":["alice@example.com"]}`)); err != nil {
-				t.Fatal(err)
+			if !tt.noPolicy {
+				if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"allow":["alice@example.com"]}`)); err != nil {
+					t.Fatal(err)
+				}
 			}
 			auth := &recordingDeployAuth{action: tt.action, previousState: tt.previousState}
 			srv := &Server{
@@ -637,14 +647,23 @@ func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *
 			if tt.want == http.StatusBadRequest && len(auth.auths) != 0 {
 				t.Fatalf("a contradictory request reached authorization: %v", auth.auths)
 			}
-			rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
-			if err != nil {
-				t.Fatalf("open %s: %v", accessFileName, err)
+			if tt.want == http.StatusConflict && len(auth.cancels) != 1 {
+				t.Fatalf("refused deploy cancelled %d authorizations, want 1", len(auth.cancels))
 			}
-			data, _ := io.ReadAll(rc)
-			rc.Close()
-			if string(data) != `{"allow":["alice@example.com"]}` {
-				t.Fatalf("policy after deploy = %s", data)
+			rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
+			if tt.noPolicy {
+				if !errors.Is(err, ErrNotFound) {
+					t.Fatalf("refused deploy stored a policy: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("open %s: %v", accessFileName, err)
+				}
+				data, _ := io.ReadAll(rc)
+				rc.Close()
+				if string(data) != `{"allow":["alice@example.com"]}` {
+					t.Fatalf("policy after deploy = %s", data)
+				}
 			}
 			if tt.want != http.StatusOK {
 				if _, _, err := sites.Open(context.Background(), "secret", "index.html"); !errors.Is(err, ErrNotFound) {

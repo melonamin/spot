@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Added `preserve_access=require` to deploys: it keeps the stored access policy like `true`, but answers `409` when there is no active site to keep it from.
+- Added `preserve_access=require` to deploys: it keeps the stored access policy like `true`, but answers `409` when there is none to keep (a new or inactive site, or an active site without a policy).
 
 ### Changed
 

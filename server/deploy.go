@@ -166,8 +166,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// An update that ships no _access.json keeps the stored policy, which may
 	// have been set through PUT /api/sites/{name}/access rather than a bundle.
 	// Only an explicit preserve_access=false lets the deploy remove it.
-	// preserve_access=require also refuses a deploy that has no active site to
-	// keep a policy from, so a caller never publishes a new site without one.
+	// preserve_access=require also refuses a deploy that has no stored policy to
+	// keep (a new or inactive site, or an active one without a policy), so a
+	// caller never publishes a site without one.
 	preserveAccess := true
 	requireActiveAccess := false
 	for {
@@ -314,10 +315,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("deploy %s: cancel authorization: %v", site, err)
 		}
 	}
+	noPolicyToKeep := "site " + site + " has no stored access policy to keep; deploy it with an explicit " + accessFileName
 	if requireActiveAccess && (authz.Action != "update" || authz.PreviousState != SiteStateActive) {
 		cancelAuthorization()
-		httpError(w, http.StatusConflict,
-			"site "+site+" has no active access policy to keep; deploy it with an explicit "+accessFileName)
+		httpError(w, http.StatusConflict, noPolicyToKeep)
 		return
 	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
@@ -344,6 +345,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		incomingPolicy, hasIncomingPolicy, incomingPolicyErr = deployAccessPolicy(site, files)
 		restricted = policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+		if requireActiveAccess && !hasIncomingPolicy {
+			cancelAuthorization()
+			httpError(w, http.StatusConflict, noPolicyToKeep)
+			return
+		}
 	}
 	var policyOnFailure *failurePolicyCache
 	var previousPolicy *AccessPolicy
