@@ -18,7 +18,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- A site's `_access.json` is no longer served to visitors or included in its source download.
+- A site's `_access.json`, in any letter case, is no longer served to visitors or included in its source download or Cloudflare export.
+- A path below a file on local storage (such as `/page.html/`) answers `404` instead of `500`.
 - A deploy now authenticates the caller before reading the upload, so an anonymous request cannot make the server buffer up to 100 MiB.
 
 ## [0.6.0] - 2026-09-29
