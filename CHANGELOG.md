@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Added `preserve_access=require` to deploys: it keeps the stored access policy like `true`, but answers `409` when there is no active site to keep it from.
+
+### Changed
+
+- `/api/sites/stats` now requires an identified caller, like the other site listings.
+- An API request whose caller no identity matches now answers `401` instead of `404`.
+
+### Fixed
+
+- A site's `_access.json` is no longer served to visitors or included in its source download.
+- A deploy now authenticates the caller before reading the upload, so an anonymous request cannot make the server buffer up to 100 MiB.
+
 ## [0.6.0] - 2026-09-29
 
 ### Added
