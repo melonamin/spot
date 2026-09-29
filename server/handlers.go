@@ -213,10 +213,10 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleUpload))))
 	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.requireVisitor(s.handleDownload))
 	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleFileDelete))))
-	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIChat))))
-	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIChatStream))))
-	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.requireVisitor(s.handleAIImage))))
-	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limited(s.slackLimit, s.requireVisitor(s.handleSlackSend))))
+	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIChat))))
+	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIChatStream))))
+	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIImage))))
+	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limitedSpend(s.slackLimit, s.requireVisitor(s.handleSlackSend))))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
 	if s.serveStatic {
@@ -346,8 +346,28 @@ func (s *Server) originMatchesHost(r *http.Request) bool {
 }
 
 func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimited(l, next, false)
+}
+
+// limitedSpend guards routes that spend server-side credentials (AI, Slack).
+// A secret-proven proxy is not exempt there: its requests get one bucket per
+// asserted user, so a leaked proxy secret is not unlimited spend.
+func (s *Server) limitedSpend(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimited(l, next, true)
+}
+
+func (s *Server) rateLimited(l *RateLimiter, next http.HandlerFunc, perUser bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !s.exemptFromRateLimit(r) && !l.Allow(s.clientIP(r)) {
+		key := s.clientIP(r)
+		if s.exemptFromRateLimit(r) {
+			if !perUser {
+				next(w, r)
+				return
+			}
+			id, _ := s.forwardAuthIdentity(r)
+			key = "forward-auth:" + actorKey(id)
+		}
+		if !l.Allow(key) {
 			w.Header().Set("Retry-After", "1")
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded, slow down")
 			return
