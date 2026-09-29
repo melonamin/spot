@@ -615,14 +615,16 @@ func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *
 		{"a new site has none to keep", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}}, http.StatusConflict},
 		{"a recovering site has none to keep", "update", SiteStateProvisioning, [][2]string{{"index.html", "<h1>re</h1>"}}, http.StatusConflict},
 		{"a sent policy contradicts require", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest},
+		{"a sent policy contradicts require on a new site too", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			sites := newTestSiteStore(t)
 			if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"allow":["alice@example.com"]}`)); err != nil {
 				t.Fatal(err)
 			}
+			auth := &recordingDeployAuth{action: tt.action, previousState: tt.previousState}
 			srv := &Server{
-				sites: sites, deployAuth: &recordingDeployAuth{action: tt.action, previousState: tt.previousState},
+				sites: sites, deployAuth: auth,
 				resolver: NewStaticResolver("dev@spot.local", "Spot Dev", nil), spotDomain: "spot.localhost",
 				trustedProxies: testTrustedProxies(t), deployLimit: NewRateLimiter(1000, 1000),
 			}
@@ -631,6 +633,9 @@ func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *
 				map[string]string{"preserve_access": "require"}))
 			if rec.Code != tt.want {
 				t.Fatalf("deploy = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+			if tt.want == http.StatusBadRequest && len(auth.auths) != 0 {
+				t.Fatalf("a contradictory request reached authorization: %v", auth.auths)
 			}
 			rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
 			if err != nil {

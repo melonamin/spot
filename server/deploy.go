@@ -249,6 +249,10 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	incomingPolicy, hasIncomingPolicy, incomingPolicyErr := deployAccessPolicy(site, files)
 	restricted := policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+	if requireActiveAccess && hasIncomingPolicy {
+		httpError(w, http.StatusBadRequest, "preserve_access=require keeps the stored "+accessFileName+"; do not send one")
+		return
+	}
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
@@ -314,11 +318,6 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		cancelAuthorization()
 		httpError(w, http.StatusConflict,
 			"site "+site+" has no active access policy to keep; deploy it with an explicit "+accessFileName)
-		return
-	}
-	if requireActiveAccess && hasIncomingPolicy {
-		cancelAuthorization()
-		httpError(w, http.StatusBadRequest, "preserve_access=require keeps the stored "+accessFileName+"; do not send one")
 		return
 	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
