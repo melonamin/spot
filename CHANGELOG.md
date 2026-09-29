@@ -7,20 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-09-29
+
 ### Added
 
-- Added `preserve_access=require` to deploys: it keeps the stored access policy like `true`, but answers `409` when there is none to keep (a new or inactive site, or an active site without a policy).
+- Added `preserve_access=require` to deploys: it keeps the stored access policy like `true`, but answers `409` when there is none to keep (a new or inactive site, or an active site without a policy). (#23)
 
 ### Changed
 
-- `/api/sites/stats` now requires an identified caller, like the other site listings.
-- An API request whose caller no identity matches now answers `401` instead of `404`.
+- `/api/sites/stats` now requires an identified caller, like the other site listings. (#23)
+- An API request whose caller no identity matches now answers `401` instead of `404`. (#23)
 
 ### Fixed
 
-- A site's `_access.json`, in any letter case, is no longer served to visitors or included in its source download or Cloudflare export.
-- A path below a file on local storage (such as `/page.html/`) answers `404` instead of `500`.
-- A deploy now authenticates the caller before reading the upload, so an anonymous request cannot make the server buffer up to 100 MiB.
+- A site's `_access.json`, in any letter case, is no longer served to visitors or included in its source download or Cloudflare export. (#23)
+- A path below a file on local storage (such as `/page.html/`) answers `404` instead of `500`. (#23)
+- A deploy now authenticates the caller before reading the upload, so an anonymous request cannot make the server buffer up to 100 MiB. (#23)
 
 ## [0.6.0] - 2026-09-29
 
@@ -106,7 +108,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/melonamin/spot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/melonamin/spot/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/melonamin/spot/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/melonamin/spot/compare/v0.3.0...v0.4.0
