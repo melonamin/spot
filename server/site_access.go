@@ -19,8 +19,9 @@ func policyAllowList(policy *AccessPolicy) []string {
 	return append(make([]string, 0, len(policy.Allow)), policy.Allow...)
 }
 
-func (s *Server) allowListForSite(ctx context.Context, site string) []string {
-	policy, err := s.policyForSite(ctx, site)
+// allowListFor is policyAllowList for a resolved policy; an unreadable policy
+// reports no allowlist.
+func allowListFor(policy *AccessPolicy, err error) []string {
 	if err != nil {
 		return nil
 	}

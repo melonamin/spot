@@ -100,8 +100,9 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			LastDeploy: lastDeployForSite(site.OwnedSite),
 		}
 		if site.State == SiteStateActive {
-			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = s.policySummaryForSite(r.Context(), site.Name)
-			entry.Allow = s.allowListForSite(r.Context(), site.Name)
+			policy, policyErr := s.policyForSite(r.Context(), site.Name)
+			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = policySummary(policy, policyErr)
+			entry.Allow = allowListFor(policy, policyErr)
 			contentHash := site.ContentHash
 			if site.ContentHashUncertain {
 				contentHash = ""
@@ -215,7 +216,8 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	}
 	out := make([]ownedSiteJSON, 0, len(owned))
 	for _, site := range owned {
-		restricted, allowCount, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
+		policy, policyErr := s.policyForSite(r.Context(), site.Name)
+		restricted, allowCount, downloadAllowed := policySummary(policy, policyErr)
 		contentHash := site.ContentHash
 		if site.ContentHashUncertain {
 			contentHash = ""
@@ -234,7 +236,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			TotalBytes:      site.TotalBytes,
 			Restricted:      restricted,
 			AllowCount:      allowCount,
-			Allow:           s.allowListForSite(r.Context(), site.Name),
+			Allow:           allowListFor(policy, policyErr),
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
