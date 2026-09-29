@@ -575,7 +575,8 @@ visitor access and delegated management by shipping `_access.json` at its root:
 Entries containing `@` match email. Other entries match mesh groups. A
 broken policy fails closed. `allow` and `maintainers` are independent: a
 maintainer can deploy, delete, and manage Cloudflare for an active site but
-cannot visit a restricted site unless `allow` also matches them.
+cannot visit a restricted site unless `allow` also matches them. The policy
+itself is never served to visitors and is left out of source downloads.
 
 A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an

@@ -92,7 +92,7 @@ func (s *Server) handleSiteDownload(w http.ResponseWriter, r *http.Request) {
 func cleanDownloadPaths(paths []string) []string {
 	out := paths[:0]
 	for _, p := range paths {
-		if validDownloadPath(p) {
+		if validDownloadPath(p) && !isSiteAccessFile(p) {
 			out = append(out, p)
 		}
 	}
