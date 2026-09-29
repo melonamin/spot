@@ -775,13 +775,13 @@ func TestSiteSessionConfersNothingOnApex(t *testing.T) {
 	for _, cookie := range []*http.Cookie{siteSession, apexSession} {
 		mine := siteRequest(http.MethodGet, apex, "/api/sites/mine")
 		mine.AddCookie(cookie)
-		if rec := st.do(mine); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no identity") {
-			t.Fatalf("apex /api/sites/mine with session = %d %s, want 404 no identity", rec.Code, rec.Body.String())
+		if rec := st.do(mine); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "no identity") {
+			t.Fatalf("apex /api/sites/mine with session = %d %s, want 401 no identity", rec.Code, rec.Body.String())
 		}
 		access := siteRequestWithBody(http.MethodPut, apex, "/api/sites/demo/access", `{}`)
 		access.AddCookie(cookie)
-		if rec := st.do(access); rec.Code != http.StatusNotFound || !strings.Contains(rec.Body.String(), "no identity") {
-			t.Fatalf("apex access change with session = %d %s, want 404 no identity", rec.Code, rec.Body.String())
+		if rec := st.do(access); rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), "no identity") {
+			t.Fatalf("apex access change with session = %d %s, want 401 no identity", rec.Code, rec.Body.String())
 		}
 	}
 	if _, found, err := st.srv.resolvePeer(func() *http.Request {

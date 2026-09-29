@@ -454,7 +454,7 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 		return Identity{}, false
 	}
 	if !found {
-		httpError(w, http.StatusNotFound, "no identity matches "+s.clientIP(r))
+		httpError(w, http.StatusUnauthorized, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
 	}
 	if id.Groups == nil {

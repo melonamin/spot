@@ -506,7 +506,7 @@ if [ "$code" = "200" ]; then
     echo "$me" | grep -q '"groups":' || fail "/api/me missing groups: $me"
 else
     case "$code:$me" in
-        503:*"identity resolver not configured"*|404:*"no identity matches"*) ;;
+        503:*"identity resolver not configured"*|401:*"no identity matches"*) ;;
         *) fail "/api/me returned $code $me, want dev identity or fail-loud resolver error" ;;
     esac
 fi

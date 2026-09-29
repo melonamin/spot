@@ -458,9 +458,9 @@ func TestDeployRefusesUnauthenticatedBeforeReadingBody(t *testing.T) {
 		headers map[string]string
 		want    int
 	}{
-		{"no identity", nil, http.StatusNotFound},
-		{"forward-auth without secret", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusNotFound},
-		{"forward-auth with wrong secret", map[string]string{"Remote-Email": "alice@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusNotFound},
+		{"no identity", nil, http.StatusUnauthorized},
+		{"forward-auth without secret", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusUnauthorized},
+		{"forward-auth with wrong secret", map[string]string{"Remote-Email": "alice@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusUnauthorized},
 		{"invalid publishing key", map[string]string{"Authorization": "Bearer spot_pk_invalid"}, http.StatusUnauthorized},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
