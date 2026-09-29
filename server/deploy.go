@@ -1139,10 +1139,6 @@ func (s *Server) failPolicyCommit(r *http.Request, site string, actor Identity, 
 	s.failDeployStorage(r, site, actor, authz, files, policyOnFailure, message)
 }
 
-func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
-	s.recordDeployFailureAs(r, site, actor, action, "", files, message)
-}
-
 func (s *Server) recordDeployFailureAs(r *http.Request, site string, actor Identity, action string, role ManagementRole, files []deployFile, message string) {
 	s.recordDeployAudit(r, DeployAuditEvent{
 		Site:         site,
