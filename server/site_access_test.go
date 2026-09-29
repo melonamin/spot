@@ -47,8 +47,8 @@ func TestSiteAccessUpdate(t *testing.T) {
 		t.Fatalf("private site anonymous = %d, want 401", rec.Code)
 	}
 
-	// Denied paths: anonymous, stranger, invalid policy, unknown site, a
-	// maintainer changing maintainers, and site-host callers.
+	// Denied paths: anonymous, stranger, invalid policy, unknown site, and
+	// site-host callers.
 	if rec := st.do(accessRequest("demo", "", `{}`)); rec.Code != http.StatusNotFound {
 		t.Fatalf("anonymous access change = %d, want 404 (no identity)", rec.Code)
 	}
@@ -63,9 +63,6 @@ func TestSiteAccessUpdate(t *testing.T) {
 	}
 	if rec := st.do(accessRequest("missing", "owner@example.com", `{}`)); rec.Code != http.StatusNotFound {
 		t.Fatalf("unknown site = %d, want 404", rec.Code)
-	}
-	if rec := st.do(accessRequest("demo", "maint@example.com", `{"allow":["platform"]}`)); rec.Code != http.StatusForbidden {
-		t.Fatalf("maintainer dropping maintainers = %d, want 403", rec.Code)
 	}
 	onSite := asForwardUser(siteRequestWithBody(http.MethodPut, host, "/api/sites/demo/access", `{}`), "owner@example.com")
 	if rec := st.do(onSite); rec.Code != http.StatusBadRequest {
@@ -289,35 +286,26 @@ func TestSiteAccessAuthorizesBeforeReconcile(t *testing.T) {
 
 // Maintainers compare as a set: a maintainer may reorder or re-case the list
 // but not add, remove or replace an entry.
-func TestSiteAccessMaintainerListIsASet(t *testing.T) {
+// Like a deploy, the access API lets a maintainer change the maintainers
+// list, even to remove itself; the immutable owner keeps its claim.
+func TestSiteAccessMaintainersMayChangeMaintainers(t *testing.T) {
 	st := newLoginTestStack(t)
 	st.deploy(t, "owner@example.com", "demo",
 		`{"allow":["owner@example.com"],"maintainers":["maint@example.com","ops"]}`)
 
-	for _, body := range []string{
-		`{"allow":["platform"],"maintainers":["ops","maint@example.com"]}`,
-		`{"allow":["platform"],"maintainers":[" MAINT@example.com ","Ops","ops"]}`,
-	} {
-		if rec := st.do(accessRequest("demo", "maint@example.com", body)); rec.Code != http.StatusOK {
-			t.Fatalf("maintainer same set %s = %d %s, want 200", body, rec.Code, rec.Body.String())
-		}
+	if rec := st.do(accessRequest("demo", "maint@example.com", `{"allow":["platform"],"maintainers":["ops","extra@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("maintainer replacing maintainers = %d %s, want 200", rec.Code, rec.Body.String())
 	}
-	for _, body := range []string{
-		`{"allow":["platform"],"maintainers":["maint@example.com"]}`,
-		`{"allow":["platform"],"maintainers":["maint@example.com","ops","extra@example.com"]}`,
-		`{"allow":["platform"],"maintainers":["maint@example.com","admins"]}`,
-		`{"allow":["platform"]}`,
-	} {
-		if rec := st.do(accessRequest("demo", "maint@example.com", body)); rec.Code != http.StatusForbidden {
-			t.Fatalf("maintainer changed set %s = %d %s, want 403", body, rec.Code, rec.Body.String())
-		}
+	// Denied: the removed maintainer.
+	if rec := st.do(accessRequest("demo", "maint@example.com", `{}`)); rec.Code != http.StatusForbidden {
+		t.Fatalf("removed maintainer = %d %s, want 403", rec.Code, rec.Body.String())
 	}
-	if got := accessAuditCount(t, st, "demo", "maint@example.com", "denied"); got != 4 {
-		t.Fatalf("maintainer denied audit rows = %d, want 4", got)
+	// Allowed: the new maintainer, and the owner after every maintainer is gone.
+	if rec := st.do(accessRequest("demo", "extra@example.com", `{"allow":["platform"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("new maintainer = %d %s", rec.Code, rec.Body.String())
 	}
-	// The owner may change the set.
-	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["platform"],"maintainers":["ops"]}`)); rec.Code != http.StatusOK {
-		t.Fatalf("owner maintainers change = %d %s", rec.Code, rec.Body.String())
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["owner@example.com"],"maintainers":["ops"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("owner recovery = %d %s", rec.Code, rec.Body.String())
 	}
 }
 

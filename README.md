@@ -639,8 +639,9 @@ Important APIs:
   only for the caller's own sites. `mine` and `manageable` entries also carry `allow`
   (`null` when the site has no `allow` field).
 - `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
-  redeploy. The owner, an admin, or a maintainer may call it; a maintainer
-  cannot change `maintainers`. A concurrent content change returns `409`.
+  redeploy. The owner, an admin, or a maintainer may call it, with the same
+  rights as a deploy, including changing `maintainers`. A concurrent content
+  change returns `409`.
 - `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
   publication status.
 - `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site

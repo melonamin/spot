@@ -105,22 +105,9 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusServiceUnavailable, "the site's access policy needs owner or admin recovery")
 		return
 	}
+	// Like a deploy, any manager may change both lists: the immutable owner
+	// keeps its recovery claim whatever the maintainers list says.
 	current, currentErr := s.policyForSite(r.Context(), site)
-	if decision.Role == ManagementRoleMaintainer {
-		if currentErr != nil {
-			log.Printf("access %s: resolve current policy: %v", site, currentErr)
-			httpError(w, http.StatusServiceUnavailable, "the site's current access policy is unreadable; ask the owner or an admin")
-			return
-		}
-		if maintainersChanged(current, next) {
-			s.recordDeployAudit(r, DeployAuditEvent{
-				Site: site, Actor: actor, Action: "access", Status: "denied", AuthorizedAs: decision.Role,
-				Message: "maintainers may not change the maintainers list",
-			})
-			httpError(w, http.StatusForbidden, "only the site owner or a platform admin can change maintainers")
-			return
-		}
-	}
 	generation, err := generations.SiteContentGeneration(r.Context(), site)
 	if err != nil {
 		log.Printf("access %s: read content generation: %v", site, err)
