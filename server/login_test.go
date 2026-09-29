@@ -360,7 +360,15 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 		t.Fatalf("cookie replay on another site = %d, want 401", rec.Code)
 	}
 
-	logout := siteRequest(http.MethodGet, host, "/api/auth/logout")
+	// Only a page load signs out, so another page cannot do it with an image.
+	image := siteRequest(http.MethodGet, host, "/api/auth/logout")
+	image.Header.Set("Sec-Fetch-Mode", "no-cors")
+	image.Header.Set("Accept", "image/avif,image/webp,*/*")
+	image.AddCookie(cookie)
+	if rec := st.do(image); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("logout from an image = %d %v, want 403", rec.Code, rec.Result().Cookies())
+	}
+	logout := navigation(siteRequest(http.MethodGet, host, "/api/auth/logout"))
 	logout.AddCookie(cookie)
 	rec = st.do(logout)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
@@ -464,7 +472,37 @@ func TestDelegatedLoginGatesSDKAPIsOnOpenSites(t *testing.T) {
 		}
 	}
 
-	cookie := st.signIn(t, host, "viewer@example.com", "viewer")
+	// An open site's page starts the sign-in itself through /api/auth/login.
+	rec := st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2Fapp%3Fx%3D1")))
+	location, err := url.Parse(rec.Header().Get("Location"))
+	if rec.Code != http.StatusFound || err != nil || location.Host != "chat.example.com" ||
+		location.Query().Get("return_to") != "http://"+host+"/app?x=1" {
+		t.Fatalf("sign-in start = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	state := responseCookie(t, rec, loginStateCookieName)
+	if location.Query().Get("state") != state.Value {
+		t.Fatalf("sign-in state = %q, cookie %q", location.Query().Get("state"), state.Value)
+	}
+	claims := testLoginClaims(host, "viewer", time.Now())
+	claims["email"] = "viewer@example.com"
+	claims["state"] = state.Value
+	callback := siteRequest(http.MethodGet, host, "/api/auth/callback?token="+signTestLoginToken(t, testLoginTokenSecret, nil, claims)+"&return_to=%2Fapp")
+	callback.AddCookie(&http.Cookie{Name: state.Name, Value: state.Value})
+	rec = st.do(callback)
+	if rec.Code != http.StatusFound {
+		t.Fatalf("callback after sign-in start = %d %s", rec.Code, rec.Body.String())
+	}
+	cookie := responseCookie(t, rec, sessionCookieName)
+
+	// The sign-in start never leaves the site host.
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2F%2Fevil.example")))
+	if location, err := url.Parse(rec.Header().Get("Location")); err != nil || location.Query().Get("return_to") != "http://"+host+"/" {
+		t.Fatalf("sign-in start with foreign return_to = %q", rec.Header().Get("Location"))
+	}
+	if rec := st.do(navigation(siteRequest(http.MethodGet, "sites.localhost:8443", "/api/auth/login"))); rec.Code != http.StatusNotFound {
+		t.Fatalf("apex sign-in start = %d, want 404", rec.Code)
+	}
+
 	req := siteRequest(http.MethodGet, host, "/api/db/posts")
 	req.AddCookie(cookie)
 	if rec := st.do(req); rec.Code != http.StatusOK {
@@ -472,7 +510,7 @@ func TestDelegatedLoginGatesSDKAPIsOnOpenSites(t *testing.T) {
 	}
 	req = siteRequest(http.MethodGet, host, "/api/me")
 	req.AddCookie(cookie)
-	rec := st.do(req)
+	rec = st.do(req)
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"email":"viewer@example.com"`) {
 		t.Fatalf("signed-in /api/me = %d %s", rec.Code, rec.Body.String())
 	}
@@ -882,6 +920,9 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 	if rec.Code != http.StatusForbidden || !strings.Contains(rec.Body.String(), "secure connection") || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("plain http navigation = %d %s", rec.Code, rec.Body.String())
 	}
+	if rec := st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login"))); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("plain http sign-in start = %d %v", rec.Code, rec.Result().Cookies())
+	}
 	token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims(host, "plain", time.Now()))
 	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, "/api/auth/callback?token="+token)))
 	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
@@ -895,6 +936,11 @@ func TestDelegatedLoginRequiresSecureTransport(t *testing.T) {
 	page.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
 	if rec := st.do(page); rec.Code != http.StatusUnauthorized {
 		t.Fatalf("plain http session = %d, want 401", rec.Code)
+	}
+	check := siteRequest(http.MethodGet, host, "/api/auth/check")
+	check.AddCookie(&http.Cookie{Name: sessionCookieName, Value: value})
+	if rec := st.do(check); rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "secure connection") {
+		t.Fatalf("plain http check = %d %s, want the secure-connection page", rec.Code, rec.Body.String())
 	}
 
 	// Allowed: the same session over HTTPS.

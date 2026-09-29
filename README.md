@@ -325,7 +325,11 @@ SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
 3. Spot sets a signed session cookie for that host only and continues to
    `/api/auth/check`, which shows an "open in a new tab" page instead of
    looping when the browser dropped the cookie (for example in a frame).
-   `/api/auth/logout` clears the cookie.
+   `/api/auth/logout`, opened as a page, clears the cookie.
+
+Open sites serve their pages without sign-in, so a page that needs the SDK
+APIs starts the flow itself by navigating to
+`/api/auth/login?return_to=<path>` on its own host; step 2 onward is the same.
 
 Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
 site could plant cookies, so Spot shows a "needs a secure connection" page and

@@ -178,6 +178,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
 	mux.HandleFunc("GET /api/auth/callback", s.limited(s.dbLimit, s.handleAuthCallback))
+	mux.HandleFunc("GET /api/auth/login", s.handleAuthLogin)
 	mux.HandleFunc("GET /api/auth/check", s.handleAuthCheck)
 	mux.HandleFunc("GET /api/auth/logout", s.handleAuthLogout)
 	mux.HandleFunc("GET /api/tls/ask", s.limited(s.dbLimit, s.handleTLSAsk))

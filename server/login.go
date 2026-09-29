@@ -428,6 +428,10 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
+	if !s.loginTransportSecure(r) {
+		writeStatusPage(w, http.StatusBadRequest, insecureLoginPage)
+		return
+	}
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
 	if s.hasDuplicateSessionCookies(r) {
 		writeStatusPage(w, http.StatusBadRequest, statusPage{
@@ -443,8 +447,14 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	s.writeOpenInNewTab(w, r, returnTo)
 }
 
+// handleAuthLogout signs the viewer out. Only a page load may do it, so
+// another page cannot sign a viewer out with an image or a fetch.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
+		return
+	}
+	if !isNavigation(r) {
+		httpError(w, http.StatusForbidden, "sign out by opening /api/auth/logout in the browser")
 		return
 	}
 	http.SetCookie(w, s.sessionCookie(r, "", -1))
@@ -461,13 +471,27 @@ func isNavigation(r *http.Request) bool {
 }
 
 // denyAnonymousVisitor answers a site request that needs a signed-in viewer.
-// A page load starts a sign-in: it gets a login state cookie and a redirect
-// to the login URL carrying that state.
+// A page load starts a sign-in; anything else gets a JSON 401.
 func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
 	if !isNavigation(r) {
 		httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 		return
 	}
+	s.startLogin(w, r, r.URL.RequestURI())
+}
+
+// handleAuthLogin starts a sign-in on request. Open sites serve their pages
+// anonymously, so a page that needs the SDK APIs sends the browser here.
+func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
+	if !s.requireLoginSiteHost(w, r) {
+		return
+	}
+	s.startLogin(w, r, safeReturnPath(r.URL.Query().Get("return_to")))
+}
+
+// startLogin gives the browser a login state cookie and redirects it to the
+// login URL carrying that state, returning to returnPath on this host.
+func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath string) {
 	if !s.loginTransportSecure(r) {
 		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
 		return
@@ -481,7 +505,7 @@ func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, loginCookie(s.loginStateCookieName(r), state, int(loginStateMaxAge/time.Second)))
 	target := *s.login.loginURL
 	query := target.Query()
-	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+r.URL.RequestURI())
+	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+returnPath)
 	query.Set("state", state)
 	target.RawQuery = query.Encode()
 	w.Header().Set("Cache-Control", "no-store")
