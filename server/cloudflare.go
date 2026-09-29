@@ -408,7 +408,7 @@ func (s *Server) snapshotCloudflareSite(ctx context.Context, site string) (cloud
 	}
 	exportedPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if path != accessFileName {
+		if !isSiteAccessFile(path) {
 			exportedPaths = append(exportedPaths, path)
 		}
 	}
@@ -492,7 +492,7 @@ func cloudflareContentHashForDeploy(files []deployFile) string {
 	}
 	digests := make([]digestFile, 0, len(files))
 	for _, file := range files {
-		if file.path == accessFileName {
+		if isSiteAccessFile(file.path) {
 			continue
 		}
 		sum := sha256.Sum256(file.data)
@@ -515,7 +515,7 @@ func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
 		reasons = append(reasons, fmt.Sprintf("site has more than the %d-file Cloudflare Pages Direct Upload limit", maxCloudflareFiles))
 	}
 	for _, file := range snap.Files {
-		if file.Path == accessFileName {
+		if isSiteAccessFile(file.Path) {
 			continue
 		}
 		switch {
