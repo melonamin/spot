@@ -330,7 +330,8 @@ the mesh and homelab overlays do.
 3. Spot sets a signed session cookie for that host only and continues to
    `/api/auth/check`, which shows an "open in a new tab" page instead of
    looping when the browser dropped the cookie (for example in a frame).
-   `/api/auth/logout`, opened as a page, clears the cookie.
+   `/api/auth/logout`, opened as a page from the site itself, clears the
+   cookie; other sites cannot sign a viewer out.
 
 Open sites serve their pages without sign-in, so a page that needs the SDK
 APIs starts the flow itself by navigating to

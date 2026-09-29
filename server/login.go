@@ -326,9 +326,11 @@ func (s *Server) signInRequiredMessage(r *http.Request) string {
 }
 
 // safeReturnPath accepts only a local absolute path, so the auth routes can
-// never redirect off the site host.
+// never redirect off the site host. Backslashes are refused anywhere:
+// http.Redirect cleans "/a/../\\host" to "/\\host", which browsers read as
+// "//host".
 func safeReturnPath(raw string) string {
-	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.HasPrefix(raw, "/\\") {
+	if !strings.HasPrefix(raw, "/") || strings.HasPrefix(raw, "//") || strings.ContainsRune(raw, '\\') {
 		return "/"
 	}
 	for _, c := range raw {
@@ -361,6 +363,12 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
 	states := cookieValues(r, loginStateCookieName)
 	if len(states) == 0 {
+		// Another tab's callback already used the shared state and signed
+		// this browser in; the token here stays unused.
+		if _, ok := s.sessionIdentity(r); ok {
+			http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
+			return
+		}
 		// The browser dropped the state cookie (third-party cookie blocking
 		// in a frame), or it never started this sign-in.
 		s.writeOpenInNewTab(w, r, returnTo)
@@ -433,13 +441,14 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 	s.writeOpenInNewTab(w, r, returnTo)
 }
 
-// handleAuthLogout signs the viewer out. Only a page load may do it, so
-// another page cannot sign a viewer out with an image or a fetch.
+// handleAuthLogout signs the viewer out. Only a page load from this site, or
+// one the viewer typed, may do it, so another page cannot sign a viewer out
+// with an image, a fetch, or a link.
 func (s *Server) handleAuthLogout(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
-	if !isNavigation(r) {
+	if site := r.Header.Get("Sec-Fetch-Site"); !isNavigation(r) || (site != "" && site != "same-origin" && site != "none") {
 		httpError(w, http.StatusForbidden, "sign out by opening /api/auth/logout in the browser")
 		return
 	}
@@ -457,9 +466,10 @@ func isNavigation(r *http.Request) bool {
 }
 
 // denyAnonymousVisitor answers a site request that needs a signed-in viewer.
-// A page load starts a sign-in; anything else gets a JSON 401.
+// A page load on a site host starts a sign-in; anything else, including the
+// apex, which has no viewer sessions, gets a JSON 401.
 func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
-	if !isNavigation(r) {
+	if !isNavigation(r) || siteFromHost(s.requestHost(r), s.spotDomain) == "" {
 		httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 		return
 	}

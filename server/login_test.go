@@ -184,6 +184,9 @@ func TestSafeReturnPath(t *testing.T) {
 		"/\\evil.example":   "/",
 		"https://evil.test": "/",
 		"/a\r\nSet-Cookie:": "/",
+		// http.Redirect would clean this to "/\\evil.example" ("//evil.example").
+		"/a/../\\evil.example": "/",
+		"/docs\\page":          "/",
 	} {
 		if got := safeReturnPath(raw); got != want {
 			t.Errorf("safeReturnPath(%q) = %q, want %q", raw, got, want)
@@ -360,7 +363,14 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 		t.Fatalf("cookie replay on another site = %d, want 401", rec.Code)
 	}
 
-	// Only a page load signs out, so another page cannot do it with an image.
+	// Only a page load from this site signs out, so another page cannot do it
+	// with an image or a link.
+	link := navigation(siteRequest(http.MethodGet, host, "/api/auth/logout"))
+	link.Header.Set("Sec-Fetch-Site", "cross-site")
+	link.AddCookie(cookie)
+	if rec := st.do(link); rec.Code != http.StatusForbidden || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("logout from another site's link = %d %v, want 403", rec.Code, rec.Result().Cookies())
+	}
 	image := siteRequest(http.MethodGet, host, "/api/auth/logout")
 	image.Header.Set("Sec-Fetch-Mode", "no-cors")
 	image.Header.Set("Accept", "image/avif,image/webp,*/*")
@@ -369,6 +379,7 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 		t.Fatalf("logout from an image = %d %v, want 403", rec.Code, rec.Result().Cookies())
 	}
 	logout := navigation(siteRequest(http.MethodGet, host, "/api/auth/logout"))
+	logout.Header.Set("Sec-Fetch-Site", "same-origin")
 	logout.AddCookie(cookie)
 	rec = st.do(logout)
 	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/" {
@@ -871,11 +882,17 @@ func TestDelegatedLoginCallbackIsBoundToTheBrowser(t *testing.T) {
 	claims["state"] = otherLoginState
 	attackerLink := "/api/auth/callback?token=" + signTestLoginToken(t, testLoginTokenSecret, nil, claims) + "&return_to=%2F"
 
-	// Denied: a signed-in victim with no pending sign-in keeps their session.
-	rec := st.do(withCookie(siteRequest(http.MethodGet, host, attackerLink), victim))
+	// Denied: a browser with no pending sign-in gets no session; a signed-in
+	// victim keeps their own and continues to the check page.
+	rec := st.do(siteRequest(http.MethodGet, host, attackerLink))
 	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Open this site in a new tab") ||
 		len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("callback without login state = %d %v", rec.Code, rec.Result().Cookies())
+	}
+	rec = st.do(withCookie(siteRequest(http.MethodGet, host, attackerLink), victim))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/api/auth/check?return_to=%2F" ||
+		len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("callback without login state, signed in = %d %q %v", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
 	}
 	// Denied: a victim mid-sign-in holds a different state.
 	rec = st.do(withLoginState(siteRequest(http.MethodGet, host, attackerLink)))
@@ -986,5 +1003,25 @@ func TestRequireVisitorResolvesOnce(t *testing.T) {
 	}
 	if resolver.calls != 1 {
 		t.Fatalf("resolver calls = %d, want 1", resolver.calls)
+	}
+}
+
+// The apex has no viewer sessions, so a page load there never starts a
+// sign-in: it would set cookies on the apex and end at a callback that 404s.
+func TestApexNavigationDoesNotStartSignIn(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+	upload, err := st.srv.files.Put(context.Background(), "private", "a.txt", "text/plain", strings.NewReader("a"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := st.do(navigation(siteRequest(http.MethodGet, "sites.localhost:8443", upload.URL)))
+	if rec.Code != http.StatusUnauthorized || len(rec.Result().Cookies()) != 0 || rec.Header().Get("Location") != "" {
+		t.Fatalf("apex navigation = %d %q %v, want JSON 401", rec.Code, rec.Header().Get("Location"), rec.Result().Cookies())
+	}
+	// Allowed: the same page load on the site host starts a sign-in.
+	rec = st.do(navigation(siteRequest(http.MethodGet, "private.sites.localhost:8443", "/")))
+	if rec.Code != http.StatusFound || !strings.HasPrefix(rec.Header().Get("Location"), "https://chat.example.com/sites/login?") {
+		t.Fatalf("site host navigation = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
 }
