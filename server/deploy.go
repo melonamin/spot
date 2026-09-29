@@ -192,7 +192,11 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				deployReadError(w, err)
 				return
 			}
-			preserveAccess = parseDeployBool(string(raw))
+			var ok bool
+			if preserveAccess, ok = parseDeployBool(string(raw)); !ok {
+				httpError(w, http.StatusBadRequest, "preserve_access must be true or false")
+				return
+			}
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -604,12 +608,16 @@ func conflictingStalePaths(existing []string, files []deployFile, keep map[strin
 	return out
 }
 
-func parseDeployBool(raw string) bool {
+// parseDeployBool reads a boolean form field strictly: false removes a
+// stored _access.json, so a typo or an empty value must not mean false.
+func parseDeployBool(raw string) (value, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
-		return true
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
 	default:
-		return false
+		return false, false
 	}
 }
 

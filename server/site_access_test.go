@@ -403,3 +403,28 @@ func TestRedeployKeepsAccessSetThroughTheAPI(t *testing.T) {
 		t.Fatalf("anonymous after preserve_access=false = %d, want 200", rec.Code)
 	}
 }
+
+// preserve_access=false removes a stored policy, so only recognized values
+// count; anything else is refused before the site changes.
+func TestDeployPreserveAccessIsStrict(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "demo.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	for _, value := range []string{"", "keep", "ture", "2"} {
+		req := deployRequestOrderedFields(t, "sites.localhost:8443", "demo",
+			[][2]string{{"index.html", "<h1>demo</h1>"}}, map[string]string{"preserve_access": value})
+		if rec := st.do(asForwardUser(req, "owner@example.com")); rec.Code != http.StatusBadRequest {
+			t.Fatalf("preserve_access=%q = %d %s, want 400", value, rec.Code, rec.Body.String())
+		}
+		if rec := st.do(siteRequest(http.MethodGet, host, "/")); rec.Code != http.StatusUnauthorized {
+			t.Fatalf("site after preserve_access=%q = %d, want still restricted", value, rec.Code)
+		}
+	}
+	for _, value := range []string{"true", "1", "YES", "on"} {
+		req := deployRequestOrderedFields(t, "sites.localhost:8443", "demo",
+			[][2]string{{"index.html", "<h1>demo</h1>"}}, map[string]string{"preserve_access": value})
+		if rec := st.do(asForwardUser(req, "owner@example.com")); rec.Code != http.StatusOK {
+			t.Fatalf("preserve_access=%q = %d %s, want 200", value, rec.Code, rec.Body.String())
+		}
+	}
+}
