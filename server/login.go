@@ -361,6 +361,20 @@ func safeReturnPath(raw string) string {
 	return raw
 }
 
+// returnPath reads the request's return_to: a local path, or an absolute URL
+// on this same origin, which is what startLogin hands the login app, reduced
+// to its path and query. Anything else falls back to the site root.
+func (s *Server) returnPath(r *http.Request) string {
+	raw := r.URL.Query().Get("return_to")
+	if u, err := url.Parse(raw); err == nil && u.IsAbs() {
+		if u.User != nil || !strings.EqualFold(u.Scheme, s.requestScheme(r)) || !sameHost(u.Host, s.requestHost(r)) {
+			return "/"
+		}
+		raw = u.RequestURI()
+	}
+	return safeReturnPath(raw)
+}
+
 func (s *Server) requireLoginSiteHost(w http.ResponseWriter, r *http.Request) bool {
 	if s.login == nil || siteFromHost(s.requestHost(r), s.spotDomain) == "" {
 		http.NotFound(w, r)
@@ -380,7 +394,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	host := s.loginHost(r)
-	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
+	returnTo := s.returnPath(r)
 	states := cookieValues(r, loginStateCookieName)
 	if len(states) == 0 {
 		// Another tab's callback already used the shared state and signed
@@ -446,7 +460,7 @@ func (s *Server) handleAuthCheck(w http.ResponseWriter, r *http.Request) {
 		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
 		return
 	}
-	returnTo := safeReturnPath(r.URL.Query().Get("return_to"))
+	returnTo := s.returnPath(r)
 	if s.hasDuplicateSessionCookies(r) {
 		writeStatusPage(w, http.StatusBadRequest, statusPage{
 			Title:   "Sign-in failed",
@@ -503,7 +517,7 @@ func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
-	s.startLogin(w, r, safeReturnPath(r.URL.Query().Get("return_to")))
+	s.startLogin(w, r, s.returnPath(r))
 }
 
 // startLogin gives the browser a login state cookie and redirects it to the

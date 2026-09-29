@@ -1105,3 +1105,41 @@ func TestSessionExpiryUsesResolvedIdentity(t *testing.T) {
 		t.Fatal("identity without a session reported an expiry")
 	}
 }
+
+// The login app may echo startLogin's absolute return_to back to the
+// callback; a same-origin URL keeps its path, anything else goes to the root.
+func TestReturnPathAcceptsSameOriginURLs(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "demo.sites.localhost:8443"
+	for raw, want := range map[string]string{
+		"/page?x=1":                               "/page?x=1",
+		"http://" + host + "/page?x=1":            "/page?x=1",
+		"HTTP://DEMO.sites.localhost:8443/a#frag": "/a",
+		"http://" + host:                          "/",
+		"http://evil.example/page":                "/",
+		"https://" + host + "/page":               "/",
+		"http://other.sites.localhost:8443/":      "/",
+		"http://user@" + host + "/page":           "/",
+		"http://" + host + "//evil.example":       "/",
+		"http://" + host + "/a/../%5Cevil":        "/a/../%5Cevil",
+	} {
+		req := siteRequest(http.MethodGet, host, "/api/auth/check?return_to="+url.QueryEscape(raw))
+		if got := st.srv.returnPath(req); got != want {
+			t.Errorf("returnPath(%q) = %q, want %q", raw, got, want)
+		}
+	}
+
+	// End to end: the callback given back the URL startLogin sent.
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	rec := st.do(navigation(siteRequest(http.MethodGet, host, "/docs/?q=1")))
+	sent, err := url.Parse(rec.Header().Get("Location"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	token := signTestLoginToken(t, testLoginTokenSecret, nil, testLoginClaims(host, "echo", time.Now()))
+	rec = st.do(withLoginState(siteRequest(http.MethodGet, host,
+		"/api/auth/callback?token="+token+"&return_to="+url.QueryEscape(sent.Query().Get("return_to")))))
+	if rec.Code != http.StatusFound || rec.Header().Get("Location") != "/api/auth/check?return_to=%2Fdocs%2F%3Fq%3D1" {
+		t.Fatalf("callback with echoed return_to = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+}

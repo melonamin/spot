@@ -320,7 +320,8 @@ the mesh and homelab overlays do.
    `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other requests get
    `401`.
 2. The login app authenticates the browser and redirects it to
-   `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`. The token is
+   `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`; `return_to`
+   may be the path or the site URL from step 1 unchanged. The token is
    a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
    (`spot-login`), `host` (the exact site host, lowercase, with any non-default
    port), `state` (the `state` query value, unchanged), `email`, optional
