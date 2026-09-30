@@ -598,12 +598,14 @@ may be performed by that owner, a platform admin from `SPOT_ADMIN_EMAILS` or
 the maintainer list through a later authorized deploy, including removing
 themselves.
 
-If a maintainer deletes a site, Spot purges its content and dependent data but
-keeps a recovery tombstone for the original owner. Only that owner or a
-platform admin can redeploy the reserved name or release it permanently. This
-prevents delegated deletion from becoming ownership transfer. `/spots` shows
-active sites to every authorized manager and shows recovery tombstones only to
-their owner or a platform admin.
+Deleting a site purges its content and dependent data but keeps a tombstone
+for the original owner, whoever deletes it. Only that owner or a platform admin
+can redeploy the reserved name, and only a platform admin can release it
+permanently. A name never silently passes to another owner: a page from the
+deleted site may still be open in a visitor's browser, or have installed a
+service worker, on the same origin, and would then act on the new site as that
+visitor. `/spots` shows active sites to every authorized manager and shows
+tombstones only to their owner or a platform admin.
 
 In `single-user` mode, every visitor has the same configured identity.
 Ownership still works, but `_access.json` cannot provide per-person
@@ -675,8 +677,8 @@ Important APIs:
   DNS, and Access resources were removed manually.
 - `DELETE /api/sites/{name}/cloudflare` unpublishes it from Cloudflare.
 - `DELETE /api/sites/{name}` purges a site's files, uploads, and private docs.
-  Owner/admin deletion releases the registry claim; maintainer deletion leaves
-  an owner-recoverable tombstone.
+  It leaves an owner-recoverable tombstone; a platform admin deleting a
+  tombstone releases the name.
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
 

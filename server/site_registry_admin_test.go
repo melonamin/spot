@@ -119,3 +119,56 @@ func TestNilAdminPolicyDeniesNonOwner(t *testing.T) {
 		t.Fatalf("deploy with nil admin policy = %v, want ErrDeployForbidden", err)
 	}
 }
+
+// TestDeletedSiteNameStaysWithItsOwner: a deleted site's name, and so its
+// browser origin, never passes to another owner; only an admin can release it.
+func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
+	ctx := context.Background()
+	registry := newAdminRegistry(t, &AccessPolicy{Allow: []string{"admin@example.com"}})
+	owner := Identity{Email: "owner@example.com", PeerIP: "100.64.1.1"}
+	admin := Identity{Email: "admin@example.com", PeerIP: "100.64.2.1"}
+	stranger := Identity{Email: "stranger@example.com", PeerIP: "100.64.3.1"}
+	noPurge := func(context.Context) error { return nil }
+
+	if _, err := registry.AuthorizeDeploy(ctx, "demo", owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DeleteSite(ctx, "demo", owner, noPurge); err != nil {
+		t.Fatalf("owner delete = %v", err)
+	}
+	if state, err := registry.SiteState(ctx, "demo"); err != nil || state != SiteStateDeleted {
+		t.Fatalf("state after owner delete = %q, %v; want a tombstone", state, err)
+	}
+	if _, err := registry.AuthorizeDeploy(ctx, "demo", stranger); !errors.Is(err, ErrDeployForbidden) {
+		t.Fatalf("stranger claim of a deleted name = %v, want forbidden", err)
+	}
+	if err := registry.DeleteSite(ctx, "demo", owner, noPurge); !errors.Is(err, ErrSiteNameReleaseForbidden) {
+		t.Fatalf("owner release = %v, want ErrSiteNameReleaseForbidden", err)
+	}
+	if err := registry.DeleteSite(ctx, "demo", admin, noPurge); err != nil {
+		t.Fatalf("admin release = %v", err)
+	}
+	if authz, err := registry.AuthorizeDeploy(ctx, "demo", stranger); err != nil || authz.Action != "create" {
+		t.Fatalf("claim after admin release = %+v, %v; want a new site", authz, err)
+	}
+
+	// An admin who owns the deleted site can still release it, and is offered to.
+	if _, err := registry.AuthorizeDeploy(ctx, "admins-own", admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DeleteSite(ctx, "admins-own", admin, noPurge); err != nil {
+		t.Fatalf("admin-owner delete = %v", err)
+	}
+	manageable, err := registry.SitesManageableBy(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range manageable {
+		if site.Name == "admins-own" && site.ManagementRole != ManagementRoleAdmin {
+			t.Fatalf("admin-owned tombstone listed as %q, want admin", site.ManagementRole)
+		}
+	}
+	if err := registry.DeleteSite(ctx, "admins-own", admin, noPurge); err != nil {
+		t.Fatalf("admin-owner release = %v", err)
+	}
+}

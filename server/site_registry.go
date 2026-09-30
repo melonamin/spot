@@ -16,6 +16,7 @@ var (
 	ErrDeployForbidden                  = errors.New("deploy forbidden")
 	ErrSiteNotFound                     = errors.New("site not found")
 	ErrSiteNotActive                    = errors.New("site is not active")
+	ErrSiteNameReleaseForbidden         = errors.New("only a platform admin can release a deleted site's name")
 	ErrExternalContentMutationActive    = errors.New("external content mutation already active")
 	ErrExternalContentMutationLeaseLost = errors.New("external content mutation lease lost")
 	ErrPolicyTransitionConflict         = errors.New("content generation changed or policy transition pending")
@@ -547,6 +548,10 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 				if err != nil {
 					log.Printf("manageable sites: omit %s: %v", candidate.Name, err)
 				} else if role != "" {
+					// Only an admin can release a tombstone, so an admin sees it as admin even when owning it.
+					if candidate.State == SiteStateDeleted && allowsAdmin(r.admins, actor) {
+						role = ManagementRoleAdmin
+					}
 					resolved[index] = &ManageableSite{OwnedSite: candidate, ManagementRole: role}
 				}
 			}
@@ -778,8 +783,11 @@ func (r *SiteRegistry) RecoverStaleExternalContentMutation(ctx context.Context, 
 	return nil
 }
 
-// DeleteSite removes a site's registry row after purge succeeds. A
-// failed purge leaves the site claimed so its owner can retry.
+// DeleteSite leaves an empty `deleted` tombstone tied to the immutable owner
+// after purge succeeds, so the name, and the browser origin that code from the
+// deleted site may still run on, never passes to another owner. Only a platform
+// admin can release a tombstone. A failed purge leaves the site claimed so its
+// owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) (retErr error) {
 	var record SiteRecord
 	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)
@@ -800,8 +808,9 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		return ErrSiteNotActive
 	}
 	if record.State == SiteStateDeleted {
-		if role == ManagementRoleMaintainer {
-			return ErrDeployForbidden
+		// An admin who also owns the tombstone manages it as owner, so check admin membership itself.
+		if !allowsAdmin(r.admins, actor) {
+			return ErrSiteNameReleaseForbidden
 		}
 		if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
 			return fmt.Errorf("release deleted site %s: %w", site, err)
@@ -851,20 +860,12 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 			return fmt.Errorf("purge site %s: %w", site, err)
 		}
 	}
-	if role == ManagementRoleMaintainer {
-		_, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'deleted', title = '', description = '', tags = '[]',
-			content_dirty = 0, content_external_mutation = 0,
-			content_external_mutation_started_at = 0, content_external_mutation_owner = '',
-			updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
-			WHERE name = ? AND state = 'active'`, site)
-		if err != nil {
-			return fmt.Errorf("tombstone site %s: %w", site, err)
-		}
-		deletionComplete = true
-		return nil
-	}
-	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
-		return fmt.Errorf("delete site %s: %w", site, err)
+	if _, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'deleted', title = '', description = '', tags = '[]',
+		content_dirty = 0, content_external_mutation = 0,
+		content_external_mutation_started_at = 0, content_external_mutation_owner = '',
+		updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+		WHERE name = ? AND state = 'active'`, site); err != nil {
+		return fmt.Errorf("tombstone site %s: %w", site, err)
 	}
 	deletionComplete = true
 	return nil

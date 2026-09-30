@@ -209,10 +209,12 @@ Deploy and upload storage are intentionally separate:
   uploads (another site's path is `404`), because the caller's identity there
   belongs to that host; the apex serves any site's uploads.
 
-Deleting a site purges deployed files, uploads, and private document scope. An
-owner or platform admin also frees the registry row. A maintainer delete keeps
-an empty `deleted` tombstone tied to the immutable owner; only that owner or an
-admin can recreate the site or permanently release the name. If a Cloudflare
+Deleting a site purges deployed files, uploads, and private document scope and
+keeps an empty `deleted` tombstone tied to the immutable owner, whoever deletes
+it; only that owner or an admin can recreate the site, and only an admin can
+permanently release the name. A released or reassigned name would hand its
+browser origin, where the deleted site's pages or service workers may still
+run, to a new owner. If a Cloudflare
 publication row exists, deletion returns `409 Conflict`; any authorized active-
 site manager must unpublish first so the public copy, custom domain, and DNS
 record are removed deliberately.

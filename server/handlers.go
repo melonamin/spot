@@ -523,6 +523,8 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 		s.denySiteAccess(w, r, http.StatusForbidden, "this site is restricted by its "+accessFileName, page)
 		return false
 	}
+	// A shared cache in front of Spot must not hand this viewer's content to anyone else.
+	w.Header().Set("Cache-Control", "no-store")
 	return true
 }
 
@@ -763,8 +765,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		disposition = "inline"
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
-	// IDs are random per upload, so content at a URL never changes.
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	// IDs are random per upload, so content at a URL never changes; a restricted
+	// site's upload keeps authorizeSiteAccess's no-store.
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	}
 	if _, err := io.Copy(w, obj); err != nil {
 		log.Printf("files: stream %s/%s/%s: %v", site, id, name, err)
 	}
@@ -780,6 +785,8 @@ type meResponse struct {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	// The caller's identity, or its absence, is never shared with another requester through a cache.
+	w.Header().Set("Cache-Control", "no-store")
 	id, ok := s.resolveIdentity(w, r, "identity")
 	if !ok {
 		return

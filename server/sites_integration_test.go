@@ -174,13 +174,14 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 	registry := NewSiteRegistry(db, nil)
 	store := &DocStore{db: db}
 	srv := &Server{
-		store:      store,
-		sites:      sites,
-		files:      files,
-		deployAuth: registry,
-		siteAdmin:  registry,
-		resolver:   NewStaticResolver("it-deleter@example.com", "Integration Deleter", nil),
-		spotDomain: "spot.localhost",
+		store:       store,
+		sites:       sites,
+		files:       files,
+		deployAuth:  registry,
+		siteAdmin:   registry,
+		resolver:    NewStaticResolver("it-deleter@example.com", "Integration Deleter", nil),
+		spotDomain:  "spot.localhost",
+		deployLimit: NewRateLimiter(1000, 1000),
 	}
 	ts := httptest.NewServer(srv.routes())
 	defer ts.Close()
@@ -268,12 +269,42 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 	if uploads := filesList(ctx, files, site); len(uploads) != 0 {
 		t.Errorf("uploads after delete = %v, want none", uploads)
 	}
-	var count int
-	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM sites WHERE name = ?`, site).Scan(&count); err != nil {
-		t.Fatalf("count sites: %v", err)
+	var state, owner string
+	if err := db.QueryRowContext(ctx, `SELECT state, owner_email FROM sites WHERE name = ?`, site).Scan(&state, &owner); err != nil {
+		t.Fatalf("read tombstone: %v", err)
 	}
-	if count != 0 {
-		t.Errorf("registry rows after delete = %d, want 0", count)
+	if state != string(SiteStateDeleted) || owner != "it-deleter@example.com" {
+		t.Errorf("registry row after delete = %s owned by %s, want a deleted tombstone owned by the deleter", state, owner)
+	}
+
+	// The name, and its browser origin, never passes to another owner.
+	srv.resolver = NewStaticResolver("intruder@example.com", "Intruder", nil)
+	req = deployRequest(t, "spot.localhost", site, map[string]string{"index.html": "<h1>mine now</h1>"})
+	res, err = http.DefaultClient.Do(mustOutbound(t, req, ts.URL+"/api/deploy"))
+	if err != nil {
+		t.Fatalf("deploy by stranger: %v", err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Errorf("stranger deploy to a deleted name = %d, want 403", res.StatusCode)
+	}
+
+	// Nor can the owner release it for someone else.
+	srv.resolver = NewStaticResolver("it-deleter@example.com", "Integration Deleter", nil)
+	del, err = http.NewRequest(http.MethodDelete, ts.URL+"/api/sites/"+site, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	del.Header.Set("X-Forwarded-Host", "spot.localhost")
+	res, err = http.DefaultClient.Do(del)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
+	if res.StatusCode != http.StatusForbidden {
+		t.Errorf("owner release = %d, want 403", res.StatusCode)
 	}
 }
 

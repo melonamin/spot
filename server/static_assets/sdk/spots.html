@@ -1756,7 +1756,9 @@
         setTimeout(() => {
           mySites = mySites.filter((s) => s.name !== site.name);
           renderDeploys();
-          toast(site.name + ' is gone');
+          toast(site.state === 'deleted' ? site.name + ' is released' : site.name + ' is deleted; its name stays reserved');
+          // A delete leaves the owner's tombstone; the server lists it with the viewer's role.
+          loadMine(true);
         }, 380);
       };
 
@@ -1817,7 +1819,7 @@
           if (site.state === 'deleted') {
             const note = document.createElement('p');
             note.className = 'sitemeta';
-            note.textContent = 'Deleted site · the name remains reserved for recovery';
+            note.textContent = 'Deleted site · the name stays reserved for its owner';
             info.append(head, note);
             const recovery = document.createElement('div');
             recovery.className = 'actions';
@@ -1825,15 +1827,19 @@
             redeploy.className = 'btn btn-open';
             redeploy.href = '/?site=' + encodeURIComponent(site.name);
             redeploy.textContent = 'Redeploy same name';
-            const release = document.createElement('button');
-            release.type = 'button';
-            release.className = 'btn btn-delete';
-            release.textContent = 'Release name';
-            release.addEventListener('click', (e) => {
-              e.stopPropagation();
-              armSiteDelete(site, row, release, 'Release name', 'Click again to release');
-            });
-            recovery.append(redeploy, release);
+            recovery.append(redeploy);
+            // Only an admin can release a deleted name for someone else to claim.
+            if (site.management_role === 'admin') {
+              const release = document.createElement('button');
+              release.type = 'button';
+              release.className = 'btn btn-delete';
+              release.textContent = 'Release name';
+              release.addEventListener('click', (e) => {
+                e.stopPropagation();
+                armSiteDelete(site, row, release, 'Release name', 'Click again to release');
+              });
+              recovery.append(release);
+            }
             row.append(info, recovery);
             siteList.appendChild(row);
             continue;

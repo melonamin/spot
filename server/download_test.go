@@ -189,6 +189,37 @@ func TestSiteStaticHidesAccessPolicy(t *testing.T) {
 	}
 }
 
+func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "shared", accessFileName, `{"allow": ["sasha@example.com"]}`)
+	writeSiteFile(t, dir, "shared", "index.html", "<h1>shared</h1>")
+	writeSiteFile(t, dir, "open", "index.html", "<h1>open</h1>")
+	srv := downloadServer(t, dir)
+	srv.serveStatic = true
+	get := func(site, target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api"+target, nil)
+		req.Header.Set("X-Forwarded-Host", site+".spot.localhost")
+		req.Header.Set("X-Forwarded-For", "100.64.0.7")
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, target := range []string{"/", "/api/download", "/api/me"} {
+		rec := get("shared", target)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("restricted %s = %d with Cache-Control %q, want 200 and no-store",
+				target, rec.Code, rec.Header().Get("Cache-Control"))
+		}
+	}
+	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "" {
+		t.Errorf("open site = %d with Cache-Control %q, want 200 and cacheable", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	if rec := get("open", "/api/me"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("open site /api/me = %d with Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+}
+
 func TestHandleSiteDownloadOpenSiteReturnsZip(t *testing.T) {
 	dir := t.TempDir()
 	writeSiteFile(t, dir, "open", "index.html", "<h1>hi</h1>")
