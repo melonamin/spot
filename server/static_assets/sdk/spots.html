@@ -1754,14 +1754,11 @@
         row.style.maxHeight = row.offsetHeight + 'px';
         requestAnimationFrame(() => row.classList.add('vanish'));
         setTimeout(() => {
-          // Deleting a site leaves its owner's tombstone, which owners and admins see;
-          // releasing a tombstone frees the name.
-          const reserved = site.state !== 'deleted' && site.management_role !== 'maintainer';
-          mySites = reserved
-            ? mySites.map((s) => (s.name === site.name ? { ...s, state: 'deleted', title: '', tags: [] } : s))
-            : mySites.filter((s) => s.name !== site.name);
+          mySites = mySites.filter((s) => s.name !== site.name);
           renderDeploys();
-          toast(reserved ? site.name + ' is deleted; its name stays reserved' : site.name + ' is gone');
+          toast(site.state === 'deleted' ? site.name + ' is released' : site.name + ' is deleted; its name stays reserved');
+          // A delete leaves the owner's tombstone; the server lists it with the viewer's role.
+          loadMine(true);
         }, 380);
       };
 

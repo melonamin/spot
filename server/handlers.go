@@ -785,14 +785,14 @@ type meResponse struct {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	// The caller's identity, or its absence, is never shared with another requester through a cache.
+	w.Header().Set("Cache-Control", "no-store")
 	id, ok := s.resolveIdentity(w, r, "identity")
 	if !ok {
 		return
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	capabilitiesAvailable := s.siteLifecycleAllowsCapabilities(r.Context(), site)
-	// The caller's identity is never shared with another requester through a cache.
-	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, meResponse{
 		Identity:     id,
 		AIAllowed:    capabilitiesAvailable && s.aiAllowedFor(r.Context(), site, id),
