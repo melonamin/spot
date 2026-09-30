@@ -290,7 +290,7 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 		t.Errorf("stranger deploy to a deleted name = %d, want 403", res.StatusCode)
 	}
 
-	// Nor can the owner release it for someone else.
+	// Deleting it again leaves the tombstone, and the owner cannot release it.
 	srv.resolver = NewStaticResolver("it-deleter@example.com", "Integration Deleter", nil)
 	del, err = http.NewRequest(http.MethodDelete, ts.URL+"/api/sites/"+site, nil)
 	if err != nil {
@@ -303,8 +303,25 @@ func TestSiteDeleteRoundtrip(t *testing.T) {
 	}
 	io.Copy(io.Discard, res.Body)
 	res.Body.Close()
+	if res.StatusCode != http.StatusNotFound {
+		t.Errorf("second delete = %d, want 404", res.StatusCode)
+	}
+	release, err := http.NewRequest(http.MethodDelete, ts.URL+"/api/sites/"+site+"?release=true", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	release.Header.Set("X-Forwarded-Host", "spot.localhost")
+	res, err = http.DefaultClient.Do(release)
+	if err != nil {
+		t.Fatalf("release: %v", err)
+	}
+	io.Copy(io.Discard, res.Body)
+	res.Body.Close()
 	if res.StatusCode != http.StatusForbidden {
 		t.Errorf("owner release = %d, want 403", res.StatusCode)
+	}
+	if err := db.QueryRowContext(ctx, `SELECT state FROM sites WHERE name = ?`, site).Scan(&state); err != nil || state != string(SiteStateDeleted) {
+		t.Errorf("registry row after refused release = %q, %v; want the tombstone", state, err)
 	}
 }
 

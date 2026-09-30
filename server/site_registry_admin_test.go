@@ -121,7 +121,8 @@ func TestNilAdminPolicyDeniesNonOwner(t *testing.T) {
 }
 
 // TestDeletedSiteNameStaysWithItsOwner: a deleted site's name, and so its
-// browser origin, never passes to another owner; only an admin can release it.
+// browser origin, never passes to another owner; deleting again never releases
+// it, and only an admin's explicit release does.
 func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
 	ctx := context.Background()
 	registry := newAdminRegistry(t, &AccessPolicy{Allow: []string{"admin@example.com"}})
@@ -133,6 +134,9 @@ func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
 	if _, err := registry.AuthorizeDeploy(ctx, "demo", owner); err != nil {
 		t.Fatal(err)
 	}
+	if err := registry.ReleaseSiteName(ctx, "demo", admin); !errors.Is(err, ErrSiteNotFound) {
+		t.Fatalf("release of an active site = %v, want ErrSiteNotFound", err)
+	}
 	if err := registry.DeleteSite(ctx, "demo", owner, noPurge); err != nil {
 		t.Fatalf("owner delete = %v", err)
 	}
@@ -142,17 +146,25 @@ func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
 	if _, err := registry.AuthorizeDeploy(ctx, "demo", stranger); !errors.Is(err, ErrDeployForbidden) {
 		t.Fatalf("stranger claim of a deleted name = %v, want forbidden", err)
 	}
-	if err := registry.DeleteSite(ctx, "demo", owner, noPurge); !errors.Is(err, ErrSiteNameReleaseForbidden) {
+	for _, actor := range []Identity{owner, admin} {
+		if err := registry.DeleteSite(ctx, "demo", actor, noPurge); !errors.Is(err, ErrSiteNotFound) {
+			t.Fatalf("second delete by %s = %v, want ErrSiteNotFound and the tombstone kept", actor.Email, err)
+		}
+	}
+	if err := registry.ReleaseSiteName(ctx, "demo", owner); !errors.Is(err, ErrSiteNameReleaseForbidden) {
 		t.Fatalf("owner release = %v, want ErrSiteNameReleaseForbidden", err)
 	}
-	if err := registry.DeleteSite(ctx, "demo", admin, noPurge); err != nil {
+	if state, err := registry.SiteState(ctx, "demo"); err != nil || state != SiteStateDeleted {
+		t.Fatalf("state after refused releases = %q, %v; want the tombstone", state, err)
+	}
+	if err := registry.ReleaseSiteName(ctx, "demo", admin); err != nil {
 		t.Fatalf("admin release = %v", err)
 	}
 	if authz, err := registry.AuthorizeDeploy(ctx, "demo", stranger); err != nil || authz.Action != "create" {
 		t.Fatalf("claim after admin release = %+v, %v; want a new site", authz, err)
 	}
 
-	// An admin who owns the deleted site can still release it, and is offered to.
+	// An admin who owns the deleted site can release it too, and is offered to.
 	if _, err := registry.AuthorizeDeploy(ctx, "admins-own", admin); err != nil {
 		t.Fatal(err)
 	}
@@ -168,7 +180,7 @@ func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
 			t.Fatalf("admin-owned tombstone listed as %q, want admin", site.ManagementRole)
 		}
 	}
-	if err := registry.DeleteSite(ctx, "admins-own", admin, noPurge); err != nil {
+	if err := registry.ReleaseSiteName(ctx, "admins-own", admin); err != nil {
 		t.Fatalf("admin-owner release = %v", err)
 	}
 }

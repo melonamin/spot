@@ -785,8 +785,8 @@ func (r *SiteRegistry) RecoverStaleExternalContentMutation(ctx context.Context, 
 
 // DeleteSite leaves an empty `deleted` tombstone tied to the immutable owner
 // after purge succeeds, so the name, and the browser origin that code from the
-// deleted site may still run on, never passes to another owner. Only a platform
-// admin can release a tombstone. A failed purge leaves the site claimed so its
+// deleted site may still run on, never passes to another owner. Only
+// ReleaseSiteName frees it. A failed purge leaves the site claimed so its
 // owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) (retErr error) {
 	var record SiteRecord
@@ -808,14 +808,8 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		return ErrSiteNotActive
 	}
 	if record.State == SiteStateDeleted {
-		// An admin who also owns the tombstone manages it as owner, so check admin membership itself.
-		if !allowsAdmin(r.admins, actor) {
-			return ErrSiteNameReleaseForbidden
-		}
-		if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
-			return fmt.Errorf("release deleted site %s: %w", site, err)
-		}
-		return nil
+		// Deleting is never releasing: a second or racing delete leaves the tombstone.
+		return ErrSiteNotFound
 	}
 	var reservation string
 	err = r.db.QueryRowContext(ctx, `UPDATE sites SET
@@ -868,6 +862,27 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		return fmt.Errorf("tombstone site %s: %w", site, err)
 	}
 	deletionComplete = true
+	return nil
+}
+
+// ReleaseSiteName frees a deleted site's name for anyone to claim. Only a
+// platform admin may, including one who owns the tombstone, and only a
+// tombstone is removed, so it cannot race a delete or a recreate.
+func (r *SiteRegistry) ReleaseSiteName(ctx context.Context, site string, actor Identity) error {
+	if !allowsAdmin(r.admins, actor) {
+		return ErrSiteNameReleaseForbidden
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM sites WHERE name = ? AND state = 'deleted'`, site)
+	if err != nil {
+		return fmt.Errorf("release site name %s: %w", site, err)
+	}
+	released, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count released site name %s: %w", site, err)
+	}
+	if released != 1 {
+		return ErrSiteNotFound
+	}
 	return nil
 }
 

@@ -1743,7 +1743,8 @@
         button.disabled = true;
         button.textContent = 'Poof…';
         try {
-          await api('/api/sites/' + encodeURIComponent(site.name), { method: 'DELETE' });
+          const release = site.state === 'deleted' ? '?release=true' : '';
+          await api('/api/sites/' + encodeURIComponent(site.name) + release, { method: 'DELETE' });
         } catch (err) {
           button.disabled = false;
           button.textContent = label;

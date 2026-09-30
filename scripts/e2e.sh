@@ -450,10 +450,10 @@ code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE http://spot.localhost:8080
 mine=$($CURL http://spot.localhost:8080/api/sites/mine)
 echo "$mine" | grep -q '"name":"webdeploy"' && fail "webdeploy still listed after delete"
 code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE http://spot.localhost:8080/api/sites/webdeploy)
-[ "$code" = "403" ] || fail "owner release of a deleted name returned $code, want 403"
+[ "$code" = "404" ] || fail "deleting a deleted site returned $code, want 404"
 refill_deploy_budget
-code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE http://spot.localhost:8080/api/sites/never-deployed)
-[ "$code" = "404" ] || fail "deleting a missing site returned $code, want 404"
+code=$($CURL -o /dev/null -w '%{http_code}' -X DELETE 'http://spot.localhost:8080/api/sites/webdeploy?release=true')
+[ "$code" = "403" ] || fail "owner release of a deleted name returned $code, want 403"
 echo "    webdeploy deleted; its name stays reserved"
 
 echo "==> AI proxy"

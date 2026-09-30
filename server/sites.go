@@ -539,6 +539,34 @@ func siteHostForRequest(requestHost, spotDomain, site string) string {
 	return siteHost
 }
 
+// releaseSiteName serves DELETE /api/sites/{name}?release=true: an admin frees
+// a deleted site's name. A plain DELETE never does.
+func (s *Server) releaseSiteName(w http.ResponseWriter, r *http.Request, site string, actor Identity) {
+	releaser, ok := s.siteAdmin.(interface {
+		ReleaseSiteName(context.Context, string, Identity) error
+	})
+	if !ok {
+		httpError(w, http.StatusServiceUnavailable, "site name release is not configured")
+		return
+	}
+	err := releaser.ReleaseSiteName(r.Context(), site, actor)
+	switch {
+	case errors.Is(err, ErrSiteNameReleaseForbidden):
+		s.recordDeployAudit(r, DeployAuditEvent{
+			Site: site, Actor: actor, Action: "release", Status: "denied", Message: err.Error(),
+		})
+		httpError(w, http.StatusForbidden, err.Error())
+	case errors.Is(err, ErrSiteNotFound):
+		httpError(w, http.StatusNotFound, "no deleted site named "+site)
+	case err != nil:
+		log.Printf("release site name %s: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not release the site name")
+	default:
+		s.recordDeployAudit(r, DeployAuditEvent{Site: site, Actor: actor, Action: "release", Status: "success"})
+		writeJSON(w, http.StatusOK, map[string]any{"site": site, "released": true})
+	}
+}
+
 func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	if !s.requireSitesAPI(w, r) {
 		return
@@ -561,6 +589,11 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 	siteLock := s.siteMutationLock(site)
 	siteLock.Lock()
 	defer siteLock.Unlock()
+
+	if r.URL.Query().Get("release") == "true" {
+		s.releaseSiteName(w, r, site, actor)
+		return
+	}
 
 	var decision ManagementDecision
 	if manager, ok := s.siteManager.(interface {
@@ -706,11 +739,6 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 			Message: "actor is not the site owner, a maintainer, or a platform admin",
 		})
 		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can delete this site")
-	case errors.Is(err, ErrSiteNameReleaseForbidden):
-		s.recordDeployAudit(r, DeployAuditEvent{
-			Site: site, Actor: actor, Action: "delete", Status: "denied", Message: err.Error(),
-		})
-		httpError(w, http.StatusForbidden, err.Error()+"; the owner can redeploy it")
 	case errors.Is(err, errCloudflarePublicationExists):
 		httpError(w, http.StatusConflict, "unpublish this site from Cloudflare before deleting it")
 	case err != nil:

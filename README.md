@@ -600,8 +600,9 @@ themselves.
 
 Deleting a site purges its content and dependent data but keeps a tombstone
 for the original owner, whoever deletes it. Only that owner or a platform admin
-can redeploy the reserved name, and only a platform admin can release it
-permanently. A name never silently passes to another owner: a page from the
+can redeploy the reserved name. Deleting it again changes nothing; only a
+platform admin can release it permanently, with
+`DELETE /api/sites/{name}?release=true`. A name never silently passes to another owner: a page from the
 deleted site may still be open in a visitor's browser, or have installed a
 service worker, on the same origin, and would then act on the new site as that
 visitor. `/spots` shows active sites to every authorized manager and shows
@@ -677,8 +678,8 @@ Important APIs:
   DNS, and Access resources were removed manually.
 - `DELETE /api/sites/{name}/cloudflare` unpublishes it from Cloudflare.
 - `DELETE /api/sites/{name}` purges a site's files, uploads, and private docs.
-  It leaves an owner-recoverable tombstone; a platform admin deleting a
-  tombstone releases the name.
+  It leaves an owner-recoverable tombstone; deleting a tombstone answers `404`.
+  `?release=true` lets a platform admin free a deleted site's name.
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
 
