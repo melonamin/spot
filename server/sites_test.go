@@ -839,3 +839,40 @@ func TestPublicSitesIncludePreviewWhenScreenshotPresent(t *testing.T) {
 		t.Errorf("plain preview = %q, want empty", preview["plain"])
 	}
 }
+
+func TestReleaseSiteNameRequest(t *testing.T) {
+	ctx := context.Background()
+	registry := newAdminRegistry(t, &AccessPolicy{Allow: []string{"admin@example.com"}})
+	owner := Identity{Email: "owner@example.com"}
+	if _, err := registry.AuthorizeDeploy(ctx, "demo", owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DeleteSite(ctx, "demo", owner, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sites, _ := stubSiteStore(t)
+	release := func(email string) (*httptest.ResponseRecorder, *recordingDeployAuth) {
+		audit := &recordingDeployAuth{}
+		srv := &Server{
+			siteAdmin: registry, deployAuth: audit, sites: sites,
+			resolver:   NewStaticResolver(email, email, nil),
+			spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t), deployLimit: NewRateLimiter(1000, 1000),
+		}
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodDelete, "/api/sites/demo?release=true"))
+		return rec, audit
+	}
+
+	if rec, audit := release("owner@example.com"); rec.Code != http.StatusForbidden ||
+		len(audit.events) != 1 || audit.events[0].Action != "release" || audit.events[0].Status != "denied" {
+		t.Fatalf("owner release = %d %s, audit %+v; want 403 and a denied release", rec.Code, rec.Body.String(), audit.events)
+	}
+	rec, audit := release("admin@example.com")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"released":true`) ||
+		len(audit.events) != 1 || audit.events[0].Action != "release" || audit.events[0].Status != "success" {
+		t.Fatalf("admin release = %d %s, audit %+v; want 200 and a successful release", rec.Code, rec.Body.String(), audit.events)
+	}
+	if rec, _ := release("admin@example.com"); rec.Code != http.StatusNotFound {
+		t.Fatalf("second release = %d, want 404", rec.Code)
+	}
+}
