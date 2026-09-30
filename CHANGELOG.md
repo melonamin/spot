@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Releasing a deleted site's name is a separate admin operation, `DELETE /api/sites/{name}?release=true`; deleting a deleted site now answers `404` and keeps the name reserved, so a racing or repeated delete by an admin can no longer free it.
+
 ## [0.6.2] - 2026-09-29
 
 ### Fixed

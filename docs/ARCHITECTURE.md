@@ -211,8 +211,9 @@ Deploy and upload storage are intentionally separate:
 
 Deleting a site purges deployed files, uploads, and private document scope and
 keeps an empty `deleted` tombstone tied to the immutable owner, whoever deletes
-it; only that owner or an admin can recreate the site, and only an admin can
-permanently release the name. A released or reassigned name would hand its
+it; only that owner or an admin can recreate the site. A second delete never
+releases it: only an admin's explicit `?release=true` does, and it removes only a
+`deleted` row, so it cannot race a delete or a recreate. A released or reassigned name would hand its
 browser origin, where the deleted site's pages or service workers may still
 run, to a new owner. If a Cloudflare
 publication row exists, deletion returns `409 Conflict`; any authorized active-

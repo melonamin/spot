@@ -43,6 +43,7 @@ func TestMaintainerUIAndSDKAssets(t *testing.T) {
 			`Redeploy same name`,
 			`Release name`,
 			`site.management_role === 'admin'`,
+			`site.state === 'deleted' ? '?release=true' : ''`,
 		} {
 			if !strings.Contains(page, want) {
 				t.Fatalf("%s does not contain %q", path, want)
