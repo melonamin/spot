@@ -523,6 +523,8 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 		s.denySiteAccess(w, r, http.StatusForbidden, "this site is restricted by its "+accessFileName, page)
 		return false
 	}
+	// A shared cache in front of Spot must not hand this viewer's content to anyone else.
+	w.Header().Set("Cache-Control", "no-store")
 	return true
 }
 
