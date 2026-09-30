@@ -151,4 +151,24 @@ func TestDeletedSiteNameStaysWithItsOwner(t *testing.T) {
 	if authz, err := registry.AuthorizeDeploy(ctx, "demo", stranger); err != nil || authz.Action != "create" {
 		t.Fatalf("claim after admin release = %+v, %v; want a new site", authz, err)
 	}
+
+	// An admin who owns the deleted site can still release it, and is offered to.
+	if _, err := registry.AuthorizeDeploy(ctx, "admins-own", admin); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DeleteSite(ctx, "admins-own", admin, noPurge); err != nil {
+		t.Fatalf("admin-owner delete = %v", err)
+	}
+	manageable, err := registry.SitesManageableBy(ctx, admin)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, site := range manageable {
+		if site.Name == "admins-own" && site.ManagementRole != ManagementRoleAdmin {
+			t.Fatalf("admin-owned tombstone listed as %q, want admin", site.ManagementRole)
+		}
+	}
+	if err := registry.DeleteSite(ctx, "admins-own", admin, noPurge); err != nil {
+		t.Fatalf("admin-owner release = %v", err)
+	}
 }

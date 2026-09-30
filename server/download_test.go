@@ -205,7 +205,7 @@ func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
 		return rec
 	}
 
-	for _, target := range []string{"/", "/api/download"} {
+	for _, target := range []string{"/", "/api/download", "/api/me"} {
 		rec := get("shared", target)
 		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
 			t.Errorf("restricted %s = %d with Cache-Control %q, want 200 and no-store",
@@ -214,6 +214,9 @@ func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
 	}
 	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "" {
 		t.Errorf("open site = %d with Cache-Control %q, want 200 and cacheable", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	if rec := get("open", "/api/me"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("open site /api/me = %d with Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))
 	}
 }
 

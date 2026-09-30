@@ -765,8 +765,11 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		disposition = "inline"
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
-	// IDs are random per upload, so content at a URL never changes.
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	// IDs are random per upload, so content at a URL never changes; a restricted
+	// site's upload keeps authorizeSiteAccess's no-store.
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	}
 	if _, err := io.Copy(w, obj); err != nil {
 		log.Printf("files: stream %s/%s/%s: %v", site, id, name, err)
 	}
@@ -788,6 +791,8 @@ func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
 	}
 	site := siteFromHost(s.requestHost(r), s.spotDomain)
 	capabilitiesAvailable := s.siteLifecycleAllowsCapabilities(r.Context(), site)
+	// The caller's identity is never shared with another requester through a cache.
+	w.Header().Set("Cache-Control", "no-store")
 	writeJSON(w, http.StatusOK, meResponse{
 		Identity:     id,
 		AIAllowed:    capabilitiesAvailable && s.aiAllowedFor(r.Context(), site, id),

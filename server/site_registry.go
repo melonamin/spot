@@ -548,6 +548,10 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 				if err != nil {
 					log.Printf("manageable sites: omit %s: %v", candidate.Name, err)
 				} else if role != "" {
+					// Only an admin can release a tombstone, so an admin sees it as admin even when owning it.
+					if candidate.State == SiteStateDeleted && allowsAdmin(r.admins, actor) {
+						role = ManagementRoleAdmin
+					}
 					resolved[index] = &ManageableSite{OwnedSite: candidate, ManagementRole: role}
 				}
 			}
@@ -804,7 +808,8 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		return ErrSiteNotActive
 	}
 	if record.State == SiteStateDeleted {
-		if role != ManagementRoleAdmin {
+		// An admin who also owns the tombstone manages it as owner, so check admin membership itself.
+		if !allowsAdmin(r.admins, actor) {
 			return ErrSiteNameReleaseForbidden
 		}
 		if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
