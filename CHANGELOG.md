@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- Deleting a site now always keeps its name reserved for the original owner, and only a platform admin can release a deleted name; before, an owner or admin deletion freed the name for anyone, and a new owner inherited an origin where the old site's pages or service workers could still run.
+
 ## [0.6.1] - 2026-09-29
 
 ### Added

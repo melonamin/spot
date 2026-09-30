@@ -706,6 +706,11 @@ func (s *Server) handleDeleteSite(w http.ResponseWriter, r *http.Request) {
 			Message: "actor is not the site owner, a maintainer, or a platform admin",
 		})
 		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can delete this site")
+	case errors.Is(err, ErrSiteNameReleaseForbidden):
+		s.recordDeployAudit(r, DeployAuditEvent{
+			Site: site, Actor: actor, Action: "delete", Status: "denied", Message: err.Error(),
+		})
+		httpError(w, http.StatusForbidden, err.Error()+"; the owner can redeploy it")
 	case errors.Is(err, errCloudflarePublicationExists):
 		httpError(w, http.StatusConflict, "unpublish this site from Cloudflare before deleting it")
 	case err != nil:
