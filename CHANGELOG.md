@@ -7,13 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.2] - 2026-09-29
+
 ### Fixed
 
-- A restricted site's responses (pages, uploads, source download, SDK APIs) and every `/api/me` answer are sent with `Cache-Control: no-store`, so no cache can serve one viewer's content or identity to another.
+- A restricted site's responses (pages, uploads, source download, SDK APIs) and every `/api/me` answer are sent with `Cache-Control: no-store`, so no cache can serve one viewer's content or identity to another. (#24)
 
 ### Changed
 
-- Deleting a site now always keeps its name reserved for the original owner, and only a platform admin (including one who owns the site) can release a deleted name; before, an owner or admin deletion freed the name for anyone, and a new owner inherited an origin where the old site's pages or service workers could still run.
+- Deleting a site now always keeps its name reserved for the original owner, and only a platform admin (including one who owns the site) can release a deleted name; before, an owner or admin deletion freed the name for anyone, and a new owner inherited an origin where the old site's pages or service workers could still run. (#24)
 
 ## [0.6.1] - 2026-09-29
 
@@ -116,7 +118,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.1...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.2...HEAD
+[0.6.2]: https://github.com/melonamin/spot/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/melonamin/spot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/melonamin/spot/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/melonamin/spot/compare/v0.4.0...v0.5.0
