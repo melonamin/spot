@@ -7,9 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.6.3] - 2026-09-29
+
 ### Changed
 
-- Releasing a deleted site's name is a separate admin operation, `DELETE /api/sites/{name}?release=true`; deleting a deleted site now answers `404` and keeps the name reserved, so a racing or repeated delete by an admin can no longer free it.
+- Releasing a deleted site's name is a separate admin operation, `DELETE /api/sites/{name}?release=true`; deleting a deleted site now answers `404` and keeps the name reserved, so a racing or repeated delete by an admin can no longer free it. (#25)
 
 ## [0.6.2] - 2026-09-29
 
@@ -122,7 +124,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.2...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.3...HEAD
+[0.6.3]: https://github.com/melonamin/spot/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/melonamin/spot/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/melonamin/spot/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/melonamin/spot/compare/v0.5.0...v0.6.0
