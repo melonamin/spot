@@ -118,6 +118,58 @@ func TestCloudflareEligibilityRejectsSpotRuntimeAndFunctions(t *testing.T) {
 	}
 }
 
+func TestCloudflareEligibilityAllowsDocumentedAPIPaths(t *testing.T) {
+	snap := cloudflareSnapshot{Files: []cloudflareSiteFile{
+		{Path: "index.html", Data: []byte(`<p><code>POST /boards/api/{boardId}/schedule-cards</code> and ` +
+			`<code>DELETE /boards/api/cards/{cardId}</code>; see /api/ for details.</p>` +
+			`<a href="https://example.com/api/docs">upstream</a>`)},
+	}}
+	if got := checkCloudflareEligibility(snap); !got.Eligible {
+		t.Fatalf("eligibility = %+v, want eligible", got)
+	}
+}
+
+func TestCloudflareEligibilityRejectsSameOriginAPIRequests(t *testing.T) {
+	snap := cloudflareSnapshot{Files: []cloudflareSiteFile{
+		{Path: "app.js", Data: []byte(`const me = await fetch('/api/me');`)},
+	}}
+	got := checkCloudflareEligibility(snap)
+	if got.Eligible || len(got.Reasons) != 1 || got.Reasons[0] != "app.js references same-origin /api/ paths" {
+		t.Fatalf("eligibility = %+v, want same-origin /api/ rejection", got)
+	}
+}
+
+func TestReferencesSameOriginAPI(t *testing.T) {
+	for _, tc := range []struct {
+		text string
+		want bool
+	}{
+		{`fetch('/api/db/notes')`, true},
+		{`fetch("/api/me")`, true},
+		{"fetch(`/api/db/${name}`)", true},
+		{"new WebSocket(`${proto}//${location.host}/api/ws`)", true},
+		{`api('/api/files', {method: 'POST'})`, true},
+		{`location.origin + "/api/ai/chat"`, true},
+		{`fetch('./api/me')`, true},
+		{`fetch("../api/me")`, true},
+		{`<img src=/api/files/x>`, true},
+		{`<form action="/api/slack/send">`, true},
+		{`{"endpoint":"/api/db/x"}`, true},
+		{`POST /boards/api/{boardId}/schedule-cards`, false},
+		{`DELETE /boards/{id}/api/cards`, false},
+		{`<code>/api/db</code>`, false},
+		{`Spot routes /api/* on every host`, false},
+		{`fetch('https://example.com/api/x')`, false},
+		{`fetch('/v1/api/x')`, false},
+		{`/api/ at the start of a file`, false},
+		{`no api here`, false},
+	} {
+		if got := referencesSameOriginAPI(tc.text); got != tc.want {
+			t.Errorf("referencesSameOriginAPI(%q) = %v, want %v", tc.text, got, tc.want)
+		}
+	}
+}
+
 func TestCloudflareEligibilityRejectsTooManyFiles(t *testing.T) {
 	got := checkCloudflareEligibility(cloudflareSnapshot{FileCount: maxCloudflareFiles + 1})
 	if got.Eligible || len(got.Reasons) != 1 || !strings.Contains(got.Reasons[0], "20000-file") {

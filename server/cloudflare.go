@@ -538,12 +538,47 @@ func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
 		if strings.Contains(text, "spot.") {
 			reasons = append(reasons, file.Path+" references Spot's browser SDK")
 		}
-		if strings.Contains(text, "/api/") {
+		if referencesSameOriginAPI(text) {
 			reasons = append(reasons, file.Path+" references same-origin /api/ paths")
 		}
 	}
 	reasons = uniqueStrings(reasons)
 	return cloudflareEligibility{Eligible: len(reasons) == 0, Reasons: reasons}
+}
+
+// referencesSameOriginAPI reports whether text addresses Spot's /api/ routes
+// as a URL: a string literal or attribute value that starts with /api/ (or
+// ./api/, ../api/), or a template literal that appends /api/ to an
+// interpolated host, as in `${location.host}/api/ws`. Prose that merely
+// mentions a path, such as "POST /boards/api/cards" in documentation, does not
+// issue a request and must not block publishing.
+func referencesSameOriginAPI(text string) bool {
+	for offset := 0; ; {
+		i := strings.Index(text[offset:], "/api/")
+		if i < 0 {
+			return false
+		}
+		at := offset + i
+		offset = at + 1
+		start := at
+		for start > 0 && at-start < 2 && text[start-1] == '.' {
+			start--
+		}
+		if start == 0 {
+			continue
+		}
+		switch text[start-1] {
+		case '"', '\'', '`', '=':
+			return true
+		case '}':
+			if start == at {
+				open := strings.LastIndexByte(text[:start-1], '{')
+				if open > 0 && text[open-1] == '$' {
+					return true
+				}
+			}
+		}
+	}
 }
 
 func uniqueStrings(in []string) []string {
