@@ -666,6 +666,19 @@
       mine: async ({ retry } = {}) => (await api('/api/sites/mine', { retry })).sites,
       manageable: async ({ retry } = {}) => (await api('/api/sites/manageable', { retry })).sites,
       public: async ({ retry } = {}) => (await api('/api/sites/public', { retry })).sites,
+      // page(kind, { limit, cursor, q, tag, sort, names }) -> one page of the
+      // 'mine', 'manageable', 'public', or 'visible' list:
+      // { sites, total, matched, next_cursor? }. Pass next_cursor back as
+      // cursor, with the same filters, for the following page.
+      page: (kind, { retry, names, ...filters } = {}) => {
+        const params = new URLSearchParams();
+        for (const [key, value] of Object.entries(filters)) {
+          if (value !== undefined && value !== null && value !== '') params.set(key, String(value));
+        }
+        if (names && names.length) params.set('names', names.join(','));
+        const query = params.toString();
+        return api(`/api/sites/${encodeURIComponent(kind)}${query ? '?' + query : ''}`, { retry });
+      },
       delete: (name, { retry } = {}) =>
         api(`/api/sites/${encodeURIComponent(name)}`, { method: 'DELETE', retry }),
     },

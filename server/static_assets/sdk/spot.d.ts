@@ -185,6 +185,35 @@ declare namespace SpotSDK {
     [key: string]: unknown;
   }
 
+  type SiteListKind = 'mine' | 'manageable' | 'public' | 'visible';
+
+  interface SitePageOptions extends RequestOptions {
+    /** Page size, 1-200. Omit both limit and cursor for the whole list. */
+    limit?: number;
+    /** next_cursor from the previous page, with the same filters and sort. */
+    cursor?: string;
+    /** Case-insensitive search over name, title, description, owner, and tags. */
+    q?: string;
+    tag?: string;
+    sort?: 'updated' | 'created' | 'name';
+    /** Only these site names (at most 200). */
+    names?: string[];
+  }
+
+  interface SitePage {
+    sites: SiteInfo[];
+    /** Sites in the list before filters. */
+    total: number;
+    /** Sites matching the filters, across all pages. */
+    matched: number;
+    next_cursor?: string;
+    /** Top tags across the whole list (public and visible only). */
+    tag_counts?: { tag: string; count: number }[];
+    /** Active and deleted counts (manageable only). */
+    active?: number;
+    deleted?: number;
+  }
+
   interface DeleteSiteResult {
     site: string;
     files: number;
@@ -235,6 +264,7 @@ declare namespace SpotSDK {
       mine(opts?: RequestOptions): Promise<SiteInfo[]>;
       manageable(opts?: RequestOptions): Promise<SiteInfo[]>;
       public(opts?: RequestOptions): Promise<SiteInfo[]>;
+      page(kind: SiteListKind, opts?: SitePageOptions): Promise<SitePage>;
       delete(name: string, opts?: RequestOptions): Promise<DeleteSiteResult>;
     };
   }

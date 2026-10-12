@@ -657,6 +657,15 @@ Important APIs:
   on restricted sites listed for them; `GET /api/sites/public` includes it
   only for the caller's own sites. `mine` and `manageable` entries also carry `allow`
   (`null` when the site has no `allow` field).
+- These four listings share filters and paging: `q` (search over name, title,
+  description, owner, and tags), `tag`, `names` (comma-separated, at most
+  200), `sort` (`updated`, the default, `created`, or `name`), `limit`
+  (1-200), and `cursor`. A response carries `total` (sites the caller may see
+  in that listing), `matched` (after filters), and `next_cursor` while more
+  pages remain; pass it back with the same filters. Without `limit` or
+  `cursor` the whole filtered list is returned. `public` and `visible` add
+  `tag_counts`, the top tags across the listing; `manageable` adds `active`
+  and `deleted` counts.
 - `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
   redeploy. The owner, an admin, or a maintainer may call it, with the same
   rights as a deploy, including changing `maintainers`. A concurrent content
@@ -689,6 +698,7 @@ On the Spot root, the SDK wraps the site APIs:
 const mine = await spot.sites.mine();
 const manageable = await spot.sites.manageable();
 const publicSites = await spot.sites.public();
+const { sites, next_cursor } = await spot.sites.page('public', { limit: 48, q: 'report' });
 await spot.sites.delete('old-demo');
 ```
 

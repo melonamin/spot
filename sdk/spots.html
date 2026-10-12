@@ -382,7 +382,8 @@
     }
     .searchbox:focus-within { transform: translate(-2px, -2px); box-shadow: 8px 9px 0 var(--ink); }
     .searchbox svg { width: 19px; height: 19px; color: var(--mutedink); flex: 0 0 auto; }
-    #search {
+    #search,
+    #mine-search {
       flex: 1;
       min-width: 0;
       border: 0;
@@ -392,7 +393,17 @@
       font: 700 14px/1 var(--font-mono);
       color: var(--ink);
     }
-    #search::placeholder { color: var(--mutedink); opacity: .7; }
+    #search::placeholder,
+    #mine-search::placeholder { color: var(--mutedink); opacity: .7; }
+    .mine-searchbox { margin-bottom: 30px; }
+
+    .more {
+      display: flex;
+      justify-content: center;
+      margin-top: 36px;
+    }
+    .more[hidden],
+    .mine-searchbox[hidden] { display: none; }
 
     .tagbar {
       display: flex;
@@ -1011,7 +1022,19 @@
           <span class="key-manager-count" id="key-manager-count" hidden></span>
         </button>
       </div>
+      <label class="searchbox mine-searchbox" for="mine-search" id="mine-searchbox" hidden>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <circle cx="11" cy="11" r="7"/>
+          <path d="m20 20-3.5-3.5"/>
+        </svg>
+        <input id="mine-search" type="search" autocomplete="off" spellcheck="false"
+               placeholder="Search your spots">
+      </label>
       <div id="sitelist"></div>
+      <div class="more" id="mine-more" hidden>
+        <button class="btn" id="mine-more-btn" type="button">Load more</button>
+      </div>
       <div class="empty" id="deploys-note" hidden>
         <h2></h2>
         <p></p>
@@ -1047,6 +1070,9 @@
       </div>
       <div class="tagbar" id="tagbar" hidden aria-label="Popular tags"></div>
       <div class="grid" id="grid"></div>
+      <div class="more" id="gallery-more" hidden>
+        <button class="btn" id="gallery-more-btn" type="button">Load more</button>
+      </div>
       <div class="empty" id="gallery-note" hidden>
         <h2></h2>
         <p></p>
@@ -1258,6 +1284,25 @@
         note.querySelector('p').textContent = detail || '';
       };
 
+      // A "load more" row fetches the next page by itself once it scrolls
+      // near the viewport; its button remains for keyboard use. Observing
+      // again after each render re-checks a row still in view after a page
+      // too short to push it away.
+      const moreLoaders = new Map();
+      const moreObserver = 'IntersectionObserver' in window
+        ? new IntersectionObserver((entries) => {
+            for (const entry of entries) {
+              const load = moreLoaders.get(entry.target);
+              if (entry.isIntersecting && load) load();
+            }
+          }, { rootMargin: '600px 0px' })
+        : null;
+      const watchMore = (row) => {
+        if (!moreObserver) return;
+        moreObserver.unobserve(row);
+        if (!row.hidden) moreObserver.observe(row);
+      };
+
       // ─── generative previews ──────────────────────────────────
       // Every site gets a deterministic pattern from its name, in the
       // confetti palette — the gallery's stand-in for screenshots.
@@ -1301,7 +1346,17 @@
       };
 
       // ─── my spots ─────────────────────────────────────────────
+      // Manageable sites arrive a page at a time; mySites holds the rows
+      // loaded so far for the current search.
+      const MINE_PAGE = 50;
+      const SITES_MAX_PAGE = 200;
       let mySites = [];
+      let mineCursor = '';
+      let mineCounts = { active: 0, deleted: 0, matched: 0 };
+      let mineQuery = '';
+      let mineSeq = 0;
+      let mineQueued = null; // { silent } for a reload requested mid-flight
+      const mineMore = $('mine-more');
       let publishingKeys = [];
       const siteList = $('sitelist');
       let armed = null; // { button, label, timer } for the pending delete
@@ -1780,12 +1835,20 @@
       };
 
       const renderDeploys = () => {
-		const activeCount = mySites.filter((site) => site.state !== 'deleted').length;
-		const recoveryCount = mySites.length - activeCount;
+		const { active: activeCount, deleted: recoveryCount, matched } = mineCounts;
 		$('deploys-sub').textContent = activeCount + ' active' +
 		  (recoveryCount ? ' · ' + recoveryCount + ' recovery' : '') +
 		  (whoami ? ' · ' + whoami : '');
+        $('mine-searchbox').hidden = activeCount + recoveryCount <= MINE_PAGE && !mineQuery;
+        mineMore.hidden = !mineCursor;
+        $('mine-more-btn').textContent = 'Load more · ' + Math.max(0, matched - mySites.length) + ' left';
+        watchMore(mineMore);
         siteList.replaceChildren();
+        if (!mySites.length && mineQuery) {
+          showNote('deploys-note', 'No matches', 'Try another search.');
+		  scheduleCloudflarePoll();
+          return;
+        }
         if (!mySites.length) {
           showNote('deploys-note', 'No spots yet', '');
           const note = $('deploys-note').querySelector('p');
@@ -2065,33 +2128,120 @@
 		}, 1500);
 	  };
 
+      const mineURL = (cursor, limit) => {
+        const params = new URLSearchParams({ limit: String(limit) });
+        if (mineQuery) params.set('q', mineQuery);
+        if (cursor) params.set('cursor', cursor);
+        return '/api/sites/manageable?' + params;
+      };
+
+      const applyMinePage = (body) => {
+        mineCursor = body.next_cursor || '';
+        mineCounts = { active: body.active || 0, deleted: body.deleted || 0, matched: body.matched || 0 };
+      };
+
+      const finishMineLoad = () => {
+        mineLoading = false;
+        if (mineQueued) {
+          const { silent } = mineQueued;
+          mineQueued = null;
+          loadMine(silent);
+          return;
+        }
+        scheduleCloudflarePoll();
+      };
+
+      // loadMine refetches every loaded row from the top, page by page, so
+      // polls and deletes refresh in place without dropping pages already
+      // opened.
       const loadMine = async (silent = false) => {
 		if (mineLoading) {
-		  scheduleCloudflarePoll();
+		  mineQueued = { silent: silent && (!mineQueued || mineQueued.silent) };
 		  return;
 		}
 		mineLoading = true;
+		const seq = mineSeq;
         try {
-          const body = await api('/api/sites/manageable');
-          mySites = body.sites || [];
+          const want = Math.max(MINE_PAGE, mySites.length);
+          let body = await api(mineURL('', Math.min(SITES_MAX_PAGE, want)));
+          let sites = body.sites || [];
+          while (body.next_cursor && sites.length < want && seq === mineSeq) {
+            body = await api(mineURL(body.next_cursor, Math.min(SITES_MAX_PAGE, want - sites.length)));
+            sites = sites.concat(body.sites || []);
+          }
+          if (seq !== mineSeq) return;
+          mySites = sites;
+          applyMinePage(body);
           renderDeploys();
         } catch (err) {
-		  if (!silent) {
+		  if (!silent && seq === mineSeq) {
 			$('deploys-sub').textContent = 'Something went wrong';
 			showNote('deploys-note', 'Could not load your spots', err.message, true);
 		  }
 		} finally {
-		  mineLoading = false;
-		  scheduleCloudflarePoll();
+		  finishMineLoad();
         }
       };
 
+      const loadMoreMine = async () => {
+        if (mineLoading || !mineCursor) return;
+        mineLoading = true;
+        const seq = mineSeq;
+        const button = $('mine-more-btn');
+        button.disabled = true;
+        try {
+          const body = await api(mineURL(mineCursor, MINE_PAGE));
+          if (seq !== mineSeq) return;
+          const seen = new Set(mySites.map((site) => site.name));
+          mySites = mySites.concat((body.sites || []).filter((site) => !seen.has(site.name)));
+          applyMinePage(body);
+          renderDeploys();
+        } catch (err) {
+          if (seq === mineSeq) toast(err.message);
+        } finally {
+          button.disabled = false;
+          finishMineLoad();
+        }
+      };
+
+      let mineSearchTimer = null;
+      $('mine-search').addEventListener('input', () => {
+        clearTimeout(mineSearchTimer);
+        mineSearchTimer = setTimeout(() => {
+          const query = $('mine-search').value.trim();
+          if (query === mineQuery) return;
+          // A new search drops loaded rows and any response still in flight.
+          mineQuery = query;
+          mineSeq += 1;
+          mySites = [];
+          mineCursor = '';
+          siteList.replaceChildren();
+          mineMore.hidden = true;
+          $('deploys-note').hidden = true;
+          loadMine();
+        }, 220);
+      });
+      $('mine-more-btn').addEventListener('click', loadMoreMine);
+      moreLoaders.set(mineMore, loadMoreMine);
+
       // ─── gallery ──────────────────────────────────────────────
+      // The server filters, orders, and pages the gallery; the page holds
+      // only the tiles loaded so far.
+      const GALLERY_PAGE = 48;
+      const SAVED_FILTER_MAX = 200;
       let gallery = [];
+      let galleryCursor = '';
+      let galleryTotal = 0;
+      let galleryMatched = 0;
+      let galleryTags = [];
+      let galleryFiltered = false; // whether the loaded page used any filter
+      let gallerySeq = 0;
+      let galleryLoading = false;
       let activeTag = '';
       let savedOnly = false;
       const grid = $('grid');
       const tagbar = $('tagbar');
+      const galleryMore = $('gallery-more');
       const savedToggle = $('saved-toggle');
       const savedToggleLabel = $('saved-toggle-label');
       const SAVED_KEY = 'spot.gallery.saved.v1';
@@ -2135,7 +2285,17 @@
         savedToggle.disabled = count === 0 && !savedOnly;
       };
 
-      const toggleSaved = (site) => {
+      const paintSaved = (tile, site) => {
+        const saved = isSaved(site);
+        const save = tile.querySelector('.save-float');
+        tile.classList.toggle('saved', saved);
+        save.textContent = saved ? '★' : '☆';
+        save.setAttribute('aria-pressed', saved ? 'true' : 'false');
+        save.setAttribute('aria-label', (saved ? 'Unsave ' : 'Save ') + siteLabel(site));
+        save.title = saved ? 'Unsave spot' : 'Save spot';
+      };
+
+      const toggleSaved = (site, tile) => {
         if (isSaved(site)) {
           savedSpots.delete(site.name);
           toast(siteLabel(site) + ' removed from saved');
@@ -2144,26 +2304,31 @@
           toast(siteLabel(site) + ' saved');
         }
         persistSavedSpots();
-        if (savedSpots.size === 0) savedOnly = false;
-        renderGallery();
+        if (savedOnly && savedSpots.size === 0) {
+          savedOnly = false;
+          loadGallery();
+          return;
+        }
+        if (savedOnly && !isSaved(site)) {
+          tile.remove();
+          gallery = gallery.filter((entry) => entry.name !== site.name);
+          galleryMatched -= 1;
+        } else {
+          paintSaved(tile, site);
+        }
+        renderGalleryStatus();
       };
 
       const chooseTag = (tag) => {
         activeTag = activeTag === tag ? '' : tag;
-        renderGallery();
+        loadGallery();
       };
 
+      // Tag counts come from the server and cover every public spot, not
+      // just the tiles loaded so far.
       const renderTagFilters = () => {
-        const counts = new Map();
-        for (const site of gallery) {
-          for (const tag of site.tags || []) counts.set(tag, (counts.get(tag) || 0) + 1);
-        }
-        const tags = [...counts.entries()]
-          .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-          .slice(0, 18);
         tagbar.replaceChildren();
-        if (!tags.length) {
-          activeTag = '';
+        if (!galleryTags.length) {
           tagbar.hidden = true;
           return;
         }
@@ -2172,9 +2337,9 @@
         all.type = 'button';
         all.className = 'tagfilter' + (activeTag ? '' : ' active');
         all.textContent = 'all';
-        all.addEventListener('click', () => { activeTag = ''; renderGallery(); });
+        all.addEventListener('click', () => { activeTag = ''; loadGallery(); });
         tagbar.appendChild(all);
-        for (const [tag, count] of tags) {
+        for (const { tag, count } of galleryTags) {
           const btn = document.createElement('button');
           btn.type = 'button';
           btn.className = 'tagfilter' + (activeTag === tag ? ' active' : '');
@@ -2184,190 +2349,228 @@
         }
       };
 
-      // Ordering is the gallery's editorial voice: strict recency
-      // turns it into a changelog, where one busy person's redeploys
-      // crowd out everything else. A variety boost (e.g. cap
-      // consecutive tiles per owner) would keep the wall communal.
-      const rankGallery = (sites, mode) => {
-        const ranked = [...sites];
-        if (mode === 'name') ranked.sort((a, b) => siteLabel(a).localeCompare(siteLabel(b)));
-        else if (mode === 'created') ranked.sort((a, b) => Date.parse(b.created_at) - Date.parse(a.created_at));
-        else ranked.sort((a, b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
-        return ranked;
+      const buildTile = (site) => {
+        const tile = document.createElement('article');
+        tile.className = 'tile';
+        const link = document.createElement('a');
+        link.className = 'tile-link';
+        link.href = site.url;
+        link.target = '_blank';
+        link.rel = 'noopener';
+
+        const preview = document.createElement('div');
+        preview.className = 'preview';
+        paintPreview(preview, site.name);
+        const glyph = document.createElement('span');
+        glyph.className = 'glyph';
+        glyph.textContent = site.name[0].toUpperCase();
+        preview.appendChild(glyph);
+
+        // A real screenshot the site shipped (_screenshot.*), served from
+        // the apex so it always loads. It reveals over the generative
+        // pattern once decoded; if it errors it removes itself and the
+        // pattern + glyph remain. Sites without one never get an <img>.
+        if (site.preview) {
+          const shot = document.createElement('img');
+          shot.className = 'shot';
+          shot.src = site.preview;
+          shot.loading = 'lazy';
+          shot.alt = '';
+          shot.setAttribute('aria-hidden', 'true');
+          shot.addEventListener('load', () => preview.classList.add('ready'));
+          shot.addEventListener('error', () => shot.remove());
+          preview.appendChild(shot);
+        }
+
+        const visit = document.createElement('span');
+        visit.className = 'visit';
+        visit.textContent = 'Visit ↗';
+        preview.appendChild(visit);
+
+        const info = document.createElement('div');
+        info.className = 'tinfo';
+        const name = document.createElement('h2');
+        name.className = 'tname';
+        // The title text is clamped to two lines; the full label is kept
+        // as a tooltip. The "yours" chip sits beside the clamped text.
+        const label = siteLabel(site);
+        name.title = label;
+        const txt = document.createElement('span');
+        txt.className = 'txt';
+        txt.textContent = label;
+        name.appendChild(txt);
+        if (site.yours) {
+          const chip = document.createElement('span');
+          chip.className = 'yours';
+          chip.textContent = 'yours';
+          name.appendChild(chip);
+        }
+        const owner = site.owner || 'unknown';
+        const author = document.createElement('p');
+        author.className = 'tauthor';
+        author.title = 'by ' + owner;
+        const by = document.createElement('span');
+        by.className = 'by';
+        by.textContent = 'by ';
+        const ownerName = document.createElement('span');
+        ownerName.textContent = owner;
+        author.append(by, ownerName);
+
+        const meta = document.createElement('p');
+        meta.className = 'tmeta';
+        meta.textContent = (site.title && site.title !== site.name ? site.name + ' · ' : '') + rel(site.updated_at);
+        meta.title = meta.textContent;
+        info.append(name, author, meta);
+        if (site.description) {
+          const desc = document.createElement('p');
+          desc.className = 'tdesc';
+          desc.textContent = site.description;
+          desc.title = site.description;
+          info.appendChild(desc);
+        }
+        if ((site.tags || []).length) {
+          const tags = tagList(site.tags, chooseTag, { limit: 2 });
+          info.append(tags);
+        }
+
+        // Keep the interactive tag chips out of the tile's navigational
+        // <a>: an anchor may not contain buttons. The preview is the link;
+        // the info block (title, meta, description, tags) sits beside it.
+        link.append(preview);
+        tile.append(link, info);
+        const save = document.createElement('button');
+        save.type = 'button';
+        save.className = 'save-float';
+        save.addEventListener('click', (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          toggleSaved(site, tile);
+        });
+        tile.appendChild(save);
+        paintSaved(tile, site);
+        if (site.download_allowed !== false) {
+          const download = document.createElement('a');
+          download.className = 'download-float';
+          download.href = downloadURL(site);
+          download.textContent = 'ZIP ↓';
+          download.setAttribute('download', site.name + '.zip');
+          download.setAttribute('aria-label', 'Download ' + site.name + ' as ZIP');
+          tile.appendChild(download);
+        }
+        return tile;
       };
 
-      const renderGallery = () => {
+      const renderGalleryStatus = () => {
         updateSavedChrome();
         renderTagFilters();
-        const query = $('search').value.trim().toLowerCase();
-        const mode = $('sort').value;
-        const shown = rankGallery(gallery, mode).filter((site) => {
-          const tags = site.tags || [];
-          if (savedOnly && !isSaved(site)) return false;
-          if (activeTag && !tags.includes(activeTag)) return false;
-          if (!query) return true;
-          const haystack = [site.name, site.title || '', site.description || '', site.owner || '', ...tags]
-            .join(' ').toLowerCase();
-          return haystack.includes(query);
-        });
-
-        grid.replaceChildren();
-        if (!gallery.length) {
+        galleryMore.hidden = !galleryCursor;
+        $('gallery-more-btn').textContent = 'Load more · ' + Math.max(0, galleryMatched - gallery.length) + ' left';
+        watchMore(galleryMore);
+        if (!galleryTotal) {
           showNote('gallery-note', 'Nothing public yet', 'Deploy something and it shows up here.');
           $('tally').textContent = '';
           return;
         }
-        if (!shown.length) {
+        if (!galleryMatched) {
           const heading = savedOnly ? 'No saved matches' : 'No matches';
           const detail = savedOnly
             ? 'Clear the search or save another public spot.'
             : 'Try another search or tag.';
           showNote('gallery-note', heading, detail);
           $('tally').textContent = savedOnly
-            ? '0 of ' + gallery.length + ' public spots saved'
-            : '0 of ' + gallery.length + ' public spots';
+            ? '0 of ' + galleryTotal + ' public spots saved'
+            : '0 of ' + galleryTotal + ' public spots';
           return;
         }
         $('gallery-note').hidden = true;
-
-        for (const site of shown) {
-          const tile = document.createElement('article');
-          tile.className = 'tile' + (isSaved(site) ? ' saved' : '');
-          const link = document.createElement('a');
-          link.className = 'tile-link';
-          link.href = site.url;
-          link.target = '_blank';
-          link.rel = 'noopener';
-
-          const preview = document.createElement('div');
-          preview.className = 'preview';
-          paintPreview(preview, site.name);
-          const glyph = document.createElement('span');
-          glyph.className = 'glyph';
-          glyph.textContent = site.name[0].toUpperCase();
-          preview.appendChild(glyph);
-
-          // A real screenshot the site shipped (_screenshot.*), served from
-          // the apex so it always loads. It reveals over the generative
-          // pattern once decoded; if it errors it removes itself and the
-          // pattern + glyph remain. Sites without one never get an <img>.
-          if (site.preview) {
-            const shot = document.createElement('img');
-            shot.className = 'shot';
-            shot.src = site.preview;
-            shot.loading = 'lazy';
-            shot.alt = '';
-            shot.setAttribute('aria-hidden', 'true');
-            shot.addEventListener('load', () => preview.classList.add('ready'));
-            shot.addEventListener('error', () => shot.remove());
-            preview.appendChild(shot);
-          }
-
-          const visit = document.createElement('span');
-          visit.className = 'visit';
-          visit.textContent = 'Visit ↗';
-          preview.appendChild(visit);
-
-          const info = document.createElement('div');
-          info.className = 'tinfo';
-          const name = document.createElement('h2');
-          name.className = 'tname';
-          // The title text is clamped to two lines; the full label is kept
-          // as a tooltip. The "yours" chip sits beside the clamped text.
-          const label = siteLabel(site);
-          name.title = label;
-          const txt = document.createElement('span');
-          txt.className = 'txt';
-          txt.textContent = label;
-          name.appendChild(txt);
-          if (site.yours) {
-            const chip = document.createElement('span');
-            chip.className = 'yours';
-            chip.textContent = 'yours';
-            name.appendChild(chip);
-          }
-          const owner = site.owner || 'unknown';
-          const author = document.createElement('p');
-          author.className = 'tauthor';
-          author.title = 'by ' + owner;
-          const by = document.createElement('span');
-          by.className = 'by';
-          by.textContent = 'by ';
-          const ownerName = document.createElement('span');
-          ownerName.textContent = owner;
-          author.append(by, ownerName);
-
-          const meta = document.createElement('p');
-          meta.className = 'tmeta';
-          meta.textContent = (site.title && site.title !== site.name ? site.name + ' · ' : '') + rel(site.updated_at);
-          meta.title = meta.textContent;
-          info.append(name, author, meta);
-          if (site.description) {
-            const desc = document.createElement('p');
-            desc.className = 'tdesc';
-            desc.textContent = site.description;
-            desc.title = site.description;
-            info.appendChild(desc);
-          }
-          if ((site.tags || []).length) {
-            const tags = tagList(site.tags, chooseTag, { limit: 2 });
-            info.append(tags);
-          }
-
-          // Keep the interactive tag chips out of the tile's navigational
-          // <a>: an anchor may not contain buttons. The preview is the link;
-          // the info block (title, meta, description, tags) sits beside it.
-          link.append(preview);
-          tile.append(link, info);
-          const save = document.createElement('button');
-          save.type = 'button';
-          save.className = 'save-float';
-          save.textContent = isSaved(site) ? '★' : '☆';
-          save.setAttribute('aria-pressed', isSaved(site) ? 'true' : 'false');
-          save.setAttribute('aria-label', (isSaved(site) ? 'Unsave ' : 'Save ') + siteLabel(site));
-          save.title = isSaved(site) ? 'Unsave spot' : 'Save spot';
-          save.addEventListener('click', (e) => {
-            e.preventDefault();
-            e.stopPropagation();
-            toggleSaved(site);
-          });
-          tile.appendChild(save);
-          if (site.download_allowed !== false) {
-            const download = document.createElement('a');
-            download.className = 'download-float';
-            download.href = downloadURL(site);
-            download.textContent = 'ZIP ↓';
-            download.setAttribute('download', site.name + '.zip');
-            download.setAttribute('aria-label', 'Download ' + site.name + ' as ZIP');
-            tile.appendChild(download);
-          }
-          grid.appendChild(tile);
-        }
-
-        $('tally').textContent = shown.length === gallery.length && !activeTag
-          ? gallery.length + ' public spot' + (gallery.length === 1 ? '' : 's') + ' on the mesh'
-          : shown.length + ' of ' + gallery.length + ' public spots' +
+        $('tally').textContent = !galleryFiltered
+          ? galleryTotal + ' public spot' + (galleryTotal === 1 ? '' : 's') + ' on the mesh'
+          : galleryMatched + ' of ' + galleryTotal + ' public spots' +
             (savedOnly ? ' saved' : '') +
-            (activeTag ? ' tagged ' + activeTag : '');
-
+            (activeTag ? ' tagged ' + activeTag : '') +
+            (savedOnly && savedSpots.size > SAVED_FILTER_MAX
+              ? ' · newest ' + SAVED_FILTER_MAX + ' saved only'
+              : '');
       };
 
-      $('search').addEventListener('input', renderGallery);
-      $('sort').addEventListener('change', renderGallery);
+      const galleryURL = (cursor) => {
+        const params = new URLSearchParams({ limit: String(GALLERY_PAGE), sort: $('sort').value });
+        const query = $('search').value.trim();
+        if (query) params.set('q', query);
+        if (activeTag) params.set('tag', activeTag);
+        if (savedOnly) params.set('names', [...savedSpots.keys()].slice(-SAVED_FILTER_MAX).join(','));
+        if (cursor) params.set('cursor', cursor);
+        return '/api/sites/public?' + params;
+      };
+
+      const applyGalleryPage = (body) => {
+        galleryCursor = body.next_cursor || '';
+        galleryTotal = body.total || 0;
+        galleryMatched = body.matched || 0;
+        galleryTags = body.tag_counts || [];
+      };
+
+      // Every filter change starts a new sequence; a response from an older
+      // one is dropped so a slow request cannot overwrite newer results.
+      const loadGallery = async () => {
+        const seq = ++gallerySeq;
+        galleryLoading = true;
+        try {
+          const filtered = Boolean(savedOnly || activeTag || $('search').value.trim());
+          const body = await api(galleryURL(''));
+          if (seq !== gallerySeq) return;
+          galleryFiltered = filtered;
+          gallery = body.sites || [];
+          applyGalleryPage(body);
+          grid.replaceChildren(...gallery.map(buildTile));
+          renderGalleryStatus();
+        } catch (err) {
+          if (seq !== gallerySeq) return;
+          grid.replaceChildren();
+          galleryMore.hidden = true;
+          $('tally').textContent = '';
+          showNote('gallery-note', 'Could not load the gallery', err.message, true);
+        } finally {
+          if (seq === gallerySeq) galleryLoading = false;
+        }
+      };
+
+      const loadMoreGallery = async () => {
+        if (galleryLoading || !galleryCursor) return;
+        const seq = gallerySeq;
+        const button = $('gallery-more-btn');
+        galleryLoading = true;
+        button.disabled = true;
+        try {
+          const body = await api(galleryURL(galleryCursor));
+          if (seq !== gallerySeq) return;
+          // A retitled spot can move past the cursor under name order.
+          const seen = new Set(gallery.map((site) => site.name));
+          const fresh = (body.sites || []).filter((site) => !seen.has(site.name));
+          gallery = gallery.concat(fresh);
+          applyGalleryPage(body);
+          grid.append(...fresh.map(buildTile));
+          renderGalleryStatus();
+        } catch (err) {
+          if (seq === gallerySeq) toast(err.message);
+        } finally {
+          button.disabled = false;
+          if (seq === gallerySeq) galleryLoading = false;
+        }
+      };
+
+      let searchTimer = null;
+      $('search').addEventListener('input', () => {
+        clearTimeout(searchTimer);
+        searchTimer = setTimeout(loadGallery, 220);
+      });
+      $('sort').addEventListener('change', loadGallery);
       savedToggle.addEventListener('click', () => {
         savedOnly = !savedOnly;
-        renderGallery();
+        loadGallery();
       });
-
-      const loadGallery = async () => {
-        try {
-          const body = await api('/api/sites/public');
-          gallery = body.sites || [];
-          renderGallery();
-        } catch (err) {
-          showNote('gallery-note', 'Could not load the gallery', err.message, true);
-        }
-      };
+      $('gallery-more-btn').addEventListener('click', loadMoreGallery);
+      moreLoaders.set(galleryMore, loadMoreGallery);
 
       // ─── boot ─────────────────────────────────────────────────
       let whoami = '';

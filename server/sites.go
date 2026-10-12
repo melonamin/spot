@@ -78,6 +78,11 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	query, err := parseSiteListQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	admin, ok := s.siteAdmin.(manageableSiteAdmin)
 	if !ok {
 		httpError(w, http.StatusServiceUnavailable, "manageable site listing is not configured")
@@ -89,8 +94,16 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not list manageable sites")
 		return
 	}
-	out := make([]ownedSiteJSON, 0, len(sites))
+	deleted := 0
 	for _, site := range sites {
+		if site.State == SiteStateDeleted {
+			deleted++
+		}
+	}
+	page := pageSites(sites, func(site ManageableSite) SiteRecord { return site.SiteRecord }, query)
+	out := make([]ownedSiteJSON, len(page.Items))
+	forEachConcurrently(len(page.Items), func(i int) {
+		site := page.Items[i]
 		entry := ownedSiteJSON{
 			Name: site.Name, URL: s.siteURL(r, site.Name), Title: site.Title,
 			Description: site.Description, Tags: cloneSiteTags(site.Tags),
@@ -109,9 +122,13 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			}
 			entry.Cloudflare = s.cloudflareSummaryForSite(r.Context(), site.Name, contentHash, false)
 		}
-		out = append(out, entry)
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+		out[i] = entry
+	})
+	body := siteListBody(page, out)
+	// Counts over every manageable site, independent of filters and paging.
+	body["active"] = len(sites) - deleted
+	body["deleted"] = deleted
+	writeJSON(w, http.StatusOK, body)
 }
 
 type publicSiteJSON struct {
@@ -208,21 +225,28 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	query, err := parseSiteListQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	owned, err := s.siteAdmin.SitesOwnedBy(r.Context(), actor)
 	if err != nil {
 		log.Printf("my sites: %v", err)
 		httpError(w, http.StatusInternalServerError, "could not list your sites")
 		return
 	}
-	out := make([]ownedSiteJSON, 0, len(owned))
-	for _, site := range owned {
+	page := pageSites(owned, func(site OwnedSite) SiteRecord { return site.SiteRecord }, query)
+	out := make([]ownedSiteJSON, len(page.Items))
+	forEachConcurrently(len(page.Items), func(i int) {
+		site := page.Items[i]
 		policy, policyErr := s.policyForSite(r.Context(), site.Name)
 		restricted, allowCount, downloadAllowed := policySummary(policy, policyErr)
 		contentHash := site.ContentHash
 		if site.ContentHashUncertain {
 			contentHash = ""
 		}
-		out = append(out, ownedSiteJSON{
+		out[i] = ownedSiteJSON{
 			Name:            site.Name,
 			OwnerEmail:      site.OwnerEmail,
 			URL:             s.siteURL(r, site.Name),
@@ -240,9 +264,9 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+		}
+	})
+	writeJSON(w, http.StatusOK, siteListBody(page, out))
 }
 
 func (s *Server) handleSiteStats(w http.ResponseWriter, r *http.Request) {
@@ -284,39 +308,60 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	query, err := parseSiteListQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	all, err := s.siteAdmin.AllSites(r.Context())
 	if err != nil {
 		log.Printf("public sites: %v", err)
 		httpError(w, http.StatusInternalServerError, "could not list sites")
 		return
 	}
-	out := make([]publicSiteJSON, 0, len(all))
-	for _, site := range all {
-		restricted, _, downloadAllowed := s.policySummaryForSite(r.Context(), site.Name)
-		if restricted {
-			continue
+	type publicCandidate struct {
+		site            SiteRecord
+		restricted      bool
+		downloadAllowed bool
+	}
+	candidates := make([]publicCandidate, len(all))
+	forEachConcurrently(len(all), func(i int) {
+		restricted, _, downloadAllowed := s.policySummaryForSite(r.Context(), all[i].Name)
+		candidates[i] = publicCandidate{site: all[i], restricted: restricted, downloadAllowed: downloadAllowed}
+	})
+	open := candidates[:0]
+	for _, candidate := range candidates {
+		if !candidate.restricted {
+			open = append(open, candidate)
 		}
+	}
+	page := pageSites(open, func(c publicCandidate) SiteRecord { return c.site }, query)
+	out := make([]publicSiteJSON, len(page.Items))
+	forEachConcurrently(len(page.Items), func(i int) {
+		site := page.Items[i].site
 		preview := ""
 		if s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
 		yours := site.OwnedBy(viewer)
-		out = append(out, publicSiteJSON{
+		out[i] = publicSiteJSON{
 			Name:            site.Name,
 			URL:             s.siteURL(r, site.Name),
 			Title:           site.Title,
 			Description:     site.Description,
 			Tags:            cloneSiteTags(site.Tags),
-			DownloadAllowed: downloadAllowed,
+			DownloadAllowed: page.Items[i].downloadAllowed,
 			Owner:           ownerDisplay(site),
 			OwnerEmail:      ownerEmailFor(site, yours),
 			Yours:           yours,
 			Preview:         preview,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+		}
+	})
+	body := siteListBody(page, out)
+	body["tag_counts"] = page.TagCounts
+	writeJSON(w, http.StatusOK, body)
 }
 
 func buildSiteStats(ctx context.Context, s *Server, sites []SiteRecord, now time.Time) siteStatsJSON {

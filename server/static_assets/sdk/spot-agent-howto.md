@@ -409,6 +409,8 @@ These platform APIs work from the Spot root, not from site subdomains:
 const mine = await spot.sites.mine();
 const manageable = await spot.sites.manageable();
 const publicSites = await spot.sites.public();
+// One page at a time: pass next_cursor back as cursor for the next page.
+const page = await spot.sites.page('manageable', { limit: 50, q: 'demo' });
 await spot.sites.delete('old-demo');
 ```
 

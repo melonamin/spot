@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Site listings (`/api/sites/mine`, `manageable`, `public`, `visible`) take `limit`/`cursor` paging plus `q`, `tag`, `names`, and `sort` filters, and report `total`, `matched`, and `next_cursor`; `spot.sites.page()` wraps them. Unpaged requests still return the whole list.
+
+### Changed
+
+- The gallery and My spots load 48 and 50 spots at a time, with search, tags, saved spots, and sort applied on the server, and fetch more as you scroll. My spots gains a search box once there is more than one page. Listings check screenshots and internet-publishing status only for the returned page and resolve access policies in parallel, so large installs browse much faster.
+
 ## [0.6.3] - 2026-09-29
 
 ### Changed

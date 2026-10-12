@@ -246,10 +246,11 @@ func sitesRequest(method, path string) *http.Request {
 func TestMySitesListsOwnedWithPolicySummary(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "locked-site", `{"allow":["a@example.com","team-x"]}`)
+	now := time.Now()
 	admin := &fakeSiteAdmin{owned: []OwnedSite{
-		{SiteRecord: SiteRecord{Name: "open-site", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{SiteRecord: SiteRecord{Name: "open-site", CreatedAt: now, UpdatedAt: now},
 			FileCount: 7, TotalBytes: 1024},
-		{SiteRecord: SiteRecord{Name: "locked-site", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{SiteRecord: SiteRecord{Name: "locked-site", CreatedAt: now, UpdatedAt: now.Add(-time.Minute)},
 			FileCount: 2, TotalBytes: 64},
 	}}
 	srv := &Server{

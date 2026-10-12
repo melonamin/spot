@@ -168,35 +168,60 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	query, err := parseSiteListQuery(r)
+	if err != nil {
+		httpError(w, http.StatusBadRequest, err.Error())
+		return
+	}
 	all, err := s.siteAdmin.AllSites(r.Context())
 	if err != nil {
 		log.Printf("visible sites: %v", err)
 		httpError(w, http.StatusInternalServerError, "could not list sites")
 		return
 	}
-	out := make([]visibleSiteJSON, 0, len(all))
-	for _, site := range all {
+	type visibleCandidate struct {
+		site    SiteRecord
+		policy  *AccessPolicy
+		manages bool
+		visible bool
+	}
+	candidates := make([]visibleCandidate, len(all))
+	forEachConcurrently(len(all), func(i int) {
+		site := all[i]
 		policy, err := s.policyForSite(r.Context(), site.Name)
 		if err != nil {
-			continue
+			return
 		}
 		restricted := policy.RestrictsAccess()
-		yours := site.OwnedBy(viewer)
 		// Only a restricted site has an allowlist to hide, so only there does
 		// management need resolving.
-		manages := restricted && (yours || s.canManageSite(r.Context(), site.Name, viewer))
-		if restricted && !manages && !policy.Allows(viewer) {
-			continue
+		manages := restricted && (site.OwnedBy(viewer) || s.canManageSite(r.Context(), site.Name, viewer))
+		candidates[i] = visibleCandidate{
+			site: site, policy: policy, manages: manages,
+			visible: !restricted || manages || policy.Allows(viewer),
 		}
+	})
+	visible := candidates[:0]
+	for _, candidate := range candidates {
+		if candidate.visible {
+			visible = append(visible, candidate)
+		}
+	}
+	page := pageSites(visible, func(c visibleCandidate) SiteRecord { return c.site }, query)
+	out := make([]visibleSiteJSON, len(page.Items))
+	forEachConcurrently(len(page.Items), func(i int) {
+		site, policy := page.Items[i].site, page.Items[i].policy
+		restricted := policy.RestrictsAccess()
+		yours := site.OwnedBy(viewer)
 		var allow []string
-		if manages {
+		if page.Items[i].manages {
 			allow = policyAllowList(policy)
 		}
 		preview := ""
 		if !restricted && s.hasSitePreview(r.Context(), site.Name) {
 			preview = "/api/sites/" + site.Name + "/preview"
 		}
-		out = append(out, visibleSiteJSON{
+		out[i] = visibleSiteJSON{
 			publicSiteJSON: publicSiteJSON{
 				Name: site.Name, URL: s.siteURL(r, site.Name), Title: site.Title,
 				Description: site.Description, Tags: cloneSiteTags(site.Tags),
@@ -205,9 +230,11 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 			},
 			Restricted: restricted,
 			Allow:      allow,
-		})
-	}
-	writeJSON(w, http.StatusOK, map[string]any{"sites": out})
+		}
+	})
+	body := siteListBody(page, out)
+	body["tag_counts"] = page.TagCounts
+	writeJSON(w, http.StatusOK, body)
 }
 
 func (s *Server) canManageSite(ctx context.Context, site string, actor Identity) bool {
