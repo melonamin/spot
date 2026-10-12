@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Site listings (`/api/sites/mine`, `manageable`, `public`, `visible`) take `limit`/`cursor` paging plus `q`, `tag`, `names`, and `sort` filters, and report `total`, `matched`, and `next_cursor`; `spot.sites.page()` wraps them. Unpaged requests still return the whole list.
+- Site listings (`/api/sites/mine`, `manageable`, `public`, `visible`) take `limit`/`cursor` paging plus `q`, `tag`, `names`, `yours`, and `sort` filters, and report `total`, `matched`, and `next_cursor`; `spot.sites.page()` wraps them. Unpaged requests still return the whole list.
 
 ### Changed
 

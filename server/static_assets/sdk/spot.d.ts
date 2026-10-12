@@ -198,6 +198,8 @@ declare namespace SpotSDK {
     sort?: 'updated' | 'created' | 'name';
     /** Only these site names (at most 200). */
     names?: string[];
+    /** true: only the caller's own sites; false: only other people's. */
+    yours?: boolean;
   }
 
   interface SitePage {
