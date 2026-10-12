@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-10-12
+
 ### Added
 
 - Site listings (`/api/sites/mine`, `manageable`, `public`, `visible`) take `limit`/`cursor` paging plus `q`, `tag`, `names`, `yours`, and `sort` filters, and report `total`, `matched`, and `next_cursor`; `spot.sites.page()` wraps them. Unpaged requests still return the whole list.
@@ -14,6 +16,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - The gallery and My spots load 48 and 50 spots at a time, with search, tags, saved spots, and sort applied on the server, and fetch more as you scroll. My spots gains a search box once there is more than one page. Listings check screenshots and internet-publishing status only for the returned page and resolve access policies in parallel, so large installs browse much faster.
+
+### Fixed
+
+- Files that mention `/api/` in prose, such as documentation describing endpoints, can be published to the internet; only URLs in code are flagged.
+
+### Security
+
+- Built with Go 1.26.9, which fixes standard library vulnerabilities reachable from the server.
 
 ## [0.6.3] - 2026-09-29
 
@@ -132,7 +142,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.6.3...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/melonamin/spot/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/melonamin/spot/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/melonamin/spot/compare/v0.6.1...v0.6.2
 [0.6.1]: https://github.com/melonamin/spot/compare/v0.6.0...v0.6.1
