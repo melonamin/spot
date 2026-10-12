@@ -2,7 +2,7 @@ module spot/server
 
 go 1.26
 
-toolchain go1.26.6
+toolchain go1.26.9
 
 require (
 	github.com/coder/websocket v1.8.14
