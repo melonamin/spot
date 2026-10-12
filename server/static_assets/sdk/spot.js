@@ -666,7 +666,7 @@
       mine: async ({ retry } = {}) => (await api('/api/sites/mine', { retry })).sites,
       manageable: async ({ retry } = {}) => (await api('/api/sites/manageable', { retry })).sites,
       public: async ({ retry } = {}) => (await api('/api/sites/public', { retry })).sites,
-      // page(kind, { limit, cursor, q, tag, sort, names }) -> one page of the
+      // page(kind, { limit, cursor, q, tag, sort, names, yours }) -> one page of the
       // 'mine', 'manageable', 'public', or 'visible' list:
       // { sites, total, matched, next_cursor? }. Pass next_cursor back as
       // cursor, with the same filters, for the following page.

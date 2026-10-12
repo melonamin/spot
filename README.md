@@ -659,7 +659,8 @@ Important APIs:
   (`null` when the site has no `allow` field).
 - These four listings share filters and paging: `q` (search over name, title,
   description, owner, and tags), `tag`, `names` (comma-separated, at most
-  200), `sort` (`updated`, the default, `created`, or `name`), `limit`
+  200), `yours` (`true` for the caller's own sites, `false` for everyone
+  else's), `sort` (`updated`, the default, `created`, or `name`), `limit`
   (1-200), and `cursor`. A response carries `total` (sites the caller may see
   in that listing), `matched` (after filters), and `next_cursor` while more
   pages remain; pass it back with the same filters. Without `limit` or

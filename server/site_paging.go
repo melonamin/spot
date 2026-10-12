@@ -31,6 +31,10 @@ type siteListQuery struct {
 	Search string
 	Tag    string
 	Names  map[string]bool
+	// Yours keeps only the viewer's own sites (true) or only other people's
+	// (false); nil keeps both.
+	Yours  *bool
+	viewer Identity
 	cursor *siteListCursor
 }
 
@@ -54,9 +58,9 @@ type siteListPage[T any] struct {
 	TagCounts  []siteStatsTagJSON
 }
 
-func parseSiteListQuery(r *http.Request) (siteListQuery, error) {
+func parseSiteListQuery(r *http.Request, viewer Identity) (siteListQuery, error) {
 	values := r.URL.Query()
-	q := siteListQuery{Sort: "updated"}
+	q := siteListQuery{Sort: "updated", viewer: viewer}
 	switch sortMode := values.Get("sort"); sortMode {
 	case "":
 	case "updated", "created", "name":
@@ -83,6 +87,13 @@ func parseSiteListQuery(r *http.Request) (siteListQuery, error) {
 		if q.Limit == 0 {
 			q.Limit = siteListMaxLimit
 		}
+	}
+	if raw := values.Get("yours"); raw != "" {
+		yours, err := strconv.ParseBool(raw)
+		if err != nil {
+			return q, errors.New("yours must be true or false")
+		}
+		q.Yours = &yours
 	}
 	q.Search = strings.ToLower(strings.TrimSpace(values.Get("q")))
 	q.Tag = strings.TrimSpace(values.Get("tag"))
@@ -187,6 +198,9 @@ func (q siteListQuery) matches(site SiteRecord) bool {
 		return false
 	}
 	if q.Tag != "" && !containsString(site.Tags, q.Tag) {
+		return false
+	}
+	if q.Yours != nil && site.OwnedBy(q.viewer) != *q.Yours {
 		return false
 	}
 	if q.Search == "" {

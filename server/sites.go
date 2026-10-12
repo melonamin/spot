@@ -78,7 +78,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, err := parseSiteListQuery(r)
+	query, err := parseSiteListQuery(r, actor)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
@@ -225,7 +225,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, err := parseSiteListQuery(r)
+	query, err := parseSiteListQuery(r, actor)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
@@ -308,7 +308,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	query, err := parseSiteListQuery(r)
+	query, err := parseSiteListQuery(r, viewer)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return

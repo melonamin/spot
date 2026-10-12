@@ -25,7 +25,7 @@ func pagingTestSites() []SiteRecord {
 
 func siteListQueryFor(t *testing.T, rawQuery string) siteListQuery {
 	t.Helper()
-	q, err := parseSiteListQuery(httptest.NewRequest("GET", "/api/sites/public?"+rawQuery, nil))
+	q, err := parseSiteListQuery(httptest.NewRequest("GET", "/api/sites/public?"+rawQuery, nil), Identity{})
 	if err != nil {
 		t.Fatalf("parse %q: %v", rawQuery, err)
 	}
@@ -153,8 +153,9 @@ func TestParseSiteListQueryRejectsBadInput(t *testing.T) {
 		"cursor=" + url.QueryEscape(nameCursor): "different sort",
 		"names=UPPER":                           "names must be",
 		"names=" + strings.Join(tooMany, ","):   "at most",
+		"yours=maybe":                           "yours must be",
 	} {
-		_, err := parseSiteListQuery(httptest.NewRequest("GET", "/api/sites/public?"+query, nil))
+		_, err := parseSiteListQuery(httptest.NewRequest("GET", "/api/sites/public?"+query, nil), Identity{})
 		if err == nil || !strings.Contains(err.Error(), want) {
 			t.Errorf("%.40q error = %v, want %q", query, err, want)
 		}
@@ -264,6 +265,30 @@ func TestVisibleSitesPagingCountsOnlyViewableSites(t *testing.T) {
 	owner := st.listSites(t, "owner@example.com", "/api/sites/visible?limit=1")
 	if got := owner.names(); !slices.Equal(got, []string{"secret"}) || owner.Total != 4 || owner.NextCursor == "" {
 		t.Fatalf("owner visible = %+v", owner)
+	}
+}
+
+// yours=false pages only other people's sites, and matched counts only them,
+// so a "shared with me" view needs no client-side filtering.
+func TestVisibleSitesPagingFiltersByOwnership(t *testing.T) {
+	st := newPagingTestStack(t)
+	st.deploy(t, "viewer@example.com", "viewer-own", "")
+	others := st.listSites(t, "viewer@example.com", "/api/sites/visible?yours=false&limit=2")
+	if got := others.names(); !slices.Equal(got, []string{"open-c", "open-b"}) || others.NextCursor == "" {
+		t.Fatalf("others page = %v next %q", got, others.NextCursor)
+	}
+	if others.Total != 4 || others.Matched != 3 {
+		t.Fatalf("others counts total=%d matched=%d, want 4 and 3", others.Total, others.Matched)
+	}
+	rest := st.listSites(t, "viewer@example.com", "/api/sites/visible?yours=false&limit=2&cursor="+url.QueryEscape(others.NextCursor))
+	if got := rest.names(); !slices.Equal(got, []string{"open-a"}) || rest.NextCursor != "" {
+		t.Fatalf("others second page = %v next %q", got, rest.NextCursor)
+	}
+	if own := st.listSites(t, "viewer@example.com", "/api/sites/visible?yours=true"); !slices.Equal(own.names(), []string{"viewer-own"}) {
+		t.Fatalf("own visible = %v", own.names())
+	}
+	if public := st.listSites(t, "viewer@example.com", "/api/sites/public?yours=false"); public.Matched != 3 {
+		t.Fatalf("public yours=false matched = %d, want 3", public.Matched)
 	}
 }
 
