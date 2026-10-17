@@ -210,6 +210,21 @@ func (s *Server) planSiteType(ctx context.Context, principal DeployPrincipal, re
 	return &siteTypePlan{pin: pin, validate: v, commit: pin != current}, nil, nil
 }
 
+// missingTypeError decides, for an authorized deploy whose bundle failed
+// ordinary normalization, whether the real problem is a missing type: the
+// site is active and typed. It returns nil when the ordinary error stands.
+func (s *Server) missingTypeError(ctx context.Context, principal DeployPrincipal, site string, authz DeployAuthorization) (*typeError, error) {
+	if authz.Action != "update" || authz.PreviousState != SiteStateActive {
+		return nil, nil
+	}
+	current, err := s.types.SiteType(ctx, site)
+	if err != nil || !current.typed() {
+		return nil, err
+	}
+	_, terr, err := s.planSiteType(ctx, principal, nil, current, false)
+	return terr, err
+}
+
 // selectableTypeVersion reads a version a site is about to pin: it must
 // exist and not be yanked.
 func (s *Server) selectableTypeVersion(ctx context.Context, name, version string) (*siteTypeVersion, *typeError, error) {

@@ -203,6 +203,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// caller never publishes a site without one.
 	preserveAccess := true
 	requireActiveAccess := false
+	var untypedBundleErr error
 	typeFieldsPresent := map[string]bool{}
 	typeFieldValues := map[string]string{}
 	for {
@@ -287,22 +288,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	} else if files, err = normalizeDeploy(files); err != nil {
-		// Data without an index.html is most likely a typed site's data sent
-		// without its type: name the real problem. The authoritative pin
-		// check runs under the site lock below.
-		lifecycle, hasLifecycle := s.siteAdmin.(interface {
-			SiteState(context.Context, string) (SiteState, error)
-		})
-		if s.types != nil && hasLifecycle {
-			state, stateErr := lifecycle.SiteState(r.Context(), site)
-			if current, typeErr := s.types.SiteType(r.Context(), site); stateErr == nil && state == SiteStateActive && typeErr == nil && current.typed() {
-				_, terr, _ := s.planSiteType(r.Context(), principal, nil, current, false)
-				writeTypeError(w, terr)
-				return
-			}
+		if s.types == nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
 		}
-		httpError(w, http.StatusBadRequest, err.Error())
-		return
+		// Data without an index.html is most likely a typed site's data sent
+		// without its type. Whether to say so depends on the site's pin, which
+		// only an authorized caller may learn, so the error waits for the
+		// authorized check under the site lock.
+		untypedBundleErr = err
+		files = nil
 	}
 	if len(files) > maxDeployFiles {
 		httpError(w, http.StatusBadRequest,
@@ -384,6 +379,20 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		if err := canceler.CancelDeployAuthorization(ctx, site, authz); err != nil {
 			log.Printf("deploy %s: cancel authorization: %v", site, err)
 		}
+	}
+	if untypedBundleErr != nil {
+		terr, err := s.missingTypeError(r.Context(), principal, site, authz)
+		cancelAuthorization()
+		switch {
+		case err != nil:
+			log.Printf("deploy %s: read site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's type")
+		case terr != nil:
+			writeTypeError(w, terr)
+		default:
+			httpError(w, http.StatusBadRequest, untypedBundleErr.Error())
+		}
+		return
 	}
 	noPolicyToKeep := "site " + site + " has no stored access policy to keep; deploy it with an explicit " + accessFileName
 	if requireActiveAccess && (authz.Action != "update" || authz.PreviousState != SiteStateActive) {

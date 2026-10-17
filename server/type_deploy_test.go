@@ -530,3 +530,43 @@ type repinResponse struct {
 type typedSiteList struct {
 	Sites []map[string]any `json:"sites"`
 }
+
+// A caller who cannot manage a site must not learn its pin from a deploy
+// error: the missing-type decision is made only after authorization.
+func TestMissingTypeErrorDoesNotDiscloseThePinBeforeAuthorization(t *testing.T) {
+	env := typedDeckEnv(t)
+	env.mustDeploy("deck", map[string]string{
+		"card.json":    `{"title":"Deck"}`,
+		accessFileName: `{"allow":["` + typesOwnerEmail + `"]}`,
+	}, map[string]string{"type": "card@1.0.0"})
+
+	env.as("stranger@example.com")
+	if rec := env.get(deckHost, "/"); rec.Code != http.StatusForbidden {
+		t.Fatalf("stranger GET / = %d, want 403", rec.Code)
+	}
+	for _, files := range []map[string]string{
+		{"card.json": `{"title":"x"}`},
+		{"index.html": "<h1>x</h1>"},
+	} {
+		rec := env.deploy("deck", files, nil)
+		if rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "card@") || errorCode(t, rec) != "" {
+			t.Fatalf("stranger deploy %v = %d %s, want a plain 403", files, rec.Code, rec.Body.String())
+		}
+	}
+
+	// The authorized owner still gets the precise answer.
+	env.as(typesOwnerEmail)
+	rec := env.deploy("deck", map[string]string{"card.json": `{"title":"x"}`}, nil)
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != "type_required" {
+		t.Fatalf("owner data-only deploy = %d %s, want 409 type_required", rec.Code, rec.Body.String())
+	}
+	// Without a pin the ordinary validation error stands, and a refused
+	// create leaves no claim behind.
+	rec = env.deploy("fresh", map[string]string{"card.json": `{}`}, nil)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "index.html") {
+		t.Fatalf("untyped create without index.html = %d %s, want 400", rec.Code, rec.Body.String())
+	}
+	if _, err := env.srv.types.SiteType(t.Context(), "fresh"); err != ErrSiteNotFound {
+		t.Fatalf("refused create left a site row: %v", err)
+	}
+}
