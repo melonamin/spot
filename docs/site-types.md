@@ -353,6 +353,23 @@ omitted.
 {"types": [{"name": "card", "version": "1.1.0", "title": "Card", "description": "…", "skill": true}]}
 ```
 
+`GET /api/types?all=true` lists every type name with at least one version,
+including types whose versions are all yanked or prerelease. Each entry has
+the same shape plus `selectable`: `true` when the type has a non-yanked,
+non-prerelease version, which is then the entry's version (as in the default
+listing); `false` otherwise, and the entry describes the newest version by
+SemVer precedence, yanked or not. Any identified caller may use it. Types are
+ordered by name in both forms.
+
+```json
+{"types": [
+  {"name": "card", "version": "1.1.0", "title": "Card", "description": "…", "skill": true, "selectable": true},
+  {"name": "draft", "version": "0.1.0-rc.2", "title": "Draft", "description": "", "skill": false, "selectable": false}
+]}
+```
+
+`all` accepts `true` or `false`; any other value is `400 invalid_type_field`.
+
 ### `GET /api/types/{name}`
 
 ```json
