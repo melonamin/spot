@@ -16,7 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- Requests to a site whose path has an encoded `/` or `\`, a backslash, a control character, a `.` or `..` segment, or an empty segment are refused with `400` before routing, instead of being cleaned or redirected.
+- Every site, typed or not, now answers `400` for request paths with an empty segment (`//`), a `.` or `..` segment, an encoded separator (`%2F`, `%5C`), a backslash or a control character. `//` and dot segments used to redirect to the cleaned path, `%2F` used to be decoded and served as `/`, and `%5C` used to answer `404`. Browsers resolve dot segments before sending, so this mostly affects raw HTTP clients and pages that join URLs into `//`.
 
 ## [0.7.0] - 2026-10-12
 

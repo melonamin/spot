@@ -123,7 +123,12 @@ Only files in the pinned version's inventory are served under `/_type/`.
   whose access was revoked never gets a `304`. `HEAD` follows `GET`.
 - Type files (`/`, `/index.html`, `/_type/…`):
   - `ETag: "<version>-<file sha256 hex>"` (strong), compared against
-    `If-None-Match` before storage is opened. A match returns `304`.
+    `If-None-Match` before storage is opened. A match returns `304`. This
+    format is part of the contract and stable: `<version>` is the pinned
+    registry version and the hash is the file's 64 lowercase hex digits, so
+    the version is everything between the opening quote and the last `-`
+    (a prerelease version contains `-` itself). A proxy may weaken the tag to
+    `W/"…"`; strip that prefix before parsing.
   - `Cache-Control: private, no-cache`, on public and restricted sites.
   - No `Last-Modified`.
 - Typed site data (every other path): `Cache-Control: no-store`, no
@@ -485,6 +490,10 @@ Other errors keep their existing messages without a `code`.
   URLs. A relative `src="app.js"` resolves to site data, and `<base
   href="/_type/">` would also redirect data fetches.
 - Read data root-relative: `fetch('/card.json')`.
+- A viewer may read the pinned version from the entry's `ETag` (see Caching),
+  for example to detect a repin while polling without deploy events:
+  `fetch('/', {method: 'HEAD', cache: 'no-cache'})` and compare the version
+  with its own; reload when they differ.
 - Load the viewer's code at startup, ideally one bundle. Lazy-loaded viewer
   code fetched after a repin is the new version's.
 - Tolerate missing data files (`404`): show a placeholder and keep going.
