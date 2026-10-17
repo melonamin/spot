@@ -203,6 +203,8 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	// caller never publishes a site without one.
 	preserveAccess := true
 	requireActiveAccess := false
+	typeFieldsPresent := map[string]bool{}
+	typeFieldValues := map[string]string{}
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -236,6 +238,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				return
 			}
 			requireActiveAccess = false
+		case "type", "type_target", "type_track":
+			raw, err := io.ReadAll(io.LimitReader(part, 256))
+			if err != nil {
+				deployReadError(w, err)
+				return
+			}
+			typeFieldsPresent[part.FormName()] = true
+			typeFieldValues[part.FormName()] = strings.TrimSpace(string(raw))
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -261,8 +271,32 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusForbidden, "publishing key is not authorized for this site name")
 		return
 	}
-	files, err = normalizeDeploy(files)
-	if err != nil {
+	typeFields, terr := parseTypedDeployFields(typeFieldsPresent,
+		typeFieldValues["type"], typeFieldValues["type_target"], typeFieldValues["type_track"])
+	if terr != nil {
+		writeTypeError(w, terr)
+		return
+	}
+	if typeFields != nil {
+		if s.types == nil {
+			httpError(w, http.StatusServiceUnavailable, "site types are not configured")
+			return
+		}
+		if files, terr = normalizeTypedDeploy(files); terr != nil {
+			writeTypeError(w, terr)
+			return
+		}
+	} else if files, err = normalizeDeploy(files); err != nil {
+		// Data without an index.html is most likely a typed site's data sent
+		// without its type: name the real problem. The authoritative pin
+		// check runs under the site lock below.
+		if s.types != nil {
+			if current, typeErr := s.types.SiteType(r.Context(), site); typeErr == nil && current.typed() {
+				_, terr, _ := s.planSiteType(r.Context(), principal, nil, current, false)
+				writeTypeError(w, terr)
+				return
+			}
+		}
 		httpError(w, http.StatusBadRequest, err.Error())
 		return
 	}
@@ -382,6 +416,36 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			httpError(w, http.StatusConflict, noPolicyToKeep)
 			return
 		}
+	}
+	// The pin is read and decided under the site lock, after authorization
+	// and before any storage mutation, so a deploy cannot validate against
+	// one pin and commit after a concurrent repin.
+	var typePlan *siteTypePlan
+	if s.types != nil {
+		current, err := s.types.SiteType(r.Context(), site)
+		if err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: read site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's type")
+			return
+		}
+		newPin := authz.Action != "update" || authz.PreviousState != SiteStateActive
+		plan, terr, err := s.planSiteType(r.Context(), principal, typeFields, current, newPin)
+		if err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: plan site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site type registry")
+			return
+		}
+		if terr == nil && plan != nil && plan.validate != nil {
+			terr = validateTypedDeployFiles(files, plan.validate)
+		}
+		if terr != nil {
+			cancelAuthorization()
+			writeTypeError(w, terr)
+			return
+		}
+		typePlan = plan
 	}
 	var policyOnFailure *failurePolicyCache
 	var previousPolicy *AccessPolicy
@@ -587,6 +651,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		metadataUpdated = false
 	}
 	s.updatePolicyCacheFromDeploy(site, files)
+	if typePlan != nil && typePlan.commit {
+		if err := s.types.SetDeployedSiteType(r.Context(), site, authz.ContentGeneration, typePlan.pin); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			s.failDeployStorage(r, site, actor, authz, files, policyOnFailure, "could not record the site's type")
+			httpError(w, http.StatusInternalServerError, "could not record the site's type")
+			return
+		}
+	}
 	if completer, ok := s.deployAuth.(deployCompleter); ok {
 		if err := completer.CompleteDeploy(r.Context(), site, authz); err != nil {
 			log.Printf("deploy %s: activate: %v", site, err)
@@ -628,15 +700,30 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	if s.shouldAutoTag(metadata, existingSiteTags, restricted) {
 		s.scheduleAutoTag(site, files, resolveSiteMetadata(metadata, existingSiteTags))
 	}
+	var finalType siteTypeRef
+	if typePlan != nil {
+		finalType = typePlan.pin
+		if finalType.Track == typeTrackMajor {
+			if move, err := s.followSiteLocked(r, site, actor); err != nil {
+				log.Printf("deploy %s: follow: %v", site, err)
+			} else if move != nil {
+				finalType.Version = move.To
+			}
+		}
+	}
 	version := time.Now().UTC().Format("20060102T150405.000000000Z")
 	url := s.siteURL(r, site)
-	s.publishDeployEvent(site, version, url, "")
-	writeJSON(w, http.StatusOK, map[string]any{
+	s.publishDeployEvent(site, version, url, finalType.String())
+	body := map[string]any{
 		"site":    site,
 		"url":     url,
 		"files":   len(files),
 		"version": version,
-	})
+	}
+	if finalType.typed() {
+		body["type"] = siteTypeJSONFor(finalType, s.siteTypeTitle(r.Context(), finalType))
+	}
+	writeJSON(w, http.StatusOK, body)
 }
 
 func conflictingStalePaths(existing []string, files []deployFile, keep map[string]bool) []string {

@@ -97,6 +97,24 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		httpError(w, http.StatusServiceUnavailable, "site store not configured")
 		return
 	}
+	typedData := false
+	if s.types != nil {
+		ref, err := s.types.SiteType(r.Context(), site)
+		if err != nil && !errors.Is(err, ErrSiteNotFound) {
+			log.Printf("static %s: read site type: %v", site, err)
+			httpError(w, http.StatusServiceUnavailable, "could not read the site's type")
+			return
+		}
+		if ref.typed() {
+			if s.serveTypedSitePath(w, r, ref) {
+				return
+			}
+			// Typed data is small and changes with deploys and access
+			// changes, so no cache may keep or revalidate it by time.
+			typedData = true
+			w.Header().Set("Cache-Control", "no-store")
+		}
+	}
 	requestPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 	var indexPath string
 	if requestPath == "." || requestPath == "" {
@@ -132,7 +150,11 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 	}
 	defer rc.Close()
 	if seeker, ok := rc.(io.ReadSeeker); ok {
-		http.ServeContent(w, r, requestPath, info.LastModified, seeker)
+		modTime := info.LastModified
+		if typedData {
+			modTime = time.Time{}
+		}
+		http.ServeContent(w, r, requestPath, modTime, seeker)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeForName(requestPath))

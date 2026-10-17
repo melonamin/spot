@@ -509,6 +509,26 @@ func cloudflareContentHashForDeploy(files []deployFile) string {
 	return hex.EncodeToString(h.Sum(nil))
 }
 
+// cloudflareEligibilityForSite adds the registry's view to the snapshot
+// checks: a typed site's viewer lives in the type registry, not in the
+// site's files, so a Pages copy of the files would not render.
+func (s *Server) cloudflareEligibilityForSite(ctx context.Context, site string, snap cloudflareSnapshot) cloudflareEligibility {
+	eligibility := checkCloudflareEligibility(snap)
+	if s.types == nil {
+		return eligibility
+	}
+	ref, err := s.types.SiteType(ctx, site)
+	switch {
+	case err != nil && !errors.Is(err, ErrSiteNotFound):
+		eligibility.Eligible = false
+		eligibility.Reasons = append(eligibility.Reasons, "the site's type could not be read")
+	case ref.typed():
+		eligibility.Eligible = false
+		eligibility.Reasons = append(eligibility.Reasons, "typed sites ("+ref.String()+") cannot be published to Cloudflare Pages")
+	}
+	return eligibility
+}
+
 func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
 	reasons := make([]string, 0)
 	if snap.FileCount > maxCloudflareFiles || len(snap.Files) > maxCloudflareFiles {

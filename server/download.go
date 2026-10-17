@@ -39,18 +39,38 @@ func (s *Server) handleSiteDownload(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// The pin and the file list are read together under the site lock so
+	// the type header describes the listed files; the lock is released
+	// before streaming so a slow client never blocks deploys.
+	var siteType siteTypeRef
+	lock := s.siteMutationLock(site)
+	lock.Lock()
+	if s.types != nil {
+		siteType, err = s.types.SiteType(r.Context(), site)
+		if err != nil {
+			lock.Unlock()
+			log.Printf("download %s: read site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's type")
+			return
+		}
+	}
 	paths, err := s.sites.List(r.Context(), site)
+	lock.Unlock()
 	if err != nil {
 		log.Printf("download %s: list: %v", site, err)
 		httpError(w, http.StatusInternalServerError, "could not list site files")
 		return
 	}
 	paths = cleanDownloadPaths(paths)
-	if len(paths) == 0 {
+	// An empty typed instance is valid: its export is an empty ZIP.
+	if len(paths) == 0 && !siteType.typed() {
 		httpError(w, http.StatusNotFound, "no site named "+site)
 		return
 	}
 
+	if siteType.typed() {
+		w.Header().Set("X-Spot-Type", siteType.String())
+	}
 	w.Header().Set("Content-Type", "application/zip")
 	w.Header().Set("Content-Disposition", mime.FormatMediaType("attachment", map[string]string{
 		"filename": site + ".zip",

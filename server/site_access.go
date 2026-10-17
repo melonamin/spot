@@ -227,6 +227,7 @@ func (s *Server) handleVisibleSites(w http.ResponseWriter, r *http.Request) {
 				Description: site.Description, Tags: cloneSiteTags(site.Tags),
 				DownloadAllowed: policy.AllowsDownload(), Owner: ownerDisplay(site), OwnerEmail: ownerEmailFor(site, yours || restricted), Yours: yours,
 				Preview: preview, CreatedAt: site.CreatedAt, UpdatedAt: site.UpdatedAt,
+				Type: siteTypeJSONFor(site.Type, site.TypeTitle),
 			},
 			Restricted: restricted,
 			Allow:      allow,

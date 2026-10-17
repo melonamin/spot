@@ -120,6 +120,9 @@ type SiteRecord struct {
 	PolicyTransitionGeneration int64
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time
+	// Type is the site's pin and TypeTitle the pinned version's title.
+	Type      siteTypeRef
+	TypeTitle string
 }
 
 func NewSiteRegistry(db *sql.DB, admins *AccessPolicy) *SiteRegistry {
@@ -520,6 +523,7 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle,
 			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
 			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan manageable site candidate: %w", err)
@@ -589,6 +593,7 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle,
 			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
 			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan owned site: %w", err)
@@ -606,7 +611,8 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 // Callers filter out restricted sites before showing the list.
 func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at
+		`SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at,
+		 `+siteTypeColumnsSQL+`
 		 FROM sites
 		 WHERE state = 'active' AND policy_transition_generation = 0
 		 ORDER BY updated_at DESC`)
@@ -640,7 +646,7 @@ func (r *SiteRegistry) SiteStorageStats(ctx context.Context) (siteStatsStorageJS
 		LEFT JOIN site_deploy_audit AS a ON a.id = (
 			SELECT latest.id
 			FROM site_deploy_audit AS latest
-			WHERE latest.site = s.name AND latest.status = 'success' AND latest.action <> 'access'
+			WHERE latest.site = s.name AND latest.status = 'success' AND latest.action NOT IN ('access', 'type')
 			ORDER BY latest.created_at DESC, latest.id DESC
 			LIMIT 1
 		)
@@ -855,6 +861,7 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		}
 	}
 	if _, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'deleted', title = '', description = '', tags = '[]',
+		type_name = '', type_version = '', type_track = '',
 		content_dirty = 0, content_external_mutation = 0,
 		content_external_mutation_started_at = 0, content_external_mutation_owner = '',
 		updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
@@ -961,7 +968,8 @@ type siteRecordScanner interface {
 func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	var rawTags string
 	if err := row.Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName,
-		&record.Title, &record.Description, &rawTags, &record.State, &record.PolicyTransitionGeneration, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		&record.Title, &record.Description, &rawTags, &record.State, &record.PolicyTransitionGeneration, &record.CreatedAt, &record.UpdatedAt,
+		&record.Type.Name, &record.Type.Version, &record.Type.Track, &record.TypeTitle); err != nil {
 		return err
 	}
 	record.Tags = decodeSiteTags(rawTags)
@@ -972,6 +980,11 @@ func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	}
 	return nil
 }
+
+// siteTypeColumnsSQL selects a site row's pin and the pinned version's
+// title, in SiteRecord scan order.
+const siteTypeColumnsSQL = `type_name, type_version, type_track,
+	COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = sites.type_name AND v.version = sites.type_version), '')`
 
 const (
 	insertSiteSQL = `INSERT INTO sites
@@ -988,7 +1001,8 @@ const (
 		WHERE name = ? AND content_generation = ? AND policy_transition_generation = 0
 		RETURNING content_generation`
 
-	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at
+	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at,
+		` + siteTypeColumnsSQL + `
 		FROM sites
 		WHERE name = ?`
 
@@ -998,31 +1012,34 @@ const (
 		 auth_method, publisher_key_id, publisher_name, message)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
-	// Access-only changes are audited as action 'access'; they never describe
-	// deployed content, so the latest-deploy columns skip them.
+	// Access-only changes are audited as action 'access' and type pin
+	// changes as 'type'; they never describe deployed content, so the
+	// latest-deploy columns skip them.
 	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
+			s.type_name, s.type_version, s.type_track,
+			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
 			COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			(s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'update', 'delete')
 				  AND status IN ('success', 'failed')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0)),
 			COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			COALESCE((SELECT auth_method FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			COALESCE((SELECT publisher_name FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '')
 		FROM sites s
 		WHERE s.state = 'active' AND ((s.owner_email <> '' AND s.owner_email = ?)
@@ -1031,27 +1048,29 @@ const (
 
 	manageableSitesSQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
+			s.type_name, s.type_version, s.type_track,
+			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			(s.state = 'active' AND (s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'recreate', 'update', 'delete')
 				  AND status IN ('success', 'failed')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0))),
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT auth_method FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT publisher_name FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success' AND action <> 'access'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END
 		FROM sites s
 		WHERE s.state IN ('active', 'deleted')

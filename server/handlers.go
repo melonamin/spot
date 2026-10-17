@@ -206,6 +206,7 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/types/{name}/{version}/package", s.sameOriginOnly(s.limited(s.fileLimit, s.handleTypePackage)))
 	mux.HandleFunc("POST /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
 	mux.HandleFunc("DELETE /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
+	mux.HandleFunc("PUT /api/sites/{name}/type", s.sameOriginOnly(s.limited(s.deployLimit, s.handleSiteTypeRepin)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/manageable", s.sameOriginOnly(s.limited(s.dbLimit, s.handleManageableSites)))
