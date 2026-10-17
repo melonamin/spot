@@ -1503,6 +1503,14 @@ print_json() {
     fi
 }
 
+# api_json runs api_call and pretty-prints its body. api_call's status is
+# checked before printing: in a plain `api_call | print_json` pipeline the
+# printer's status wins, so a failed request would exit 0.
+api_json() {
+    api_json_body=$(api_call "$@") || exit 1
+    printf '%s\n' "$api_json_body" | print_json
+}
+
 # type_ref splits <name>@<version> into type_name and type_version; pass
 # "required" when the version must be named.
 type_ref() {
@@ -1544,7 +1552,8 @@ types_upload() {
     done <<FILES
 $(cd "$pkg" && find . -type f -print)
 FILES
-    (cd "$pkg" && api_call POST /api/types "$@") | print_json
+    upload_body=$(cd "$pkg" && api_call POST /api/types "$@") || exit 1
+    printf '%s\n' "$upload_body" | print_json
 }
 
 types_pull() {
@@ -1603,7 +1612,7 @@ types_repin() {
         [ -n "$body" ] && body="$body,"
         body="$body\"track\":\"$repin_track\""
     fi
-    api_call PUT "/api/sites/$site/type" -H 'Content-Type: application/json' --data-binary "{$body}" | print_json
+    api_json PUT "/api/sites/$site/type" -H 'Content-Type: application/json' --data-binary "{$body}"
 }
 
 types() {
@@ -1612,8 +1621,8 @@ types() {
     case $sub in
         list)
             case ${1:-} in
-                --all) api_call GET '/api/types?all=true' | print_json ;;
-                '') api_call GET /api/types | print_json ;;
+                --all) api_json GET '/api/types?all=true' ;;
+                '') api_json GET /api/types ;;
                 *) types_usage ;;
             esac
             ;;
@@ -1621,9 +1630,9 @@ types() {
             [ $# -eq 1 ] || types_usage
             type_ref "$1"
             if [ -n "$type_version" ]; then
-                api_call GET "/api/types/$type_name/$type_version" | print_json
+                api_json GET "/api/types/$type_name/$type_version"
             else
-                api_call GET "/api/types/$type_name" | print_json
+                api_json GET "/api/types/$type_name"
             fi
             ;;
         skill)
@@ -1638,7 +1647,7 @@ types() {
             type_ref "$1" required
             method=POST
             [ "$sub" = unyank ] && method=DELETE
-            api_call "$method" "/api/types/$type_name/$type_version/yank" | print_json
+            api_json "$method" "/api/types/$type_name/$type_version/yank"
             ;;
         repin) types_repin "$@" ;;
         *) types_usage ;;

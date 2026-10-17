@@ -43,6 +43,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/deploy":
             Handler.deploys += 1
         Handler.last_authorization = self.headers.get("Authorization", "")
+        if self.path == "/api/types" and b'filename="conflict"' in Handler.last_body:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "type_version_exists"}')
+            return
         self.send_response(201 if self.path == "/api/types" else 200)
         self.end_headers()
         self.wfile.write(b'{"created": true}' if self.path == "/api/types" else b"ok")
@@ -51,6 +56,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         length = int(self.headers.get("content-length", "0"))
         Handler.last_body = self.rfile.read(length)
         Handler.last_path, Handler.last_method = self.path, "PUT"
+        if "/fail/" in self.path:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "site_untyped"}')
+            return
         self.send_response(200)
         self.end_headers()
         self.wfile.write(b'{"site": "deck"}')
@@ -254,6 +264,22 @@ try:
         assert json.loads(Handler.last_body) == {"version": "1.2.0", "track": "major"}, Handler.last_body
         run(["./cli/spot", "types", "repin", "deck", "--track", "pinned"])
         assert json.loads(Handler.last_body) == {"track": "pinned"}, Handler.last_body
+
+        # Every types command fails with the API: automation must not read a
+        # refused upload, yank or repin as success.
+        conflict = pathlib.Path(tmp) / "conflict-pkg"
+        conflict.mkdir()
+        (conflict / "type.json").write_text("{}")
+        (conflict / "conflict").write_text("x")
+        for args in [["list"], ["list", "--all"], ["show", "card"], ["show", "card@1.0.0"],
+                     ["skill", "card@1.0.0"], ["yank", "card@1.0.0"], ["unyank", "card@1.0.0"],
+                     ["repin", "fail", "--track", "major"], ["upload", str(conflict)]]:
+            failed = subprocess.run(["./cli/spot", "types", *args], cwd=root, env=env, text=True, capture_output=True)
+            assert failed.returncode != 0, (args, failed.returncode, failed.stdout, failed.stderr)
+            assert "failed (HTTP" in failed.stderr, (args, failed.stderr)
+        unreachable = subprocess.run(["./cli/spot", "types", "list"], cwd=root, text=True, capture_output=True,
+                                     env={**env, "SPOT_URL": "http://127.0.0.1:9"})
+        assert unreachable.returncode != 0 and "could not reach" in unreachable.stderr, unreachable.stderr
         fake_bin = pathlib.Path(tmp) / "fake-bin"
         fake_bin.mkdir()
         chromium = fake_bin / "chromium"
