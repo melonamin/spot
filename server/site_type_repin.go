@@ -144,15 +144,16 @@ func (s *Server) handleSiteTypeRepin(w http.ResponseWriter, r *http.Request) {
 			Message: "repinned " + current.String() + " " + current.Track + " to " + next.String() + " " + next.Track,
 		})
 	}
+	followed := false
 	if next.Track == typeTrackMajor {
 		if move, err := s.followSiteLocked(r, site, actor); err != nil {
 			log.Printf("repin %s: follow: %v", site, err)
 		} else if move != nil {
-			next.Version = move.To
+			next.Version, followed = move.To, true
 		}
 	}
-	// followSiteLocked already announced its own move.
-	if next.Version != current.Version && (next.Track != typeTrackMajor || req.Version != nil) {
+	// A follow move announces the final pin itself; announce once.
+	if next.Version != current.Version && !followed {
 		s.publishSiteTypeEvent(r, site, next)
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

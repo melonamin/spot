@@ -570,3 +570,28 @@ func TestMissingTypeErrorDoesNotDiscloseThePinBeforeAuthorization(t *testing.T) 
 		t.Fatalf("refused create left a site row: %v", err)
 	}
 }
+
+// A repin to an explicit version with track major that then follows
+// forward announces the change once.
+func TestRepinWithFollowPublishesOneEvent(t *testing.T) {
+	env := typedDeckEnv(t)
+	env.mustUpload(cardVersion(t, "1.2.0"))
+	events := make(chan Event, 8)
+	env.srv.hub.Subscribe("deck", deployEventsCollection, events)
+	rec := env.jsonRequest(http.MethodPut, "/api/sites/deck/type", `{"version":"1.1.0","track":"major"}`)
+	if rec.Code != http.StatusOK || env.siteType("deck") != (siteTypeRef{"card", "1.2.0", "major"}) {
+		t.Fatalf("repin = %d %s, pin %+v", rec.Code, rec.Body.String(), env.siteType("deck"))
+	}
+	var got []string
+	for done := false; !done; {
+		select {
+		case ev := <-events:
+			got = append(got, ev.SiteType)
+		case <-time.After(200 * time.Millisecond):
+			done = true
+		}
+	}
+	if len(got) != 1 || got[0] != "card@1.2.0" {
+		t.Fatalf("repin events = %v, want one card@1.2.0", got)
+	}
+}
