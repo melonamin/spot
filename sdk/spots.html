@@ -671,6 +671,24 @@
       letter-spacing: .14em;
       text-transform: uppercase;
     }
+    /* A typed site names the viewer that renders it. */
+    .typechip {
+      flex: 0 1 auto;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      border: 2px solid var(--ink);
+      border-radius: 999px;
+      background: var(--ink);
+      color: var(--paper);
+      padding: 4px 8px;
+      font: 700 9px/1 var(--font-mono);
+      letter-spacing: .14em;
+      text-transform: uppercase;
+    }
+    .badge.type { background: var(--ink); color: var(--paper); }
+    .badge.type .who { opacity: .85; }
     .tauthor {
       margin: 8px 0 0;
       font: 700 11px/1.45 var(--font-mono);
@@ -1919,6 +1937,17 @@
           meshWho.textContent = site.restricted ? '· ' + site.allow_count + ' invited' : '· everyone';
           badge.append(site.restricted ? '🔒 Mesh ' : 'Mesh ', meshWho);
           chips.append(badge);
+          if (site.type) {
+            const typeBadge = document.createElement('span');
+            typeBadge.className = 'badge type';
+            typeBadge.title = 'Type ' + site.type.name + '@' + site.type.version +
+              (site.type.track === 'major' ? ', following ' + site.type.version.split('.')[0] + '.x' : ', pinned');
+            const typeWho = document.createElement('span');
+            typeWho.className = 'who';
+            typeWho.textContent = '· ' + site.type.version + (site.type.track === 'major' ? ' ↑' : '');
+            typeBadge.append((site.type.title || site.type.name) + ' ', typeWho);
+            chips.append(typeBadge);
+          }
           if (cf.publication && cf.publication.status === 'published') {
             const pin = cf.publication.access_mode === 'restricted';
             const netBadge = document.createElement('span');
@@ -2403,6 +2432,13 @@
           const chip = document.createElement('span');
           chip.className = 'yours';
           chip.textContent = 'yours';
+          name.appendChild(chip);
+        }
+        if (site.type) {
+          const chip = document.createElement('span');
+          chip.className = 'typechip';
+          chip.textContent = site.type.title || site.type.name;
+          chip.title = 'Type ' + site.type.name + '@' + site.type.version;
           name.appendChild(chip);
         }
         const owner = site.owner || 'unknown';
