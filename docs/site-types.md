@@ -293,7 +293,10 @@ A deploy, a repin that changes the version, and a follow move publish the
 ```
 
 `site_type` is present for typed sites. Events are best effort: they are lost
-on slow sockets and are delivered only to identified visitors.
+on slow sockets and are not replayed after a reconnect. In delegated-login
+deployments only signed-in visitors receive them; otherwise the deployment's
+identity mode decides who may open `/api/ws`. Viewers must not depend on
+events and must poll as a fallback.
 
 Repins and follow moves are recorded in the site's deploy audit as action
 `type`.
@@ -489,7 +492,8 @@ Other errors keep their existing messages without a `code`.
 - Refresh data on the `_spot_deploys` event when a websocket is available
   (`/api/ws`, send `{"type": "subscribe", "collection": "_spot_deploys"}`).
   If the event's `site_type` differs from the viewer's own version, reload the
-  page. Otherwise, or when the socket is unavailable (anonymous viewers),
+  page. Do not depend on events: when the socket is unavailable (for example
+  an anonymous visitor in a delegated-login deployment) or events are lost,
   poll the data index at a bounded interval, at most every few seconds and
   backing off, while placeholders remain.
 - Do not depend on `/_type/type.json` or `/_type/SKILL.md`; they are not

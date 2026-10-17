@@ -56,7 +56,8 @@
     }
   }
 
-  // Deploy events reach identified visitors only; polling above covers the rest.
+  // Deploy events are best effort and not every visitor may open the socket;
+  // polling above covers the rest.
   const watch = () => {
     let socket;
     try {
