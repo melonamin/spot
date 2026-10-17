@@ -31,8 +31,34 @@ CREATE TABLE IF NOT EXISTS sites (
     content_external_mutation integer NOT NULL DEFAULT 0,
     content_external_mutation_started_at integer NOT NULL DEFAULT 0,
     content_external_mutation_owner text NOT NULL DEFAULT '',
+    -- A typed site pins one version of a site type; empty for ordinary sites.
+    type_name text NOT NULL DEFAULT '',
+    type_version text NOT NULL DEFAULT '',
+    type_track text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+
+-- Immutable site type versions. Package bytes live in site storage under
+-- _types/<name>/<version>/; only paths in inventory are ever served.
+CREATE TABLE IF NOT EXISTS site_type_versions (
+    name text NOT NULL,
+    version text NOT NULL,
+    major integer NOT NULL,
+    minor integer NOT NULL,
+    patch integer NOT NULL,
+    prerelease text NOT NULL DEFAULT '',
+    title text NOT NULL,
+    manifest text NOT NULL,
+    package_hash text NOT NULL,
+    inventory text NOT NULL,
+    has_skill integer NOT NULL DEFAULT 0,
+    uploader_email text NOT NULL DEFAULT '',
+    uploader_peer_ip text NOT NULL DEFAULT '',
+    uploader_name text NOT NULL DEFAULT '',
+    uploaded_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    yanked_at datetime,
+    PRIMARY KEY (name, version)
 );
 
 CREATE TABLE IF NOT EXISTS site_deploy_audit (

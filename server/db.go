@@ -101,6 +101,17 @@ func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE sites ADD COLUMN content_external_mutation_owner text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	for _, column := range []string{"type_name", "type_version", "type_track"} {
+		if err := ensureColumn(ctx, db, "sites", column,
+			`ALTER TABLE sites ADD COLUMN `+column+` text NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	// Created here rather than in schema.sql: on an older database the
+	// columns exist only after the migration above.
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS sites_type_idx ON sites (type_name, type_track)`); err != nil {
+		return fmt.Errorf("create sites type index: %w", err)
+	}
 	if err := ensureColumn(ctx, db, "site_deploy_audit", "content_hash",
 		`ALTER TABLE site_deploy_audit ADD COLUMN content_hash text NOT NULL DEFAULT ''`); err != nil {
 		return err

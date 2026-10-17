@@ -111,6 +111,38 @@ func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser,
 	return obj, SiteFileInfo{LastModified: info.LastModified}, nil
 }
 
+func (s *SiteStore) PutTypeFile(ctx context.Context, name, version, path, contentType string, data []byte) error {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(data), int64(len(data)),
+		minio.PutObjectOptions{ContentType: contentType}); err != nil {
+		return fmt.Errorf("store type file %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *SiteStore) OpenTypeFile(ctx context.Context, name, version, path string) (io.ReadCloser, error) {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("open type file %s: %w", key, err)
+	}
+	if _, err := obj.Stat(); err != nil {
+		obj.Close()
+		var resp minio.ErrorResponse
+		if errors.As(err, &resp) && (resp.StatusCode == 404 || resp.Code == "NoSuchKey" || resp.Code == "NoSuchBucket") {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("stat type file %s: %w", key, err)
+	}
+	return obj, nil
+}
+
 func (s *SiteStore) Remove(ctx context.Context, site, path string) error {
 	key := site + "/" + path
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {
@@ -598,7 +630,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	version := time.Now().UTC().Format("20060102T150405.000000000Z")
 	url := s.siteURL(r, site)
-	s.publishDeployEvent(site, version, url)
+	s.publishDeployEvent(site, version, url, "")
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":    site,
 		"url":     url,

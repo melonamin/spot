@@ -57,6 +57,10 @@ type Server struct {
 	cloudflareLocks   map[string]*sync.Mutex
 	cloudflareJobsMu  sync.Mutex
 	cloudflareJobs    map[string]struct{}
+	types             *TypeRegistry
+	typeLocksMu       sync.Mutex
+	typeLocks         map[string]*sync.Mutex
+	typeVersionCache  sync.Map
 
 	// bgTasks tracks detached post-deploy work (AI auto-tagging) so shutdown
 	// and tests can wait for it to drain.
@@ -194,6 +198,14 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
 	mux.HandleFunc("POST /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
 	mux.HandleFunc("DELETE /api/publishing-keys/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKey)))
+	mux.HandleFunc("GET /api/types", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypesList)))
+	mux.HandleFunc("POST /api/types", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeUpload)))
+	mux.HandleFunc("GET /api/types/{name}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeVersions)))
+	mux.HandleFunc("GET /api/types/{name}/{version}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeVersion)))
+	mux.HandleFunc("GET /api/types/{name}/{version}/skill", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeSkill)))
+	mux.HandleFunc("GET /api/types/{name}/{version}/package", s.sameOriginOnly(s.limited(s.fileLimit, s.handleTypePackage)))
+	mux.HandleFunc("POST /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
+	mux.HandleFunc("DELETE /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/manageable", s.sameOriginOnly(s.limited(s.dbLimit, s.handleManageableSites)))

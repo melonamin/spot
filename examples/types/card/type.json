@@ -1,0 +1,8 @@
+{
+  "format": 1,
+  "name": "card",
+  "version": "1.0.0",
+  "title": "Card",
+  "description": "Renders one JSON card: a title, a short text and a list of points.",
+  "data": ["card.json", "media/"]
+}
