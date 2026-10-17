@@ -234,7 +234,7 @@ func (s *Server) routes() http.Handler {
 	if s.serveStatic {
 		mux.HandleFunc("/", s.handleStatic)
 	}
-	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(s.siteResponseHeaders(mux)))
+	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(s.siteResponseHeaders(s.rejectInvalidSitePaths(mux))))
 }
 
 func (s *Server) rejectUnknownHosts(next http.Handler) http.Handler {
