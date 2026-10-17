@@ -2,6 +2,7 @@ package main
 
 import (
 	"net/http"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -150,4 +151,20 @@ func httptestRequest(method, host, target string) *http.Request {
 	req, _ := http.NewRequest(method, "http://"+host+target, nil)
 	req.RemoteAddr = "192.0.2.1:1234"
 	return req
+}
+
+// The entry's ETag format is part of the contract: viewers parse the pinned
+// version from it, prerelease hyphens included.
+func TestTypeFileETagFormatIsStable(t *testing.T) {
+	env := newTypesEnv(t)
+	env.mustUpload(cardVersion(t, "1.1.0-rc.1"))
+	env.mustDeploy("deck", map[string]string{"card.json": "{}"}, map[string]string{"type": "card@1.1.0-rc.1"})
+	etag := env.get(deckHost, "/").Header().Get("ETag")
+	if !regexp.MustCompile(`^"1\.1\.0-rc\.1-[0-9a-f]{64}"$`).MatchString(etag) {
+		t.Fatalf("ETag = %q, want \"<version>-<64 hex>\"", etag)
+	}
+	inner := strings.Trim(etag, `"`)
+	if version := inner[:strings.LastIndex(inner, "-")]; version != "1.1.0-rc.1" {
+		t.Fatalf("version parsed from ETag = %q", version)
+	}
 }
