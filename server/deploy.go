@@ -290,8 +290,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		// Data without an index.html is most likely a typed site's data sent
 		// without its type: name the real problem. The authoritative pin
 		// check runs under the site lock below.
-		if s.types != nil {
-			if current, typeErr := s.types.SiteType(r.Context(), site); typeErr == nil && current.typed() {
+		lifecycle, hasLifecycle := s.siteAdmin.(interface {
+			SiteState(context.Context, string) (SiteState, error)
+		})
+		if s.types != nil && hasLifecycle {
+			state, stateErr := lifecycle.SiteState(r.Context(), site)
+			if current, typeErr := s.types.SiteType(r.Context(), site); stateErr == nil && state == SiteStateActive && typeErr == nil && current.typed() {
 				_, terr, _ := s.planSiteType(r.Context(), principal, nil, current, false)
 				writeTypeError(w, terr)
 				return
