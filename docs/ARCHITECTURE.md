@@ -112,6 +112,8 @@ The apex serves embedded platform assets:
 Site subdomains serve deployed files through `SiteStorage`:
 
 - `/spot.js` is always served from embedded SDK assets.
+- on a typed site, `/` and `/index.html` serve the pinned type's entry and
+  `/_type/` its viewer files (see Site Types).
 - `/` resolves to `index.html`.
 - directory paths resolve to `index.html` under that directory.
 - missing files return the embedded `404.html`.
@@ -156,6 +158,9 @@ Tables:
   can recover a lease left stale for an hour by a killed process.
 - `site_deploy_audit`: deploy and delete audit history, including whether the
   actor was authorized as owner, platform admin, or maintainer.
+- `site_type_versions`: immutable site type versions with their manifest,
+  package hash, file inventory, uploader, and yank time. `sites` carries each
+  typed site's pin (`type_name`, `type_version`, `type_track`).
 - `site_cloudflare_publications`: optional Cloudflare Pages publication
   metadata, including account/zone ownership, explicit project/DNS cleanup
   ownership, managed DNS record identity, project name, hostname, latest
@@ -290,6 +295,37 @@ Publishing-key management is also apex-only. Owners can create and list their
 own keys at `GET`/`POST /api/publishing-keys` and revoke one at
 `DELETE /api/publishing-keys/{id}`. Administrators may revoke a known ID for
 incident response, but there is deliberately no administrator-wide listing.
+
+## Site Types
+
+Site types are specified in `docs/site-types.md`. The registry lives in
+`server/site_types.go` (SQLite table `site_type_versions`, package validation,
+`TypeFileStorage`), the API in `server/site_types_api.go`, typed deploy rules
+in `server/type_deploy.go`, repin in `server/site_type_repin.go`, and serving
+in `server/type_serving.go`.
+
+- Package bytes are stored in the site storage backend under `_types/<name>/
+  <version>/`, a root no site name can occupy, through `typeObjectKey`.
+- A version row holds the manifest, the package hash, and the per-file
+  inventory. Only inventory paths are served, so objects left by an
+  interrupted upload are unreachable. Uploads of one type name are serialized
+  by a process lock, and the existing version and hash are checked inside it
+  before any object is written.
+- The site's pin is registry state: `sites.type_name`, `type_version`, and
+  `type_track`, never `_spot.json`. Deletion clears it with the tombstone.
+- Typed deploys read the pin under the site mutation lock after
+  authorization, validate against the version the rules select, and commit
+  the pin fenced by the deploy's content generation. Repin and follow
+  resolution also take the site lock first and then change the pin with one
+  conditional SQLite statement; the follower list is read before any site lock
+  is awaited, so no lock wait happens while SQLite's single connection is
+  held.
+- `rejectInvalidSitePaths` applies the path contract to site-host requests
+  before the `ServeMux` cleans or redirects them.
+- Type files are served with a strong ETag compared before storage is opened
+  and `Cache-Control: private, no-cache`; typed data is `no-store` without
+  time validators. Visitor access runs first, so a revoked visitor never gets a
+  `304`.
 
 ## Optional Cloudflare Pages Publish Flow
 
@@ -437,7 +473,9 @@ Apex-only APIs:
 
 - Deploy: `POST /api/deploy`
 - Site listing, management, and gallery preview: `/api/sites/*` (including
-  `GET /api/sites/{name}/preview`)
+  `GET /api/sites/{name}/preview` and `PUT /api/sites/{name}/type`)
+- Site types: `/api/types/*`; uploads and yanks need a platform admin
+  resolved by identity, reads need an identified caller
 - Access suggestions: `/api/access/suggestions`
 
 Site-only APIs:
@@ -617,6 +655,7 @@ Use this map when deciding where a change belongs:
 | HTTP route or middleware | `server/handlers.go` |
 | Apex/static/platform asset serving | `server/static_assets.go`, `sdk/` |
 | Site gallery thumbnails | `server/preview.go` |
+| Site types: registry, API, typed deploy, serving | `server/site_types.go`, `server/site_types_api.go`, `server/type_deploy.go`, `server/type_serving.go`, `docs/site-types.md` |
 | Site path rules or data scope rules | `server/scope.go` |
 | Deploy validation, sync, limits | `server/deploy.go` |
 | Site lifecycle, management roles, policy fences, audit | `server/site_registry.go` |

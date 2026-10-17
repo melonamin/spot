@@ -508,8 +508,13 @@ spot types yank <name>@<version>        # admin
 spot types unyank <name>@<version>      # admin
 spot types pull <name>@<version> [dir]  # unpack the viewer package
 spot types repin <site> [--version <v>] [--track pinned|major]
-spot deploy --type <name>@<version> [--type-target <v>] [--follow major] [name] [dir]
+spot deploy --type <name>@<version> [--type-target <v>] [--follow major|--pinned] [name] [dir]
 ```
 
 A typed `spot deploy` uploads the directory as-is: no `index.html` is
-required.
+required. `spot types pull` needs `unzip`. The types commands use the
+caller's ambient identity, never `SPOT_PUBLISH_KEY`.
+
+Mutating routes (`POST /api/types`, yank, un-yank, repin) share the deploy
+rate limit (a burst of 3, then one request every two seconds per client
+address); a secret-proven forward-auth proxy is exempt, as for deploys.
