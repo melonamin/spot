@@ -551,10 +551,12 @@ func (s *Server) handleTypePackage(w http.ResponseWriter, r *http.Request) {
 
 // followType moves every follower of a type forward. Each site is resolved
 // under its own mutation lock; the follower list is read first so no site
-// lock is awaited while SQLite's single connection is held.
+// lock is awaited while SQLite's single connection is held. The work is
+// detached from the request: once a version is recorded or un-yanked, a
+// disconnecting client must not leave followers on the old version.
 func (s *Server) followType(r *http.Request, name string, actor Identity) []typeFollowMoveJSON {
 	moves := []typeFollowMoveJSON{}
-	sites, err := s.types.Followers(r.Context(), name)
+	sites, err := s.types.Followers(context.WithoutCancel(r.Context()), name)
 	if err != nil {
 		log.Printf("types: followers of %s: %v", name, err)
 		return moves
@@ -576,9 +578,12 @@ func (s *Server) followType(r *http.Request, name string, actor Identity) []type
 }
 
 // followSiteLocked moves one following site to the newest selectable
-// version of its major, forward only. The caller holds the site lock.
+// version of its major, forward only. The caller holds the site lock. Like
+// the deploy audit, it is detached from the request's cancellation: the
+// change that triggered it has already been committed.
 func (s *Server) followSiteLocked(r *http.Request, site string, actor Identity) (*typeFollowMoveJSON, error) {
-	current, err := s.types.SiteType(r.Context(), site)
+	ctx := context.WithoutCancel(r.Context())
+	current, err := s.types.SiteType(ctx, site)
 	if err != nil || !current.typed() || current.Track != typeTrackMajor {
 		return nil, err
 	}
@@ -586,12 +591,12 @@ func (s *Server) followSiteLocked(r *http.Request, site string, actor Identity) 
 	if err != nil {
 		return nil, err
 	}
-	candidate, err := s.types.NewestSelectable(r.Context(), current.Name, sem.Major)
+	candidate, err := s.types.NewestSelectable(ctx, current.Name, sem.Major)
 	if err != nil || candidate == nil || compareSemVer(candidate.Sem, sem) <= 0 {
 		return nil, err
 	}
 	next := siteTypeRef{Name: current.Name, Version: candidate.Version, Track: typeTrackMajor}
-	if err := s.types.Repin(r.Context(), site, current, next); err != nil {
+	if err := s.types.Repin(ctx, site, current, next); err != nil {
 		if errors.Is(err, ErrTypePinChanged) {
 			return nil, nil
 		}

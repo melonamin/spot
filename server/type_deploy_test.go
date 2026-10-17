@@ -3,6 +3,7 @@ package main
 import (
 	"archive/zip"
 	"bytes"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"sort"
@@ -593,5 +594,24 @@ func TestRepinWithFollowPublishesOneEvent(t *testing.T) {
 	}
 	if len(got) != 1 || got[0] != "card@1.2.0" {
 		t.Fatalf("repin events = %v, want one card@1.2.0", got)
+	}
+}
+
+// Follow resolution outlives the admin request that triggered it, so a
+// disconnecting client cannot leave followers on the old version.
+func TestFollowSurvivesACancelledRequest(t *testing.T) {
+	env := newTypesEnv(t)
+	env.mustUpload(cardVersion(t, "1.0.0"))
+	env.mustDeploy("follower", map[string]string{"card.json": "{}"}, map[string]string{"type": "card@1.0.0", "type_track": "major"})
+	env.mustUpload(cardVersion(t, "1.1.0"))
+	if _, err := env.db.Exec(`UPDATE sites SET type_version = '1.0.0' WHERE name = 'follower'`); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	req := httptest.NewRequest(http.MethodPost, "http://spot.localhost/api/types", nil).WithContext(ctx)
+	moves := env.srv.followType(req, "card", Identity{Email: typesAdminEmail})
+	if len(moves) != 1 || env.siteType("follower").Version != "1.1.0" {
+		t.Fatalf("follow with a cancelled request = %v, pin %+v", moves, env.siteType("follower"))
 	}
 }
