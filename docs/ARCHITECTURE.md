@@ -187,6 +187,15 @@ existing table go through `applyAdditiveMigrations` in `server/db.go`, which
 guards each `ALTER TABLE ADD COLUMN` with a `pragma_table_info` check because
 SQLite has no `ADD COLUMN IF NOT EXISTS`.
 
+Additive migrations let an older binary open a newer database, but they do
+not make the older binary understand the new state. Back up the SQLite
+database and site storage together, as one consistent pair; site storage
+includes the `_types/` package root. Downgrading only the binary after typed
+sites exist is described under "Upgrade and rollback" in
+`docs/site-types.md`: typed sites lose their viewer, and writes made while
+downgraded can be hidden again by the old viewer after re-upgrading. To roll
+back safely, restore a consistent pre-upgrade backup.
+
 ## Storage
 
 There are two storage families with the same runtime interfaces.

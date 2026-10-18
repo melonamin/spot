@@ -510,6 +510,27 @@ Other errors keep their existing messages without a `code`.
 - The viewer runs with the visitor's identity on the site origin and may use
   `/spot.js`. It is admin code: Spot runs nothing on the server for a type.
 
+## Upgrade and rollback
+
+The upgrade to the first release with site types is additive: existing sites
+gain empty type columns and keep working unchanged.
+
+- Back up the SQLite database and site storage together, as one consistent
+  pair. Site storage includes the `_types/` root that holds every package's
+  files; a database backup without it leaves recorded versions with no
+  viewer bytes.
+- A binary-only downgrade to 0.7.0 does not preserve typed sites. 0.7.0 opens
+  the database and serves ordinary sites, but on a typed site `/` and
+  `/_type/…` answer `404`, while the site's data paths stay reachable under
+  its access policy.
+- Avoid writes to typed sites while downgraded. A 0.7.0 deploy replaces the
+  site's files but keeps the type columns it does not know about, so after
+  re-upgrading the old viewer is served again over the replaced content (an
+  `index.html` deployed meanwhile is hidden, and data the viewer expects may
+  be gone).
+- Otherwise, to roll back, restore a consistent pre-upgrade backup of the
+  database and site storage.
+
 ## CLI
 
 ```sh
