@@ -64,6 +64,10 @@ type DeployAuthorization struct {
 	PreviousState     SiteState
 	ContentGeneration int64
 	ContentWasDirty   bool
+	// PreviousContentGeneration and PreviousUpdatedAt are the touched row's
+	// values before authorization, restored when the deploy is cancelled.
+	PreviousContentGeneration int64
+	PreviousUpdatedAt         string
 }
 
 type DeployAuditEvent struct {
@@ -260,6 +264,7 @@ func (r *SiteRegistry) authorizeDeploy(ctx context.Context, site string, actor I
 		return DeployAuthorization{
 			Action: action, AuthorizedAs: role, PreviousState: snapshot.State,
 			ContentGeneration: generation, ContentWasDirty: snapshot.ContentDirty,
+			PreviousContentGeneration: snapshot.ContentGeneration, PreviousUpdatedAt: current.UpdatedAtText,
 		}, nil
 	}
 	return DeployAuthorization{}, fmt.Errorf("authorize deploy for %s: site changed concurrently", site)
@@ -270,6 +275,9 @@ type deployAuthorizationRecord struct {
 	ContentDirty           bool
 	ContentGeneration      int64
 	ExternalMutationActive bool
+	// UpdatedAtText is updated_at exactly as stored, so a cancelled deploy
+	// can put it back unchanged.
+	UpdatedAtText string
 }
 
 func (r deployAuthorizationRecord) sameAuthorizationState(other deployAuthorizationRecord) bool {
@@ -284,10 +292,12 @@ func (r *SiteRegistry) readDeployAuthorizationRecord(ctx context.Context, q inte
 }, site string) (deployAuthorizationRecord, error) {
 	var record deployAuthorizationRecord
 	err := q.QueryRowContext(ctx, `SELECT name, owner_email, owner_peer_ip, owner_name, state,
-		policy_transition_generation, content_dirty, content_generation, content_external_mutation
+		policy_transition_generation, content_dirty, content_generation, content_external_mutation,
+		CAST(updated_at AS TEXT)
 		FROM sites WHERE name = ?`, site).Scan(
 		&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.State,
 		&record.PolicyTransitionGeneration, &record.ContentDirty, &record.ContentGeneration, &record.ExternalMutationActive,
+		&record.UpdatedAtText,
 	)
 	if err != nil {
 		return deployAuthorizationRecord{}, err
@@ -305,9 +315,15 @@ func (r *SiteRegistry) CancelDeployAuthorization(ctx context.Context, site strin
 	if state == "" {
 		state = SiteStateActive
 	}
-	_, err := r.db.ExecContext(ctx, `UPDATE sites SET content_dirty = ?, state = ?
-		WHERE name = ? AND content_generation = ? AND content_external_mutation = 0`,
-		authz.ContentWasDirty, state, site, authz.ContentGeneration)
+	// The touch is undone too, so a refused deploy neither reorders listings
+	// nor spends a generation. An open policy fence names the reserved
+	// generation and is cleared only while the row still carries it, so the
+	// generation and updated_at stay put until that fence resolves.
+	_, err := r.db.ExecContext(ctx, `UPDATE sites SET content_dirty = ?1, state = ?2,
+		updated_at = CASE WHEN policy_transition_generation = 0 THEN ?3 ELSE updated_at END,
+		content_generation = CASE WHEN policy_transition_generation = 0 THEN ?4 ELSE content_generation END
+		WHERE name = ?5 AND content_generation = ?6 AND content_external_mutation = 0`,
+		authz.ContentWasDirty, state, authz.PreviousUpdatedAt, authz.PreviousContentGeneration, site, authz.ContentGeneration)
 	if err != nil {
 		return fmt.Errorf("cancel deploy authorization for %s: %w", site, err)
 	}
