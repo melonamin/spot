@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-10-18
+
 ### Added
 
 - Site types: platform admins upload immutable viewer packages (`type.json`, `index.html`, viewer files, optional `SKILL.md`) to `POST /api/types`, yank and un-yank versions, and identified callers list and read them, including `SKILL.md` and a preview package. A typed site pins an exact version: its origin serves the type's viewer at `/` and `/_type/`, and its deploys (`type`, `type_target`, `type_track` fields) carry only the data paths the type declares. Sites can follow newer versions within a major, managers repin with `PUT /api/sites/{name}/type`, and listings, source downloads (`X-Spot-Type`) and deploy events report the pin. See `docs/site-types.md`.
@@ -156,7 +158,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.8.0...HEAD
+[0.8.0]: https://github.com/melonamin/spot/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/melonamin/spot/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/melonamin/spot/compare/v0.6.2...v0.6.3
 [0.6.2]: https://github.com/melonamin/spot/compare/v0.6.1...v0.6.2
