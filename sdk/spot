@@ -75,6 +75,12 @@ commands:
                         the site <name> (default: current directory name);
                         a stored _access.json stays unless the upload has
                         one or --replace-access removes it
+  deploy --type <name>@<version> [--type-target <version>]
+         [--follow major|--pinned] [name] [dir]
+                        deploy a directory of data to a typed site; the
+                        type serves the viewer, so no index.html is needed
+  types <command>       list, inspect, upload and repin site types
+                        (spot types --help)
   show init [json]      write a starter Spot Show JSON file
   show validate [json]  validate a Show and its local image assets
   show build [json] [out]
@@ -273,6 +279,15 @@ deploy_upload() {
     if [ -n "$preserve_access" ]; then
         set -- "$@" -F "preserve_access=$preserve_access"
     fi
+    if [ -n "$deploy_type" ]; then
+        set -- "$@" --form-string "type=$deploy_type"
+    fi
+    if [ -n "$deploy_type_target" ]; then
+        set -- "$@" --form-string "type_target=$deploy_type_target"
+    fi
+    if [ -n "$deploy_type_track" ]; then
+        set -- "$@" --form-string "type_track=$deploy_type_track"
+    fi
     if [ -f "$src" ]; then
         set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
     else
@@ -321,6 +336,20 @@ EOF
     fi
 }
 
+# Typed deploy fields, set by deploy's --type options.
+deploy_type=
+deploy_type_target=
+deploy_type_track=
+
+# option_value prints an option's argument or fails naming the option.
+option_value() {
+    if [ $# -lt 2 ] || [ -z "$2" ]; then
+        echo "error: $1 needs a value" >&2
+        exit 1
+    fi
+    printf '%s\n' "$2"
+}
+
 deploy() {
     deploy_screenshot=0
     preserve_access=
@@ -330,11 +359,30 @@ deploy() {
             --no-screenshot) deploy_screenshot=0; shift ;;
             --preserve-access) preserve_access=true; shift ;;
             --replace-access) preserve_access=false; shift ;;
+            --type) deploy_type=$(option_value "$@"); shift 2 ;;
+            --type-target) deploy_type_target=$(option_value "$@"); shift 2 ;;
+            --follow)
+                if [ "$(option_value "$@")" != major ]; then
+                    echo "error: --follow accepts only 'major'" >&2
+                    exit 1
+                fi
+                deploy_type_track=major
+                shift 2
+                ;;
+            --pinned) deploy_type_track=pinned; shift ;;
             --help|-h) usage ;;
             -*) echo "error: unknown deploy option '$1'" >&2; exit 1 ;;
             *) break ;;
         esac
     done
+    if [ -z "$deploy_type" ] && { [ -n "$deploy_type_target" ] || [ -n "$deploy_type_track" ]; }; then
+        echo "error: --type-target, --follow and --pinned need --type <name>@<version>" >&2
+        exit 1
+    fi
+    case $deploy_type in
+        ''|?*@?*) ;;
+        *) echo "error: --type must be <name>@<version>" >&2; exit 1 ;;
+    esac
     name=${1:-$(basename "$PWD")}
     src=${2:-.}
     if [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(basename "$1")" = "index.html" ]; then
@@ -347,21 +395,30 @@ deploy() {
             exit 1
             ;;
     esac
-    if [ -f "$src" ]; then
-        file=$(basename "$src")
-        dir=$(dirname "$src")
-        if [ "$file" != "index.html" ]; then
-            echo "error: single-file deploys must be named index.html" >&2
+    if [ -n "$deploy_type" ]; then
+        # A typed site's data is a directory; the type serves the viewer.
+        if [ ! -d "$src" ]; then
+            echo "error: a typed deploy needs a directory, not $src" >&2
             exit 1
         fi
+        echo "deploying $src -> $name.$SPOT_DOMAIN (type $deploy_type)"
     else
-        dir=$src
-        if [ ! -e "$dir/index.html" ]; then
-            echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
-            exit 1
+        if [ -f "$src" ]; then
+            file=$(basename "$src")
+            dir=$(dirname "$src")
+            if [ "$file" != "index.html" ]; then
+                echo "error: single-file deploys must be named index.html" >&2
+                exit 1
+            fi
+        else
+            dir=$src
+            if [ ! -e "$dir/index.html" ]; then
+                echo "error: $dir/index.html not found — a site needs at least an index.html" >&2
+                exit 1
+            fi
         fi
+        echo "deploying $src -> $name.$SPOT_DOMAIN"
     fi
-    echo "deploying $src -> $name.$SPOT_DOMAIN"
 
     deploy_upload "$name" "$src" "$preserve_access"
     if [ "$deploy_screenshot" = 1 ]; then
@@ -1394,6 +1451,209 @@ show() {
     esac
 }
 
+types_usage() {
+    cat <<'USAGE'
+usage: spot types <command>
+
+commands:
+  list [--all]          types with a selectable version (--all: every type)
+  show <name>[@<version>]
+                        a type's versions, or one version's manifest and files
+  skill <name>@<version>
+                        print the version's SKILL.md
+  pull <name>@<version> [dir]
+                        unpack the viewer as a site origin serves it
+                        (index.html and _type/), for a local preview
+  upload <dir>          upload a package directory (platform admins)
+  yank <name>@<version> remove a version from selection (platform admins)
+  unyank <name>@<version>
+                        make a yanked version selectable again
+  repin <site> [--version <version>] [--track pinned|major]
+                        change a typed site's pinned version or track
+USAGE
+    exit 1
+}
+
+# api_call METHOD PATH [curl args...] prints the response body and fails on
+# a non-2xx status.
+api_call() {
+    api_method=$1
+    api_path=$2
+    shift 2
+    if ! api_out=$(curl -sS $SPOT_CURL_OPTS -X "$api_method" -w '\n%{http_code}' "$@" "$SPOT_URL$api_path"); then
+        echo "error: could not reach $SPOT_URL$api_path" >&2
+        exit 1
+    fi
+    api_status=$(printf '%s' "$api_out" | tail -n 1)
+    api_body=$(printf '%s' "$api_out" | sed '$d')
+    case $api_status in
+        2??) printf '%s\n' "$api_body" ;;
+        *)
+            echo "error: $api_method $api_path failed (HTTP $api_status): $api_body" >&2
+            exit 1
+            ;;
+    esac
+}
+
+print_json() {
+    if command -v jq >/dev/null 2>&1; then
+        jq .
+    else
+        cat
+    fi
+}
+
+# api_json runs api_call and pretty-prints its body. api_call's status is
+# checked before printing: in a plain `api_call | print_json` pipeline the
+# printer's status wins, so a failed request would exit 0.
+api_json() {
+    api_json_body=$(api_call "$@") || exit 1
+    printf '%s\n' "$api_json_body" | print_json
+}
+
+# type_ref splits <name>@<version> into type_name and type_version; pass
+# "required" when the version must be named.
+type_ref() {
+    type_name=${1%%@*}
+    case $1 in
+        *@*) type_version=${1#*@} ;;
+        *) type_version= ;;
+    esac
+    case $type_name in
+        ''|*[!a-z0-9-]*) echo "error: type name '$type_name' must match [a-z0-9-]+" >&2; exit 1 ;;
+    esac
+    case $type_version in
+        *[!A-Za-z0-9.-]*) echo "error: version '$type_version' must be an exact SemVer version" >&2; exit 1 ;;
+    esac
+    if [ "${2:-}" = required ] && [ -z "$type_version" ]; then
+        echo "error: name the exact version: $type_name@<version>" >&2
+        exit 1
+    fi
+}
+
+types_upload() {
+    [ $# -eq 1 ] || types_usage
+    pkg=$1
+    if [ ! -f "$pkg/type.json" ]; then
+        echo "error: $pkg/type.json not found — a package needs type.json and index.html" >&2
+        exit 1
+    fi
+    # A package is uploaded exactly as it is: links are refused here and the
+    # server rejects dot files, so nothing is silently left out.
+    if [ -n "$(find "$pkg" -type l -print | head -n 1)" ]; then
+        echo "error: $pkg contains symlinks; a package holds regular files only" >&2
+        exit 1
+    fi
+    set --
+    while IFS= read -r f; do
+        [ -n "$f" ] || continue
+        f=${f#./}
+        set -- "$@" -F "files=@\"$f\";filename=\"$f\""
+    done <<FILES
+$(cd "$pkg" && find . -type f -print)
+FILES
+    upload_body=$(cd "$pkg" && api_call POST /api/types "$@") || exit 1
+    printf '%s\n' "$upload_body" | print_json
+}
+
+types_pull() {
+    [ $# -ge 1 ] && [ $# -le 2 ] || types_usage
+    type_ref "$1" required
+    out=${2:-$type_name-$type_version}
+    if [ -e "$out" ] && [ -n "$(ls -A "$out" 2>/dev/null)" ]; then
+        echo "error: $out is not empty" >&2
+        exit 1
+    fi
+    command -v unzip >/dev/null 2>&1 || { echo "error: spot types pull needs unzip" >&2; exit 1; }
+    zip=$(mktemp "${TMPDIR:-/tmp}/spot-type.XXXXXX")
+    if ! curl -fsS $SPOT_CURL_OPTS -o "$zip" "$SPOT_URL/api/types/$type_name/$type_version/package"; then
+        rm -f "$zip"
+        echo "error: could not download $type_name@$type_version" >&2
+        exit 1
+    fi
+    mkdir -p "$out"
+    unzip -q "$zip" -d "$out"
+    rm -f "$zip"
+    echo "unpacked $type_name@$type_version into $out; copy a site's data beside it to preview"
+}
+
+types_repin() {
+    [ $# -ge 1 ] || types_usage
+    site=$1
+    shift
+    repin_version=
+    repin_track=
+    while [ $# -gt 0 ]; do
+        case $1 in
+            --version) repin_version=$(option_value "$@"); shift 2 ;;
+            --track) repin_track=$(option_value "$@"); shift 2 ;;
+            *) types_usage ;;
+        esac
+    done
+    case $site in
+        ''|*[!a-z0-9-]*) echo "error: site name '$site' must match [a-z0-9-]+" >&2; exit 1 ;;
+    esac
+    case $repin_version in
+        *[!A-Za-z0-9.-]*) echo "error: version '$repin_version' must be an exact SemVer version" >&2; exit 1 ;;
+    esac
+    case $repin_track in
+        ''|pinned|major) ;;
+        *) echo "error: --track must be pinned or major" >&2; exit 1 ;;
+    esac
+    if [ -z "$repin_version" ] && [ -z "$repin_track" ]; then
+        echo "error: pass --version, --track, or both" >&2
+        exit 1
+    fi
+    body=
+    if [ -n "$repin_version" ]; then
+        body="\"version\":\"$repin_version\""
+    fi
+    if [ -n "$repin_track" ]; then
+        [ -n "$body" ] && body="$body,"
+        body="$body\"track\":\"$repin_track\""
+    fi
+    api_json PUT "/api/sites/$site/type" -H 'Content-Type: application/json' --data-binary "{$body}"
+}
+
+types() {
+    sub=${1:-}
+    [ $# -gt 0 ] && shift
+    case $sub in
+        list)
+            case ${1:-} in
+                --all) api_json GET '/api/types?all=true' ;;
+                '') api_json GET /api/types ;;
+                *) types_usage ;;
+            esac
+            ;;
+        show)
+            [ $# -eq 1 ] || types_usage
+            type_ref "$1"
+            if [ -n "$type_version" ]; then
+                api_json GET "/api/types/$type_name/$type_version"
+            else
+                api_json GET "/api/types/$type_name"
+            fi
+            ;;
+        skill)
+            [ $# -eq 1 ] || types_usage
+            type_ref "$1" required
+            api_call GET "/api/types/$type_name/$type_version/skill"
+            ;;
+        pull) types_pull "$@" ;;
+        upload) types_upload "$@" ;;
+        yank|unyank)
+            [ $# -eq 1 ] || types_usage
+            type_ref "$1" required
+            method=POST
+            [ "$sub" = unyank ] && method=DELETE
+            api_json "$method" "/api/types/$type_name/$type_version/yank"
+            ;;
+        repin) types_repin "$@" ;;
+        *) types_usage ;;
+    esac
+}
+
 fetch_doc() {
     path=$1
     if ! curl -fsSL $SPOT_CURL_OPTS "$SPOT_URL/$path"; then
@@ -1837,6 +2097,7 @@ cmd=${1:-help}
 [ $# -gt 0 ] && shift
 case $cmd in
     deploy) deploy "$@" ;;
+    types)  types "$@" ;;
     show)   show "$@" ;;
     agent-howto) fetch_doc spot-agent-howto.md ;;
     show-schema) fetch_doc spot-show-schema.md ;;

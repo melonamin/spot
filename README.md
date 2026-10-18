@@ -746,6 +746,37 @@ that have not yet passed Spot's transactional authorization point.
 These credentials publish into Spot itself. They are unrelated to the optional
 Cloudflare Pages publishing flow below.
 
+## Site Types
+
+A site type is a viewer package that platform admins upload once: a
+`type.json` manifest, an `index.html` entry, viewer files, and an optional
+`SKILL.md` for agents. A typed site pins one exact version of a type. On the
+site's origin Spot serves the type's `index.html` at `/` and its files under
+`/_type/`; everything else is the site's own data, and a typed deploy may write
+only the paths the type declares. Versions are immutable, sites stay on their
+pinned version unless a manager repins them or opts in to following newer
+versions within a major, and yanking a version only stops new pins.
+
+```sh
+# Platform admin (SPOT_ADMIN_EMAILS / SPOT_ADMIN_GROUPS): upload the example.
+spot types upload examples/types/card
+
+# Anyone who can deploy: create an instance from a data directory.
+spot deploy --type card@1.0.0 my-card examples/types/card-demo
+spot deploy --type card@1.0.0 --follow major my-card examples/types/card-demo
+
+spot types list
+spot types show card
+spot types pull card@1.0.0 preview   # unpack the viewer for a local preview
+spot types repin my-card --version 1.1.0
+```
+
+Spot ships no types and never runs type code on the server; a type is admin
+code running in visitors' browsers on every instance origin, with the same
+reach as the instance's own pages. Typed sites cannot be published to
+Cloudflare Pages. The package format, API, error codes, caching rules, and
+viewer conventions are specified in [docs/site-types.md](docs/site-types.md).
+
 ## Optional Cloudflare Pages Publishing
 
 Spot can publish eligible manager-authorized sites from `/spots` to Cloudflare

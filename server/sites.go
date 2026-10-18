@@ -55,6 +55,7 @@ type ownedSiteJSON struct {
 	ManagementRole  string          `json:"management_role,omitempty"`
 	State           SiteState       `json:"state,omitempty"`
 	LastDeploy      *lastDeployJSON `json:"last_deploy,omitempty"`
+	Type            *siteTypeJSON   `json:"type,omitempty"`
 }
 
 type lastDeployJSON struct {
@@ -111,6 +112,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			FileCount: site.FileCount, TotalBytes: site.TotalBytes,
 			Owner: ownerDisplay(site.SiteRecord), OwnerEmail: site.OwnerEmail, ManagementRole: string(site.ManagementRole), State: site.State,
 			LastDeploy: lastDeployForSite(site.OwnedSite),
+			Type:       siteTypeJSONFor(site.Type, site.TypeTitle),
 		}
 		if site.State == SiteStateActive {
 			policy, policyErr := s.policyForSite(r.Context(), site.Name)
@@ -132,18 +134,19 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 }
 
 type publicSiteJSON struct {
-	Name            string    `json:"name"`
-	URL             string    `json:"url"`
-	Title           string    `json:"title"`
-	Description     string    `json:"description"`
-	Tags            []string  `json:"tags"`
-	DownloadAllowed bool      `json:"download_allowed"`
-	Owner           string    `json:"owner"`
-	OwnerEmail      string    `json:"owner_email,omitempty"`
-	Yours           bool      `json:"yours"`
-	Preview         string    `json:"preview,omitempty"`
-	CreatedAt       time.Time `json:"created_at"`
-	UpdatedAt       time.Time `json:"updated_at"`
+	Name            string        `json:"name"`
+	URL             string        `json:"url"`
+	Title           string        `json:"title"`
+	Description     string        `json:"description"`
+	Tags            []string      `json:"tags"`
+	DownloadAllowed bool          `json:"download_allowed"`
+	Owner           string        `json:"owner"`
+	OwnerEmail      string        `json:"owner_email,omitempty"`
+	Yours           bool          `json:"yours"`
+	Preview         string        `json:"preview,omitempty"`
+	CreatedAt       time.Time     `json:"created_at"`
+	UpdatedAt       time.Time     `json:"updated_at"`
+	Type            *siteTypeJSON `json:"type,omitempty"`
 }
 
 type siteStatsJSON struct {
@@ -264,6 +267,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
+			Type:       siteTypeJSONFor(site.Type, site.TypeTitle),
 		}
 	})
 	writeJSON(w, http.StatusOK, siteListBody(page, out))
@@ -357,6 +361,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			Preview:         preview,
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
+			Type:            siteTypeJSONFor(site.Type, site.TypeTitle),
 		}
 	})
 	body := siteListBody(page, out)
@@ -909,7 +914,7 @@ func (s *Server) cloudflareSummaryForSite(ctx context.Context, site, knownConten
 	if err == nil {
 		out.ContentHash = snap.ContentHash
 		if inspectFiles {
-			eligibility := checkCloudflareEligibility(snap)
+			eligibility := s.cloudflareEligibilityForSite(ctx, site, snap)
 			out.Eligibility = &eligibility
 		}
 	}
@@ -1081,7 +1086,7 @@ func (s *Server) handleCloudflarePublish(w http.ResponseWriter, r *http.Request)
 		httpError(w, http.StatusInternalServerError, "could not read the site's current files")
 		return
 	}
-	eligibility := checkCloudflareEligibility(snap)
+	eligibility := s.cloudflareEligibilityForSite(r.Context(), site, snap)
 	if !eligibility.Eligible {
 		siteLock.Unlock()
 		writeJSON(w, http.StatusBadRequest, map[string]any{

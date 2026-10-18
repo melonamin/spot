@@ -581,6 +581,7 @@ func main() {
 		siteManager:      registry,
 		cloudflare:       cloudflarePublisher,
 		cloudflarePubs:   cloudflarePubs,
+		types:            NewTypeRegistry(db),
 		ai:               ai,
 		aiAccess:         cfg.AIAccess,
 		slack:            slack,

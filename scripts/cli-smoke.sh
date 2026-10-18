@@ -27,21 +27,43 @@ class Handler(http.server.SimpleHTTPRequestHandler):
     deploys = 0
     last_authorization = ""
     last_body = b""
+    last_path = ""
+    last_method = ""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(sdk), **kwargs)
 
     def do_POST(self):
-        if self.path != "/api/deploy":
+        if self.path not in ("/api/deploy", "/api/types"):
             self.send_error(404)
             return
         length = int(self.headers.get("content-length", "0"))
         Handler.last_body = self.rfile.read(length)
-        Handler.deploys += 1
+        Handler.last_path, Handler.last_method = self.path, "POST"
+        if self.path == "/api/deploy":
+            Handler.deploys += 1
         Handler.last_authorization = self.headers.get("Authorization", "")
+        if self.path == "/api/types" and b'filename="conflict"' in Handler.last_body:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "type_version_exists"}')
+            return
+        self.send_response(201 if self.path == "/api/types" else 200)
+        self.end_headers()
+        self.wfile.write(b'{"created": true}' if self.path == "/api/types" else b"ok")
+
+    def do_PUT(self):
+        length = int(self.headers.get("content-length", "0"))
+        Handler.last_body = self.rfile.read(length)
+        Handler.last_path, Handler.last_method = self.path, "PUT"
+        if "/fail/" in self.path:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "site_untyped"}')
+            return
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ok")
+        self.wfile.write(b'{"site": "deck"}')
 
 handler = functools.partial(Handler)
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -203,6 +225,61 @@ try:
         assert b'name="preserve_access"' not in Handler.last_body, Handler.last_body[:300]
         run(["./cli/spot", "deploy", "--replace-access", "keydemo", str(out)])
         assert b'name="preserve_access"\r\n\r\nfalse\r\n' in Handler.last_body, Handler.last_body[:300]
+
+        # A typed deploy sends the type fields and needs no index.html.
+        data = pathlib.Path(tmp) / "typed-data"
+        (data / "media").mkdir(parents=True)
+        (data / "card.json").write_text('{"title": "x"}')
+        (data / "media" / "a.png").write_text("png")
+        typed = run(["./cli/spot", "deploy", "--type", "card@1.0.0", "--type-target", "1.1.0",
+                     "--follow", "major", "deck", str(data)])
+        assert "(type card@1.0.0)" in typed.stdout, typed.stdout
+        for field in [b'name="type"\r\n\r\ncard@1.0.0\r\n', b'name="type_target"\r\n\r\n1.1.0\r\n',
+                      b'name="type_track"\r\n\r\nmajor\r\n', b'filename="media/a.png"', b'filename="card.json"']:
+            assert field in Handler.last_body, (field, Handler.last_body[:600])
+        for bad in [["--follow", "minor", "--type", "card@1.0.0"], ["--type", "card"], ["--follow", "major"]]:
+            failed = subprocess.run(["./cli/spot", "deploy", *bad, "deck", str(data)], cwd=root, env=env,
+                                    text=True, capture_output=True)
+            assert failed.returncode != 0 and "error:" in failed.stderr, (bad, failed.stderr)
+        untyped = subprocess.run(["./cli/spot", "deploy", "deck", str(data)], cwd=root, env=env,
+                                 text=True, capture_output=True)
+        assert untyped.returncode != 0 and "index.html not found" in untyped.stderr, untyped.stderr
+
+        # A package upload sends every file, and refuses symlinks.
+        pkg = root / "examples" / "types" / "card"
+        uploaded = run(["./cli/spot", "types", "upload", str(pkg)])
+        assert Handler.last_path == "/api/types" and '"created"' in uploaded.stdout, uploaded.stdout
+        for name in ["type.json", "index.html", "card.js", "card.css", "SKILL.md"]:
+            assert f'filename="{name}"'.encode() in Handler.last_body, name
+        linked = pathlib.Path(tmp) / "linked-pkg"
+        linked.mkdir()
+        (linked / "type.json").write_text("{}")
+        (linked / "index.html").symlink_to(pkg / "index.html")
+        refused = subprocess.run(["./cli/spot", "types", "upload", str(linked)], cwd=root, env=env,
+                                 text=True, capture_output=True)
+        assert refused.returncode != 0 and "symlinks" in refused.stderr, refused.stderr
+
+        run(["./cli/spot", "types", "repin", "deck", "--version", "1.2.0", "--track", "major"])
+        assert (Handler.last_method, Handler.last_path) == ("PUT", "/api/sites/deck/type"), Handler.last_path
+        assert json.loads(Handler.last_body) == {"version": "1.2.0", "track": "major"}, Handler.last_body
+        run(["./cli/spot", "types", "repin", "deck", "--track", "pinned"])
+        assert json.loads(Handler.last_body) == {"track": "pinned"}, Handler.last_body
+
+        # Every types command fails with the API: automation must not read a
+        # refused upload, yank or repin as success.
+        conflict = pathlib.Path(tmp) / "conflict-pkg"
+        conflict.mkdir()
+        (conflict / "type.json").write_text("{}")
+        (conflict / "conflict").write_text("x")
+        for args in [["list"], ["list", "--all"], ["show", "card"], ["show", "card@1.0.0"],
+                     ["skill", "card@1.0.0"], ["yank", "card@1.0.0"], ["unyank", "card@1.0.0"],
+                     ["repin", "fail", "--track", "major"], ["upload", str(conflict)]]:
+            failed = subprocess.run(["./cli/spot", "types", *args], cwd=root, env=env, text=True, capture_output=True)
+            assert failed.returncode != 0, (args, failed.returncode, failed.stdout, failed.stderr)
+            assert "failed (HTTP" in failed.stderr, (args, failed.stderr)
+        unreachable = subprocess.run(["./cli/spot", "types", "list"], cwd=root, text=True, capture_output=True,
+                                     env={**env, "SPOT_URL": "http://127.0.0.1:9"})
+        assert unreachable.returncode != 0 and "could not reach" in unreachable.stderr, unreachable.stderr
         fake_bin = pathlib.Path(tmp) / "fake-bin"
         fake_bin.mkdir()
         chromium = fake_bin / "chromium"

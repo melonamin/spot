@@ -172,8 +172,13 @@ func TestSiteStaticHidesAccessPolicy(t *testing.T) {
 		if loc := rec.Header().Get("Location"); rec.Code/100 == 3 && loc != "" {
 			rec = get(loc)
 		}
-		if rec.Code != http.StatusNotFound {
-			t.Errorf("GET %s = %d, want 404", target, rec.Code)
+		want := http.StatusNotFound
+		if strings.Contains(target, "..") {
+			// The site path contract refuses dot segments before routing.
+			want = http.StatusBadRequest
+		}
+		if rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", target, rec.Code, want)
 		}
 		if strings.Contains(rec.Body.String(), "finance-team") {
 			t.Errorf("GET %s leaked the policy: %q", target, rec.Body.String())
