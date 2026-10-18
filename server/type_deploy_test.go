@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"sort"
 	"strings"
 	"testing"
@@ -613,5 +614,99 @@ func TestFollowSurvivesACancelledRequest(t *testing.T) {
 	moves := env.srv.followType(req, "card", Identity{Email: typesAdminEmail})
 	if len(moves) != 1 || env.siteType("follower").Version != "1.1.0" {
 		t.Fatalf("follow with a cancelled request = %v, pin %+v", moves, env.siteType("follower"))
+	}
+}
+
+// siteTouch is the part of a site row a deploy's authorization advances.
+type siteTouch struct {
+	UpdatedAt  string
+	Generation int64
+	Dirty      bool
+	State      string
+}
+
+func (e *typesEnv) siteTouch(site string) siteTouch {
+	e.t.Helper()
+	var touch siteTouch
+	if err := e.db.QueryRow(`SELECT updated_at, content_generation, content_dirty, state FROM sites WHERE name = ?`, site).Scan(
+		&touch.UpdatedAt, &touch.Generation, &touch.Dirty, &touch.State); err != nil {
+		e.t.Fatal(err)
+	}
+	return touch
+}
+
+func (e *typesEnv) updatedOrder() []string {
+	e.t.Helper()
+	rec := e.get("spot.localhost", "/api/sites/manageable?sort=updated")
+	if rec.Code != http.StatusOK {
+		e.t.Fatalf("list sites = %d %s", rec.Code, rec.Body.String())
+	}
+	body := decodeJSON[struct {
+		Sites []struct {
+			Name string `json:"name"`
+		} `json:"sites"`
+	}](e.t, rec)
+	var names []string
+	for _, site := range body.Sites {
+		names = append(names, site.Name)
+	}
+	return names
+}
+
+// A deploy refused after authorization leaves the site row as it found it:
+// it neither moves the site up the sort=updated listing nor spends a
+// content generation.
+func TestRefusedDeployLeavesTheSiteUntouched(t *testing.T) {
+	env := typedDeckEnv(t)
+	env.mustDeploy("plain", map[string]string{"index.html": "<h1>plain</h1>"}, nil)
+	env.mustDeploy("newest", map[string]string{"index.html": "<h1>newest</h1>"}, nil)
+	// Distinct past timestamps, so a touch is visible in both the column and
+	// the order.
+	for site, at := range map[string]string{
+		"deck": "2026-01-01 00:00:00.000", "plain": "2026-01-02 00:00:00.000", "newest": "2026-01-03 00:00:00.000",
+	} {
+		if _, err := env.db.Exec(`UPDATE sites SET updated_at = ? WHERE name = ?`, at, site); err != nil {
+			t.Fatal(err)
+		}
+	}
+	wantOrder := []string{"newest", "plain", "deck"}
+
+	for _, tt := range []struct {
+		name   string
+		site   string
+		files  map[string]string
+		fields map[string]string
+		code   int
+		want   string
+	}{
+		{"missing index.html", "plain", map[string]string{"card.json": `{}`}, nil, http.StatusBadRequest, "index.html"},
+		{"preserve_access=require without a stored policy", "plain", map[string]string{"index.html": "<h1>v2</h1>"},
+			map[string]string{"preserve_access": "require"}, http.StatusConflict, "no stored access policy"},
+		{"untyped deploy to a typed site", "deck", map[string]string{"index.html": "<h1>x</h1>"}, nil, http.StatusConflict, "type_required"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			before := env.siteTouch(tt.site)
+			rec := env.deploy(tt.site, tt.files, tt.fields)
+			if rec.Code != tt.code || !strings.Contains(rec.Body.String(), tt.want) {
+				t.Fatalf("deploy = %d %s, want %d mentioning %q", rec.Code, rec.Body.String(), tt.code, tt.want)
+			}
+			if after := env.siteTouch(tt.site); after != before {
+				t.Fatalf("refused deploy changed the site row: %+v, want %+v", after, before)
+			}
+			if got := env.updatedOrder(); !slices.Equal(got, wantOrder) {
+				t.Fatalf("sort=updated = %v, want %v", got, wantOrder)
+			}
+		})
+	}
+
+	// The next accepted deploy still advances both.
+	before := env.siteTouch("plain")
+	env.mustDeploy("plain", map[string]string{"index.html": "<h1>v2</h1>"}, nil)
+	after := env.siteTouch("plain")
+	if after.Generation != before.Generation+1 || after.UpdatedAt == before.UpdatedAt {
+		t.Fatalf("accepted deploy = %+v, want generation %d and a new updated_at", after, before.Generation+1)
+	}
+	if got := env.updatedOrder(); !slices.Equal(got, []string{"plain", "newest", "deck"}) {
+		t.Fatalf("sort=updated after an accepted deploy = %v", got)
 	}
 }

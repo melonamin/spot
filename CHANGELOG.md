@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- A deploy refused after authorization (a bundle without `index.html`, `preserve_access=require` with no stored policy, or a site type conflict) no longer moves the site to the top of `sort=updated` listings or advances its content generation. (#28)
+
 ## [0.8.0] - 2026-10-18
 
 ### Added
