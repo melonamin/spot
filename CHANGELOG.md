@@ -13,10 +13,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `spot deploy --type name@version [--type-target v] [--follow major]` and `spot types list|show|skill|pull|upload|yank|unyank|repin`.
 - The gallery and My spots show a typed site's type.
 - `examples/types/card`, a small example type that renders one JSON file.
+- Package files are stored under a new `_types/` root in site storage (the sites bucket or the local sites directory), and SQLite gains the `site_type_versions` table and `sites.type_name`, `type_version` and `type_track`, applied additively at startup. Backups must include both, taken together.
+- The deploy audit records repins and follow moves as action `type`.
 
 ### Changed
 
 - Every site, typed or not, now answers `400` for request paths with an empty segment (`//`), a `.` or `..` segment, an encoded separator (`%2F`, `%5C`), a backslash or a control character. `//` and dot segments used to redirect to the cleaned path, `%2F` used to be decoded and served as `/`, and `%5C` used to answer `404`. Browsers resolve dot segments before sending, so this mostly affects raw HTTP clients and pages that join URLs into `//`.
+- Typed sites cannot be published to Cloudflare Pages; unpublish a site before converting it to a typed site.
 
 ## [0.7.0] - 2026-10-12
 

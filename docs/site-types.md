@@ -458,7 +458,9 @@ version; the next publish with that `type` gets `409 type_pin_mismatch`.
 ### Cloudflare Pages
 
 Typed sites are not eligible for Cloudflare Pages publishing: the status
-eligibility lists the reason and publish returns `400`.
+eligibility lists the reason and publish returns `400`. Unpublish a site from
+Pages before converting it to a typed site: a converted site cannot be
+published again, so its Pages copy stays stale until it is unpublished.
 
 ### Errors
 
