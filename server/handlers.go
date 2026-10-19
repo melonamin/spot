@@ -421,37 +421,37 @@ func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
-	id, _, found, err := s.resolvePeerSession(r)
-	return id, found, err
+	peer, found, err := s.resolvePeerSession(r)
+	return peer.id, found, err
 }
 
-// resolvePeerSession is resolvePeer that also reports when the identity
-// lapses: the expiry of the delegated session it came from, or zero.
-func (s *Server) resolvePeerSession(r *http.Request) (Identity, time.Time, bool, error) {
+// resolvePeerSession is resolvePeer that also reports where the identity
+// came from and when it lapses.
+func (s *Server) resolvePeerSession(r *http.Request) (resolvedPeer, bool, error) {
 	if peer, ok := r.Context().Value(resolvedPeerKey{}).(resolvedPeer); ok {
-		return peer.id, peer.expires, true, nil
+		return peer, true, nil
 	}
 	if id, ok := s.forwardAuthIdentity(r); ok {
-		return id, time.Time{}, true, nil
+		return resolvedPeer{id: id}, true, nil
 	}
 	if id, expires, ok := s.verifiedSession(r); ok {
-		return id, expires, true, nil
+		return resolvedPeer{id: id, expires: expires}, true, nil
 	}
 	if s.resolver == nil {
-		return Identity{}, time.Time{}, false, nil
+		return resolvedPeer{}, false, nil
 	}
 	ip := s.clientIP(r)
 	id, found, err := s.resolver.Resolve(r.Context(), ip)
 	if err != nil {
-		return Identity{}, time.Time{}, false, err
+		return resolvedPeer{}, false, err
 	}
 	if !found {
-		return Identity{}, time.Time{}, false, nil
+		return resolvedPeer{}, false, nil
 	}
 	if id.PeerIP == "" {
 		id.PeerIP = ip
 	}
-	return id, time.Time{}, true, nil
+	return resolvedPeer{id: id, mesh: true}, true, nil
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
@@ -518,13 +518,16 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 			"site is restricted but the identity resolver is not configured")
 		return false
 	}
-	id, found, err := s.resolvePeer(r)
+	peer, found, err := s.resolvePeerSession(r)
 	if err != nil {
 		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
 		return false
 	}
-	if !found && s.login != nil {
+	id := peer.id
+	// The login app's identity may carry groups the mesh does not know, so a
+	// refused mesh peer gets the same sign-in as an anonymous visitor.
+	if s.login != nil && (!found || (peer.mesh && !policy.Allows(id))) {
 		s.denyAnonymousVisitor(w, r)
 		return false
 	}

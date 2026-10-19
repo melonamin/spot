@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- With delegated login, a restricted site that refuses a visitor's mesh identity now sends them to sign in instead of answering `403`, so allowlist groups that only the login app asserts (such as a platform-wide group) admit mesh users too. Signed-in and forward-auth visitors are still refused with `403`.
 - A deploy refused after authorization (a bundle without `index.html`, `preserve_access=require` with no stored policy, or a site type conflict) no longer moves the site to the top of `sort=updated` listings or advances its content generation. (#28)
 
 ## [0.8.0] - 2026-10-18
