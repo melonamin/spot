@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.8.1] - 2026-10-19
+
 ### Fixed
 
 - With delegated login, a restricted site that refuses a visitor's mesh identity now sends them to sign in instead of answering `403`, so allowlist groups that only the login app asserts (such as a platform-wide group) admit mesh users too. Signed-in and forward-auth visitors are still refused with `403`.
@@ -163,7 +165,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.8.1...HEAD
+[0.8.1]: https://github.com/melonamin/spot/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/melonamin/spot/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/melonamin/spot/compare/v0.6.3...v0.7.0
 [0.6.3]: https://github.com/melonamin/spot/compare/v0.6.2...v0.6.3
