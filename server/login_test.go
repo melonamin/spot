@@ -1022,6 +1022,53 @@ func TestRequireVisitorResolvesOnce(t *testing.T) {
 	}
 }
 
+// A mesh peer the allowlist refuses may still be admitted by the login app's
+// identity, whose groups the mesh does not know, so it is sent to sign in.
+// Once signed in, the session decides, and a refusal is final.
+func TestDelegatedLoginOverridesRefusedMeshIdentity(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.srv.resolver = &countingResolver{id: Identity{Email: "viewer@example.com", Groups: []string{"All Members"}}}
+	const host = "shared.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "shared", `{"allow":["platform"]}`)
+
+	rec := st.do(navigation(siteRequest(http.MethodGet, host, "/")))
+	if location, _ := url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || location == nil ||
+		location.Host != "chat.example.com" || location.Path != "/sites/login" {
+		t.Fatalf("refused mesh navigation = %d %q, want login redirect", rec.Code, rec.Header().Get("Location"))
+	}
+	if rec := st.do(siteRequest(http.MethodGet, host, "/index.html")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("refused mesh fetch = %d %s, want 401", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(navigation(siteRequest(http.MethodGet, host, "/api/authz"))); rec.Code != http.StatusUnauthorized ||
+		rec.Header().Get("Location") != "" {
+		t.Fatalf("refused mesh authz = %d %q, want 401", rec.Code, rec.Header().Get("Location"))
+	}
+
+	// The session carries the login app's groups and outranks the mesh peer.
+	cookie := st.signIn(t, host, "viewer@example.com", "mesh-viewer")
+	if rec := st.do(withCookie(navigation(siteRequest(http.MethodGet, host, "/")), cookie)); rec.Code != http.StatusOK {
+		t.Fatalf("signed-in page = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A mesh peer the allowlist admits needs no sign-in.
+	st.deploy(t, "owner@example.com", "mine", `{"allow":["viewer@example.com"]}`)
+	if rec := st.do(navigation(siteRequest(http.MethodGet, "mine.sites.localhost:8443", "/"))); rec.Code != http.StatusOK {
+		t.Fatalf("admitted mesh page = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// Signed-in and forward-auth viewers the allowlist refuses are forbidden,
+	// not sent around the sign-in again.
+	const private = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+	session := st.signIn(t, private, "viewer@example.com", "mesh-viewer-private")
+	if rec := st.do(withCookie(navigation(siteRequest(http.MethodGet, private, "/")), session)); rec.Code != http.StatusForbidden {
+		t.Fatalf("refused session page = %d, want 403", rec.Code)
+	}
+	if rec := st.do(asForwardUser(navigation(siteRequest(http.MethodGet, private, "/")), "viewer@example.com")); rec.Code != http.StatusForbidden {
+		t.Fatalf("refused forward-auth page = %d, want 403", rec.Code)
+	}
+}
+
 // The apex has no viewer sessions, so a page load there never starts a
 // sign-in: it would set cookies on the apex and end at a callback that 404s.
 func TestApexNavigationDoesNotStartSignIn(t *testing.T) {
@@ -1094,13 +1141,13 @@ func TestSessionExpiryUsesResolvedIdentity(t *testing.T) {
 	st := newLoginTestStack(t)
 	expired := time.Now().Add(-time.Second)
 	req := withResolvedPeer(siteRequest(http.MethodGet, "open.sites.localhost:8443", "/api/ws"),
-		Identity{Email: "viewer@example.com"}, expired)
+		resolvedPeer{id: Identity{Email: "viewer@example.com"}, expires: expired})
 	if got, ok := st.srv.sessionExpiry(req); !ok || !got.Equal(expired) {
 		t.Fatalf("session expiry = %v, %v; want the resolved %v", got, ok, expired)
 	}
 	// Forward auth and mesh identities carry no session deadline.
 	req = withResolvedPeer(siteRequest(http.MethodGet, "open.sites.localhost:8443", "/api/ws"),
-		Identity{Email: "viewer@example.com"}, time.Time{})
+		resolvedPeer{id: Identity{Email: "viewer@example.com"}, mesh: true})
 	if _, ok := st.srv.sessionExpiry(req); ok {
 		t.Fatal("identity without a session reported an expiry")
 	}

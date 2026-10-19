@@ -310,8 +310,8 @@ func (s *Server) sessionExpiry(r *http.Request) (time.Time, bool) {
 	if s.login == nil {
 		return time.Time{}, false
 	}
-	_, expires, found, err := s.resolvePeerSession(r)
-	return expires, found && err == nil && !expires.IsZero()
+	peer, found, err := s.resolvePeerSession(r)
+	return peer.expires, found && err == nil && !peer.expires.IsZero()
 }
 
 func (s *Server) sessionCookieValues(r *http.Request) []string {
@@ -566,7 +566,7 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			next(w, r)
 			return
 		}
-		id, expires, found, err := s.resolvePeerSession(r)
+		peer, found, err := s.resolvePeerSession(r)
 		if err != nil {
 			log.Printf("visitor identity: resolve %s: %v", s.clientIP(r), err)
 			httpError(w, http.StatusServiceUnavailable, "could not verify identity")
@@ -577,7 +577,7 @@ func (s *Server) requireVisitor(next http.HandlerFunc) http.HandlerFunc {
 			s.denyAnonymousVisitor(w, r)
 			return
 		}
-		next(w, withResolvedPeer(r, id, expires))
+		next(w, withResolvedPeer(r, peer))
 	}
 }
 
@@ -586,13 +586,14 @@ type resolvedPeerKey struct{}
 type resolvedPeer struct {
 	id      Identity
 	expires time.Time // zero unless the identity came from a delegated session
+	mesh    bool      // the identity came from the mesh resolver
 }
 
 // withResolvedPeer records the identity already resolved for this request, so
 // the handler's own resolvePeer does not ask the mesh resolver again, and
 // both see the same session expiry.
-func withResolvedPeer(r *http.Request, id Identity, expires time.Time) *http.Request {
-	return r.WithContext(context.WithValue(r.Context(), resolvedPeerKey{}, resolvedPeer{id: id, expires: expires}))
+func withResolvedPeer(r *http.Request, peer resolvedPeer) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), resolvedPeerKey{}, peer))
 }
 
 type noLoginRedirectKey struct{}

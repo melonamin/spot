@@ -315,10 +315,12 @@ SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
 login, so clear it in a compose override (`SPOT_DEV_IDENTITY_EMAIL: ""`), as
 the mesh and homelab overlays do.
 
-1. A browser opens a restricted site with no identity. Spot sets a
-   short-lived login state cookie on that host and redirects it to
-   `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other requests get
-   `401`.
+1. A browser opens a restricted site with no identity, or only a mesh
+   identity the allowlist refuses (the login app may assert groups the mesh
+   does not know). Spot sets a short-lived login state cookie on that host and
+   redirects it to `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other
+   requests get `401`. A signed-in or forward-auth viewer the allowlist refuses
+   gets `403`.
 2. The login app authenticates the browser and redirects it to
    `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`; `return_to`
    may be the path or the site URL from step 1 unchanged. The token is
