@@ -15,13 +15,12 @@ func TestMaintainerUIAndSDKAssets(t *testing.T) {
 		page := string(raw)
 		for _, want := range []string{
 			`id="access-maintainers"`,
-			`['ai', 'slack', 'download']`,
+			`<script src="/spot-access.js"></script>`,
+			`window.SpotAccess.parsePolicy(`,
 			`policy.maintainers`,
 			`People and groups who can deploy, delete, and publish this site`,
 			`accessAllowPresent = false;`,
 			`Mesh · no visitors`,
-			`const normalized = key.toLowerCase();`,
-			`throw new Error(key + ' must be an array of strings');`,
 			`path !== '_access.json' || accessFileWarning`,
 		} {
 			if !strings.Contains(page, want) {
@@ -44,6 +43,29 @@ func TestMaintainerUIAndSDKAssets(t *testing.T) {
 			`Release name`,
 			`site.management_role === 'admin'`,
 			`site.state === 'deleted' ? '?release=true' : ''`,
+			`<script src="/spot-access.js"></script>`,
+			`id="mesh-access-dialog"`,
+			`'If-Match': version`,
+			`res.status === 412`,
+			`site.policy_unreadable`,
+		} {
+			if !strings.Contains(page, want) {
+				t.Fatalf("%s does not contain %q", path, want)
+			}
+		}
+	}
+	// The shared picker validates policies the way the server does.
+	for _, path := range []string{"../sdk/spot-access.js", "static_assets/sdk/spot-access.js"} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		page := string(raw)
+		for _, want := range []string{
+			`['ai', 'slack', 'download']`,
+			`const normalized = name.toLowerCase();`,
+			`throw new Error(name + ' must be an array of strings');`,
+			`'/api/access/suggestions?q='`,
 		} {
 			if !strings.Contains(page, want) {
 				t.Fatalf("%s does not contain %q", path, want)

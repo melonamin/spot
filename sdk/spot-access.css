@@ -1,0 +1,148 @@
+/* Shared access picker: the Visitors/Maintainers tabs, directory search,
+   results and chips used by the deployer and the Mesh access dialog. Pages
+   define --ink, --paper, --card, --accent, --mutedink and --font-mono. */
+.access-choice:focus-visible,
+.access-chip button:focus-visible,
+.access-tab:focus-visible {
+  outline: 3px solid var(--ink);
+  outline-offset: 3px;
+}
+.access-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.access-tab {
+  border: 2px solid var(--ink);
+  border-radius: 10px;
+  background: var(--paper);
+  color: var(--ink);
+  padding: 9px;
+  font: 700 11px/1 var(--font-mono);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  cursor: pointer;
+}
+.access-tab[aria-selected="true"] { background: var(--ink); color: #fff; }
+.access-search {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fff;
+  padding: 0 12px;
+}
+.access-search svg {
+  width: 18px;
+  height: 18px;
+  color: var(--mutedink);
+  flex: 0 0 auto;
+}
+.access-search input {
+  min-width: 0;
+  width: 100%;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 13px 0;
+  font: 700 13px/1.2 var(--font-mono);
+}
+.access-search input::placeholder { color: var(--mutedink); opacity: .8; }
+.access-results {
+  display: grid;
+  gap: 8px;
+  max-height: 210px;
+  overflow: auto;
+  margin-top: 12px;
+}
+.access-choice {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  border: 2px solid var(--ink);
+  border-radius: 12px;
+  background: #fff;
+  color: var(--ink);
+  padding: 10px;
+  text-align: left;
+  font: 700 12px/1.25 var(--font-mono);
+  cursor: pointer;
+}
+.access-choice[aria-selected="true"] {
+  background: #f3f1ff;
+}
+.access-choice.active {
+  outline: 3px solid var(--accent);
+  outline-offset: -3px;
+}
+.choice-icon {
+  width: 28px;
+  height: 28px;
+  display: grid;
+  place-items: center;
+  border-radius: 9px;
+  background: var(--ink);
+  color: #fff;
+  font-size: 12px;
+}
+.choice-main {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.choice-meta {
+  display: block;
+  margin-top: 4px;
+  color: var(--mutedink);
+  font-size: 10px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.choice-mark {
+  color: var(--accent);
+  font-size: 12px;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.access-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 12px;
+}
+.access-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  max-width: 100%;
+  border: 2px solid var(--ink);
+  border-radius: 999px;
+  background: var(--paper);
+  padding: 7px 9px 7px 11px;
+  font: 700 11px/1 var(--font-mono);
+}
+.access-chip span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.access-chip button {
+  border: 0;
+  background: transparent;
+  color: var(--ink);
+  padding: 0;
+  font: 700 14px/1 var(--font-mono);
+  cursor: pointer;
+}
+.accessnote {
+  min-height: 20px;
+  margin: 12px 0 0;
+  font: 400 12px/1.6 var(--font-mono);
+  color: var(--mutedink);
+}
