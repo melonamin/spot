@@ -488,6 +488,7 @@ Apex-only APIs:
 - Site types: `/api/types/*`; uploads and yanks need a platform admin
   resolved by identity, reads need an identified caller
 - Access suggestions: `/api/access/suggestions`
+- Site access policy: `GET` and `PUT /api/sites/{name}/access`
 
 Site-only APIs:
 
@@ -520,6 +521,19 @@ Site visitor access:
 
 Policy parsing and caching are in `server/policy.go`; storage-backed lookup is
 in `server/policy_resolve.go`.
+
+The access API (`server/site_access.go`) changes a stored policy without a
+deploy. Reads and writes take the site mutation lock and the same management
+decision as a deploy; during a pending policy transition only the owner or an
+admin passes. `GET` reads storage, not the cache, and versions the exact bytes
+with the transition digest (`absent` when there is no file). A `PUT` with
+`If-Match` compares that digest from the same read that fences the commit, so
+a policy written by a deploy or another editor after the caller's read is
+refused with `412` rather than overwritten. Every writer of `_access.json`
+holds the site mutation lock. The `/spots` Mesh access dialog and
+`spot access` always send `If-Match`; the shared picker in
+`sdk/spot-access.js` and `sdk/spot-access.css` also drives the deployer's
+access popover.
 
 Site management is a separate capability from visitor access. The immutable
 owner wins role precedence, followed by platform admin, then maintainer. The

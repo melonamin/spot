@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="/spot-access.css" rel="stylesheet">
   <style>
     :root {
       --field: #5a4bf0;
@@ -238,6 +239,10 @@
     }
     .badge .who { opacity: .72; }
     .badge.mesh { background: var(--mesh); }
+    button.badge { color: inherit; cursor: pointer; }
+    button.badge:hover { box-shadow: 2px 3px 0 var(--ink); transform: translate(-1px, -1px); }
+    button.badge:focus-visible { outline: 3px solid var(--ink); outline-offset: 3px; }
+    .badge.mesh.unreadable { background: var(--bad); color: #fff; }
     .badge.mesh.invited { background: var(--accent); color: #fff; }
     .badge.mesh.invited .who { opacity: .85; }
     .badge.net { background: var(--net); }
@@ -865,6 +870,36 @@
        not the dialog. */
     .publish-dialog-actions .btn-delete { margin-right: auto; }
 
+    /* ─── Mesh access dialog ──────────────────────────────────── */
+    .access-dialog .access-tabs { margin-top: 22px; }
+    .access-dialog .visibility-options { margin: 0 0 16px; }
+    .access-dialog[data-mode="maintainers"] .visibility-options,
+    .access-dialog[data-list="hidden"] .access-list { display: none; }
+    .access-alert,
+    .access-warning {
+      margin: 16px 0 0;
+      border: 3px solid var(--ink);
+      border-radius: 13px;
+      padding: 11px 14px;
+      font: 700 11px/1.6 var(--font-mono);
+    }
+    .access-alert { background: var(--saved-soft); }
+    .access-warning { background: #fff; color: var(--bad); }
+    .access-alert[hidden],
+    .access-warning[hidden] { display: none; }
+    .access-warning button {
+      margin-left: 8px;
+      border: 2px solid var(--ink);
+      border-radius: 9px;
+      background: var(--paper);
+      color: var(--ink);
+      padding: 5px 8px;
+      font: 700 10px/1 var(--font-mono);
+      letter-spacing: .1em;
+      text-transform: uppercase;
+      cursor: pointer;
+    }
+
     /* ─── repository automation keys ─────────────────────────── */
     .key-manager-trigger {
       flex: 0 0 auto;
@@ -1143,6 +1178,51 @@
     </form>
   </dialog>
 
+  <dialog class="publish-dialog access-dialog" id="mesh-access-dialog" aria-labelledby="mesh-access-title">
+    <form class="publish-form" id="mesh-access-form">
+      <h2 id="mesh-access-title">Mesh access</h2>
+      <p class="publish-intro">Who can open this site on the mesh, and who can manage it. Changes apply right away, with no redeploy.</p>
+      <p class="access-alert" id="mesh-access-alert" role="status" hidden></p>
+      <div class="access-tabs" role="tablist" aria-label="Policy list">
+        <button class="access-tab" id="mesh-access-visitors" type="button" role="tab" aria-selected="true">Visitors</button>
+        <button class="access-tab" id="mesh-access-maintainers" type="button" role="tab" aria-selected="false">Maintainers</button>
+      </div>
+      <div class="visibility-options">
+        <label class="visibility-option">
+          <input type="radio" name="mesh-visibility" value="everyone" checked>
+          <strong>Everyone on the mesh</strong>
+          <span>Anyone who can reach Spot can open it.</span>
+        </label>
+        <label class="visibility-option">
+          <input type="radio" name="mesh-visibility" value="invited">
+          <strong>Only invited</strong>
+          <span>Only the people and groups you list.</span>
+        </label>
+      </div>
+      <div class="access-list">
+        <label class="access-search" for="mesh-access-search">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor"
+               stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+            <circle cx="11" cy="11" r="7"/>
+            <path d="m20 20-3.5-3.5"/>
+          </svg>
+          <input id="mesh-access-search" type="search" role="combobox" aria-expanded="true"
+                 aria-controls="mesh-access-results" aria-autocomplete="list" autocomplete="off"
+                 placeholder="Search visitors by email">
+        </label>
+        <div class="access-results" id="mesh-access-results" role="listbox"
+             aria-label="Access suggestions"></div>
+        <div class="access-selected" id="mesh-access-selected"></div>
+      </div>
+      <p class="accessnote" id="mesh-access-note"></p>
+      <p class="access-warning" id="mesh-access-warning" role="alert" hidden></p>
+      <div class="publish-dialog-actions">
+        <button class="btn" type="button" id="mesh-access-cancel">Cancel</button>
+        <button class="btn btn-open" type="submit" id="mesh-access-save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog class="publish-dialog key-dialog" id="key-dialog" aria-labelledby="automation-title">
     <form class="publish-form" id="key-form">
       <div id="key-manager-panel">
@@ -1191,6 +1271,7 @@
   </dialog>
 
   <script src="/spot-format.js"></script>
+  <script src="/spot-access.js"></script>
   <script>
     (() => {
       'use strict';
@@ -1852,6 +1933,199 @@
         armed = { button, label, timer: setTimeout(disarm, 4000) };
       };
 
+      // ─── mesh access ──────────────────────────────────────────
+      // The dialog edits the site's stored _access.json through the access
+      // API: it reads the policy and its version, changes only the visitor
+      // and maintainer lists, and saves with If-Match so an edit made
+      // elsewhere in the meantime is never silently overwritten.
+      const meshDialog = $('mesh-access-dialog');
+      const meshForm = $('mesh-access-form');
+      const meshAlert = $('mesh-access-alert');
+      const meshNote = $('mesh-access-note');
+      const meshWarning = $('mesh-access-warning');
+      const meshSave = $('mesh-access-save');
+      let meIdentity = null;
+      let meshEdit = null;
+
+      const meshPicker = window.SpotAccess.createPicker({
+        search: $('mesh-access-search'),
+        results: $('mesh-access-results'),
+        selected: $('mesh-access-selected'),
+        visitorsTab: $('mesh-access-visitors'),
+        maintainersTab: $('mesh-access-maintainers'),
+        idPrefix: 'mesh-access-opt-',
+        identity: () => meIdentity,
+        onChange: () => {
+          meshPicker.render();
+          renderMeshAccess();
+        },
+      });
+
+      const accessURL = (site) => '/api/sites/' + encodeURIComponent(site.name) + '/access';
+      const meshInvited = () => meshForm.elements['mesh-visibility'].value === 'invited';
+      const plural = (n, one, many) => n + ' ' + (n === 1 ? one : many);
+
+      const setMeshAlert = (message) => {
+        meshAlert.textContent = message || '';
+        meshAlert.hidden = !message;
+      };
+
+      // meshWarnings lists what saving would take away: visitors who lose
+      // access (live pages included), and the editor's own access.
+      const meshWarnings = () => {
+        const { initial, role } = meshEdit;
+        const visitors = meshPicker.visitors;
+        const maintainers = meshPicker.maintainers;
+        const warnings = [];
+        let addMe = false;
+        if (meshInvited()) {
+          const kept = new Set(visitors.map(window.SpotAccess.key));
+          const removed = initial.restricted
+            ? initial.visitors.filter((entry) => !kept.has(window.SpotAccess.key(entry))).length
+            : 0;
+          if (!initial.restricted) {
+            warnings.push('Only the people you list will be able to open it; everyone else loses access right away, including pages already open.');
+          } else if (removed) {
+            warnings.push((removed === 1 ? 'One person or group loses' : removed + ' people and groups lose') +
+              ' access right away, including pages already open.');
+          }
+          if (meIdentity && meIdentity.email && !window.SpotAccess.matches(visitors, meIdentity)) {
+            warnings.push("You are not on the visitor list, so you won't be able to open the site.");
+            addMe = true;
+          }
+        }
+        if (role === 'maintainer' && window.SpotAccess.matches(initial.maintainers, meIdentity) &&
+            !window.SpotAccess.matches(maintainers, meIdentity)) {
+          warnings.push('You are removing yourself as a maintainer; you will no longer be able to manage this site.');
+        }
+        return { warnings, addMe };
+      };
+
+      const renderMeshAccess = () => {
+        if (!meshEdit) return;
+        const mode = meshPicker.mode;
+        const invited = meshInvited();
+        meshDialog.dataset.mode = mode;
+        meshDialog.dataset.list = mode === 'visitors' && !invited ? 'hidden' : 'shown';
+        const visitors = meshPicker.visitors.length;
+        const maintainers = meshPicker.maintainers.length;
+        if (mode === 'maintainers') {
+          meshNote.textContent = maintainers
+            ? plural(maintainers, 'maintainer', 'maintainers') + ' can deploy, delete, publish, and change access. The owner and platform admins always can.'
+            : 'Only the owner and platform admins can manage this site.';
+        } else if (!invited) {
+          meshNote.textContent = 'Everyone on the mesh can open it.';
+        } else if (!visitors) {
+          meshNote.textContent = 'Nobody can open it on the mesh, not even you. Managers can still change this.';
+        } else if (visitors === 1) {
+          meshNote.textContent = 'Only ' + meshPicker.visitors[0].label + ' can open it on the mesh.';
+        } else {
+          meshNote.textContent = 'Only these ' + visitors + ' people and groups can open it on the mesh.';
+        }
+        const { warnings, addMe } = meshWarnings();
+        meshWarning.replaceChildren();
+        meshWarning.hidden = !warnings.length;
+        if (warnings.length) {
+          meshWarning.append(warnings.join(' '));
+          if (addMe) {
+            const add = document.createElement('button');
+            add.type = 'button';
+            add.textContent = 'Add me';
+            add.addEventListener('click', () => {
+              meshPicker.add('visitors', { type: 'user', value: meIdentity.email, label: meIdentity.email, meta: 'You' });
+              renderMeshAccess();
+            });
+            meshWarning.append(add);
+          }
+        }
+      };
+
+      // loadMeshAccess fills the dialog from GET /api/sites/{name}/access.
+      // An unreadable policy starts as "only invited" with nobody listed,
+      // which is how the site already behaves.
+      const loadMeshAccess = (site, body, notice) => {
+        const parsed = body.readable
+          ? window.SpotAccess.parsePolicy(body.policy || {})
+          : { visitors: [], maintainers: [], fields: {}, maintainersPresent: false };
+        meshEdit = {
+          site,
+          role: site.management_role,
+          version: body.version,
+          fields: parsed.fields,
+          maintainersPresent: parsed.maintainersPresent,
+          initial: { restricted: !!body.restricted, visitors: parsed.visitors, maintainers: parsed.maintainers },
+        };
+        meshPicker.set(parsed.visitors, parsed.maintainers);
+        meshPicker.resetSearch();
+        meshForm.elements['mesh-visibility'].value = body.restricted ? 'invited' : 'everyone';
+        $('mesh-access-title').textContent = 'Mesh access for ' + site.name;
+        setMeshAlert(notice || (!body.readable
+          ? "This site's access policy can't be read, so nobody can open it. Saving replaces it; any AI, Slack, or download settings in it are reset."
+          : body.pending
+          ? 'An earlier access change was interrupted. Saving first checks that it can be recovered.'
+          : ''));
+        meshPicker.setMode('visitors');
+      };
+
+      const openMeshAccess = async (site, trigger) => {
+        trigger.disabled = true;
+        try {
+          const body = await api(accessURL(site), { cache: 'no-store' });
+          loadMeshAccess(site, body);
+          meshSave.disabled = false;
+          meshDialog.showModal();
+        } catch (err) {
+          toast('Could not load mesh access: ' + err.message);
+        } finally {
+          trigger.disabled = false;
+        }
+      };
+
+      for (const option of meshForm.elements['mesh-visibility']) {
+        option.addEventListener('change', () => {
+          renderMeshAccess();
+          if (meshInvited()) meshPicker.focus();
+        });
+      }
+      $('mesh-access-cancel').addEventListener('click', () => meshDialog.close());
+      meshDialog.addEventListener('close', () => { meshEdit = null; });
+
+      meshForm.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        if (!meshEdit) return;
+        const { site, version, fields } = meshEdit;
+        const policy = { ...fields };
+        if (meshInvited()) policy.allow = window.SpotAccess.values(meshPicker.visitors);
+        if (meshPicker.maintainers.length || meshEdit.maintainersPresent) {
+          policy.maintainers = window.SpotAccess.values(meshPicker.maintainers);
+        }
+        meshSave.disabled = true;
+        meshSave.textContent = 'Saving…';
+        try {
+          const res = await fetch(accessURL(site), {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json', 'If-Match': version },
+            body: JSON.stringify(policy),
+          });
+          const body = await res.json().catch(() => ({}));
+          if (res.status === 412) {
+            const fresh = await api(accessURL(site), { cache: 'no-store' });
+            loadMeshAccess(site, fresh,
+              "Someone changed this site's access while you were editing. These are the current settings; make your change again.");
+            return;
+          }
+          if (!res.ok) throw new Error(body.error || 'request failed (HTTP ' + res.status + ')');
+          meshDialog.close();
+          toast('Mesh access saved');
+          loadMine(true);
+        } catch (err) {
+          setMeshAlert('Could not save: ' + err.message);
+        } finally {
+          meshSave.disabled = false;
+          meshSave.textContent = 'Save';
+        }
+      });
+
       const renderDeploys = () => {
 		const { active: activeCount, deleted: recoveryCount, matched } = mineCounts;
 		$('deploys-sub').textContent = activeCount + ' active' +
@@ -1930,12 +2204,18 @@
           // of the title row happens to be left over.
           const chips = document.createElement('div');
           chips.className = 'sitechips';
-          const badge = document.createElement('span');
-          badge.className = 'badge mesh' + (site.restricted ? ' invited' : '');
+          const badge = document.createElement('button');
+          badge.type = 'button';
+          badge.className = 'badge mesh' + (site.policy_unreadable ? ' unreadable' : site.restricted ? ' invited' : '');
+          badge.title = 'Change who can open or manage this site on the mesh';
           const meshWho = document.createElement('span');
           meshWho.className = 'who';
-          meshWho.textContent = site.restricted ? '· ' + site.allow_count + ' invited' : '· everyone';
-          badge.append(site.restricted ? '🔒 Mesh ' : 'Mesh ', meshWho);
+          meshWho.textContent = site.policy_unreadable ? '· unreadable'
+            : !site.restricted ? '· everyone'
+            : site.allow_count ? '· ' + site.allow_count + ' invited'
+            : '· nobody';
+          badge.append(site.policy_unreadable ? '⚠ Mesh ' : site.restricted ? '🔒 Mesh ' : 'Mesh ', meshWho);
+          badge.addEventListener('click', () => openMeshAccess(site, badge));
           chips.append(badge);
           if (site.type) {
             const typeBadge = document.createElement('span');
@@ -2055,6 +2335,12 @@
           download.setAttribute('download', site.name + '.zip');
           download.setAttribute('aria-label', 'Download ' + site.name + ' as ZIP');
 
+          const meshAccess = document.createElement('button');
+          meshAccess.type = 'button';
+          meshAccess.className = 'btn';
+          meshAccess.textContent = 'Mesh access…';
+          meshAccess.addEventListener('click', () => openMeshAccess(site, meshAccess));
+
           const cfPublish = document.createElement('button');
           cfPublish.type = 'button';
           cfPublish.className = 'btn';
@@ -2113,7 +2399,7 @@
             armSiteDelete(site, row, del, 'Delete', 'Click again to delete');
           });
 
-          actions.append(open, copy);
+          actions.append(open, copy, meshAccess);
           if (site.download_allowed !== false) row.append(download);
           if (cf.enabled) {
             actions.append(cfPublish);
@@ -2611,6 +2897,7 @@
       // ─── boot ─────────────────────────────────────────────────
       let whoami = '';
       loadIdentity().then((me) => {
+        meIdentity = me;
         whoami = me && me.email ? me.email : '';
         if (VIEW === 'deploys' && mySites.length) renderDeploys();
       });

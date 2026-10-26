@@ -79,6 +79,10 @@ commands:
          [--follow major|--pinned] [name] [dir]
                         deploy a directory of data to a typed site; the
                         type serves the viewer, so no index.html is needed
+  access <name> [changes]
+                        show or change who can open (visitors) and manage
+                        (maintainers) a site, without redeploying it
+                        (spot access --help)
   types <command>       list, inspect, upload and repin site types
                         (spot types --help)
   show init [json]      write a starter Spot Show JSON file
@@ -1654,6 +1658,149 @@ types() {
     esac
 }
 
+access_usage() {
+    cat <<'USAGE'
+usage: spot access <name> [changes]
+
+With no changes, print the site's access policy. Changes apply to the
+stored _access.json at once, without a redeploy; the owner, a maintainer
+or a platform admin may make them. Lists are comma-separated emails
+(users) or names (groups).
+
+visitors (who can open the site on the mesh):
+  --everyone            open the site to everyone on the mesh
+  --allow <list>        only these may open it (--allow '' allows nobody)
+  --add <list>          also allow these (restricts an open site to them)
+  --remove <list>       stop allowing these
+
+maintainers (who can deploy, delete, publish and change access):
+  --maintainers <list>  replace the list (--maintainers '' clears it)
+  --add-maintainer <list>
+  --remove-maintainer <list>
+
+Changes need python3. Other policy settings (ai, slack, download) are kept.
+USAGE
+    exit 1
+}
+
+# access_edit applies the access flags in "$@", in order, to a
+# GET /api/sites/{name}/access body on stdin and prints the version it was
+# read at, then the new policy as one line of JSON.
+access_edit() {
+    python3 -c '
+import json, sys
+VALUED = {"--allow", "--add", "--remove", "--maintainers", "--add-maintainer", "--remove-maintainer"}
+args = sys.argv[1:]
+ops = []
+while args:
+    flag = args.pop(0)
+    if flag == "--everyone":
+        ops.append((flag, ""))
+    elif flag in VALUED:
+        if not args:
+            sys.exit("error: %s needs a value" % flag)
+        ops.append((flag, args.pop(0)))
+    else:
+        sys.exit("error: unknown access option %r (spot access --help)" % flag)
+body = json.load(sys.stdin)
+policy = body.get("policy") or {}
+if body.get("readable") is False:
+    print("warning: the stored policy is unreadable; it is replaced, and any ai, slack or download settings reset", file=sys.stderr)
+    policy = {"allow": []}
+# Entries match the way the server matches them: trimmed, case-insensitive.
+def norm(v):
+    return v.strip().lower()
+def items(raw):
+    return [v.strip() for v in raw.split(",") if v.strip()]
+def plus(values, add):
+    out, seen = list(values), {norm(v) for v in values}
+    for v in add:
+        if norm(v) not in seen:
+            seen.add(norm(v))
+            out.append(v)
+    return out
+def without(values, drop):
+    drop = {norm(v) for v in drop}
+    return [v for v in values if norm(v) not in drop]
+for flag, raw in ops:
+    if flag == "--everyone":
+        policy.pop("allow", None)
+    elif flag == "--allow":
+        policy["allow"] = plus([], items(raw))
+    elif flag == "--add":
+        policy["allow"] = plus(policy.get("allow", []), items(raw))
+    elif flag == "--remove":
+        if "allow" not in policy:
+            sys.exit("error: the site is open to everyone; --remove needs a visitor list")
+        policy["allow"] = without(policy["allow"], items(raw))
+    elif flag == "--maintainers":
+        policy["maintainers"] = plus([], items(raw))
+    elif flag == "--add-maintainer":
+        policy["maintainers"] = plus(policy.get("maintainers", []), items(raw))
+    elif flag == "--remove-maintainer":
+        policy["maintainers"] = without(policy.get("maintainers", []), items(raw))
+print(body["version"])
+print(json.dumps(policy))
+' "$@"
+}
+
+access() {
+    [ $# -ge 1 ] || access_usage
+    case $1 in
+        -h|--help) access_usage ;;
+        ''|*[!a-z0-9-]*) echo "error: site name '$1' must match [a-z0-9-]+" >&2; exit 1 ;;
+    esac
+    site=$1
+    shift
+    access_path="/api/sites/$site/access"
+    if [ $# -eq 0 ]; then
+        api_json GET "$access_path"
+        return
+    fi
+    for arg in "$@"; do
+        case $arg in -h|--help) access_usage ;; esac
+    done
+    command -v python3 >/dev/null 2>&1 || {
+        echo "error: python3 is required to change access" >&2
+        exit 1
+    }
+    # The write is conditional on the version read. A change made elsewhere
+    # in between is refused with 412; the flags are relative edits, so read
+    # again and reapply them once.
+    attempt=1
+    while :; do
+        current=$(api_call GET "$access_path") || exit 1
+        edited=$(printf '%s\n' "$current" | access_edit "$@") || exit 1
+        version=$(printf '%s\n' "$edited" | sed -n 1p)
+        policy=$(printf '%s\n' "$edited" | sed -n 2p)
+        if ! put_out=$(curl -sS $SPOT_CURL_OPTS -X PUT -w '\n%{http_code}' \
+            -H 'Content-Type: application/json' -H "If-Match: $version" \
+            --data-binary "$policy" "$SPOT_URL$access_path"); then
+            echo "error: could not reach $SPOT_URL$access_path" >&2
+            exit 1
+        fi
+        put_status=$(printf '%s' "$put_out" | tail -n 1)
+        put_body=$(printf '%s' "$put_out" | sed '$d')
+        case $put_status in
+            2??)
+                printf '%s\n' "$put_body" | print_json
+                return
+                ;;
+            412)
+                if [ "$attempt" -ge 2 ]; then
+                    echo "error: the site's access keeps changing; try again" >&2
+                    exit 1
+                fi
+                attempt=2
+                ;;
+            *)
+                echo "error: PUT $access_path failed (HTTP $put_status): $put_body" >&2
+                exit 1
+                ;;
+        esac
+    done
+}
+
 fetch_doc() {
     path=$1
     if ! curl -fsSL $SPOT_CURL_OPTS "$SPOT_URL/$path"; then
@@ -2097,6 +2244,7 @@ cmd=${1:-help}
 [ $# -gt 0 ] && shift
 case $cmd in
     deploy) deploy "$@" ;;
+    access) access "$@" ;;
     types)  types "$@" ;;
     show)   show "$@" ;;
     agent-howto) fetch_doc spot-agent-howto.md ;;

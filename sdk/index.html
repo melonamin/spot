@@ -10,6 +10,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Pacifico&family=Space+Mono:wght@400;700&display=swap" rel="stylesheet">
+  <link href="/spot-access.css" rel="stylesheet">
   <style>
     :root {
       --field: #5a4bf0;
@@ -186,8 +187,6 @@
     .install-trigger:focus-visible,
     .access-trigger:focus-visible,
     .access-clear:focus-visible,
-    .access-choice:focus-visible,
-    .access-chip button:focus-visible,
     .copy:focus-visible,
     .modal-close:focus-visible,
     .tab:focus-visible {
@@ -416,145 +415,6 @@
       letter-spacing: .12em;
       text-transform: uppercase;
       cursor: pointer;
-    }
-    .access-tabs {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-      margin-bottom: 12px;
-    }
-    .access-tab {
-      border: 2px solid var(--ink);
-      border-radius: 10px;
-      background: var(--paper);
-      color: var(--ink);
-      padding: 9px;
-      font: 700 11px/1 var(--font-mono);
-      letter-spacing: .1em;
-      text-transform: uppercase;
-      cursor: pointer;
-    }
-    .access-tab[aria-selected="true"] { background: var(--ink); color: #fff; }
-    .access-search {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      border: 2px solid var(--ink);
-      border-radius: 12px;
-      background: #fff;
-      padding: 0 12px;
-    }
-    .access-search svg {
-      width: 18px;
-      height: 18px;
-      color: var(--mutedink);
-      flex: 0 0 auto;
-    }
-    #access-search {
-      min-width: 0;
-      width: 100%;
-      border: 0;
-      outline: 0;
-      background: transparent;
-      color: var(--ink);
-      padding: 13px 0;
-      font: 700 13px/1.2 var(--font-mono);
-    }
-    #access-search::placeholder { color: var(--mutedink); opacity: .8; }
-    .access-results {
-      display: grid;
-      gap: 8px;
-      max-height: 210px;
-      overflow: auto;
-      margin-top: 12px;
-    }
-    .access-choice {
-      display: grid;
-      grid-template-columns: 28px minmax(0, 1fr) auto;
-      align-items: center;
-      gap: 10px;
-      width: 100%;
-      border: 2px solid var(--ink);
-      border-radius: 12px;
-      background: #fff;
-      color: var(--ink);
-      padding: 10px;
-      text-align: left;
-      font: 700 12px/1.25 var(--font-mono);
-      cursor: pointer;
-    }
-    .access-choice[aria-selected="true"] {
-      background: #f3f1ff;
-    }
-    .access-choice.active {
-      outline: 3px solid var(--accent);
-      outline-offset: -3px;
-    }
-    .choice-icon {
-      width: 28px;
-      height: 28px;
-      display: grid;
-      place-items: center;
-      border-radius: 9px;
-      background: var(--ink);
-      color: #fff;
-      font-size: 12px;
-    }
-    .choice-main {
-      min-width: 0;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .choice-meta {
-      display: block;
-      margin-top: 4px;
-      color: var(--mutedink);
-      font-size: 10px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-    }
-    .choice-mark {
-      color: var(--accent);
-      font-size: 12px;
-      letter-spacing: .08em;
-      text-transform: uppercase;
-    }
-    .access-selected {
-      display: flex;
-      flex-wrap: wrap;
-      gap: 8px;
-      margin-top: 12px;
-    }
-    .access-chip {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      max-width: 100%;
-      border: 2px solid var(--ink);
-      border-radius: 999px;
-      background: var(--paper);
-      padding: 7px 9px 7px 11px;
-      font: 700 11px/1 var(--font-mono);
-    }
-    .access-chip span {
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-    }
-    .access-chip button {
-      border: 0;
-      background: transparent;
-      color: var(--ink);
-      padding: 0;
-      font: 700 14px/1 var(--font-mono);
-      cursor: pointer;
-    }
-    .accessnote {
-      min-height: 20px;
-      margin: 12px 0 0;
-      font: 400 12px/1.6 var(--font-mono);
-      color: var(--mutedink);
     }
 
     footer {
@@ -940,6 +800,7 @@
   <div id="confetti" aria-hidden="true"></div>
 
   <script src="/spot-format.js"></script>
+  <script src="/spot-access.js"></script>
   <script>
     (() => {
       'use strict';
@@ -1029,9 +890,6 @@
 
       let picked = [];        // [{ path, file }], paths site-relative
       let identity = null;
-      let selectedAccess = [];
-      let selectedMaintainers = [];
-      let accessMode = 'visitors';
       let accessPolicyFields = {};
       let accessAllowPresent = false;
       let accessMaintainersPresent = false;
@@ -1090,15 +948,13 @@
           list = list.map((f) => ({ path: f.path.slice(first.length + 1), file: f.file }));
         }
         picked = list;
-        selectedAccess = [];
-        selectedMaintainers = [];
+        accessPicker.set([], []);
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
         accessCleared = false;
         accessFileSupplied = false;
-        accessSearch.value = '';
-        directoryOptions = [];
+        accessPicker.resetSearch();
         accessFileWarning = '';
         // Seed the access picker from an uploaded _access.json so an
         // existing allowlist is shown — and preserved on redeploy —
@@ -1107,8 +963,7 @@
         if (accessFile) {
           accessFileSupplied = true;
           const parsed = await readAccessPolicy(accessFile.file);
-          selectedAccess = parsed.entries;
-          selectedMaintainers = parsed.maintainers;
+          accessPicker.set(parsed.visitors, parsed.maintainers);
           accessPolicyFields = parsed.fields;
           accessAllowPresent = parsed.allowPresent;
           accessMaintainersPresent = parsed.maintainersPresent;
@@ -1126,205 +981,33 @@
         nameInput.select();
       };
 
-      const accessKey = (entry) => entry.type + ':' + entry.value.toLowerCase();
-      const selectedPolicyEntries = () => accessMode === 'maintainers' ? selectedMaintainers : selectedAccess;
-      const hasSelectedAccess = (entry) =>
-        selectedPolicyEntries().some((item) => accessKey(item) === accessKey(entry));
-
-      // readAccessPolicy turns an uploaded _access.json into picker chips:
-      // allow entries with "@" are users, the rest are groups (matching
-      // the server's policy semantics). ok is false on unreadable JSON.
+      // readAccessPolicy turns an uploaded _access.json into picker lists;
+      // ok is false on unreadable JSON or an invalid policy.
       const readAccessPolicy = async (file) => {
         try {
-          const data = JSON.parse(await file.text());
-          const policy = {};
-          for (const [key, value] of Object.entries(data)) {
-            const normalized = key.toLowerCase();
-            if (Object.prototype.hasOwnProperty.call(policy, normalized)) throw new Error('duplicate policy field');
-            if (!['allow', 'maintainers', 'ai', 'slack', 'download'].includes(normalized)) throw new Error('unknown policy field');
-            policy[normalized] = value;
-          }
-          const toEntries = (values) => {
-            const entries = [];
-            for (const raw of values) {
-              if (typeof raw !== 'string' || !raw.trim()) continue;
-              const value = raw.trim();
-              const entry = value.includes('@')
-                ? { type: 'user', value, label: value, meta: 'From file' }
-                : { type: 'group', value, label: value, meta: 'Group' };
-              if (!entries.some((e) => accessKey(e) === accessKey(entry))) entries.push(entry);
-            }
-            return entries;
-          };
-          const policyEntries = (key) => {
-            if (!Object.prototype.hasOwnProperty.call(policy, key)) return [];
-            if (!Array.isArray(policy[key]) || policy[key].some((value) => typeof value !== 'string')) {
-              throw new Error(key + ' must be an array of strings');
-            }
-            return policy[key];
-          };
-          const allow = policyEntries('allow');
-          const maintainers = policyEntries('maintainers');
-          const fields = {};
-          for (const key of ['ai', 'slack', 'download']) {
-            if (Object.prototype.hasOwnProperty.call(policy, key)) fields[key] = policy[key];
-          }
-          const entries = toEntries(allow);
-          const maintainerEntries = toEntries(maintainers);
-          return {
-            entries,
-            maintainers: maintainerEntries,
-            fields,
-            allowPresent: Object.prototype.hasOwnProperty.call(policy, 'allow'),
-            maintainersPresent: Object.prototype.hasOwnProperty.call(policy, 'maintainers'),
-            ok: true,
-          };
+          return { ...window.SpotAccess.parsePolicy(JSON.parse(await file.text()), 'From file'), ok: true };
         } catch {
-          return { entries: [], maintainers: [], fields: {}, allowPresent: false, maintainersPresent: false, ok: false };
+          return { visitors: [], maintainers: [], fields: {}, allowPresent: false, maintainersPresent: false, ok: false };
         }
       };
 
-      // Directory matches from the server for the current query, plus the
-      // visitor's own identity, which is always offered first.
-      let directoryOptions = [];
-      let optionButtons = [];  // currently rendered choice buttons
-      let activeIndex = 0;     // keyboard-highlighted option
-      const knownAccessOptions = () => {
-        const options = [];
-        if (identity && identity.email) {
-          options.push({ type: 'user', value: identity.email, label: identity.email, meta: 'You' });
-        }
-        for (const entry of directoryOptions) {
-          if (!options.some((o) => accessKey(o) === accessKey(entry))) options.push(entry);
-        }
-        return options;
-      };
-
-      // The access directory (mesh users + groups) is searched
-      // server-side; debounce so typing doesn't fire a request per key.
-      let suggestTimer = null;
-      let suggestSeq = 0;
-      const fetchSuggestions = (query) => {
-        const seq = ++suggestSeq;
-        clearTimeout(suggestTimer);
-        if (!query) { directoryOptions = []; return; }
-        suggestTimer = setTimeout(async () => {
-          try {
-            const res = await fetch('/api/access/suggestions?q=' + encodeURIComponent(query));
-            if (!res.ok) return;
-            const body = await res.json();
-            if (seq !== suggestSeq) return; // a newer query already won
-            directoryOptions = Array.isArray(body.suggestions) ? body.suggestions : [];
-            renderAccessResults();
-          } catch {
-            // directory unavailable (e.g. dev without a mesh API) — the
-            // custom-email entry still lets you restrict a site.
-          }
-        }, 180);
-      };
-
-      const customAccessEntry = (raw) => {
-        const value = raw.trim();
-        if (!value) return null;
-        if (value.includes('@')) return { type: 'user', value, label: value, meta: 'Email' };
-        return null;
-      };
-
-      const toggleAccessEntry = (entry) => {
-        accessFileWarning = '';
-        if (hasSelectedAccess(entry)) {
-          if (accessMode === 'maintainers') selectedMaintainers = selectedMaintainers.filter((item) => accessKey(item) !== accessKey(entry));
-          else selectedAccess = selectedAccess.filter((item) => accessKey(item) !== accessKey(entry));
-        } else {
-          if (accessMode === 'maintainers') selectedMaintainers = [...selectedMaintainers, entry];
-          else selectedAccess = [...selectedAccess, entry];
-        }
-        renderAccess();
-      };
-
-      const renderAccessResults = () => {
-        const query = accessSearch.value.trim().toLowerCase();
-        let options = knownAccessOptions().filter((entry) =>
-          !query || entry.label.toLowerCase().includes(query) || entry.meta.toLowerCase().includes(query)
-        );
-        const custom = customAccessEntry(accessSearch.value);
-        if (custom && !options.some((entry) => accessKey(entry) === accessKey(custom))) {
-          options = [...options, custom];
-        }
-        accessResults.replaceChildren();
-        optionButtons = [];
-        if (!options.length) {
-          activeIndex = -1;
-          accessSearch.removeAttribute('aria-activedescendant');
-          const empty = document.createElement('p');
-          empty.className = 'accessnote';
-          empty.textContent = query && !query.includes('@')
-            ? 'No matching users or groups — type a full email to add one.'
-            : 'No matching users.';
-          accessResults.appendChild(empty);
-          return;
-        }
-        for (const entry of options) {
-          const selected = hasSelectedAccess(entry);
-          const button = document.createElement('button');
-          button.type = 'button';
-          button.id = 'access-opt-' + optionButtons.length;
-          button.className = 'access-choice';
-          button.setAttribute('role', 'option');
-          button.setAttribute('aria-selected', selected ? 'true' : 'false');
-          button.innerHTML =
-            '<span class="choice-icon" aria-hidden="true">' + (entry.type === 'group' ? '#' : '@') + '</span>' +
-            '<span class="choice-main"></span>' +
-            '<span class="choice-mark">' + (selected ? 'On' : '') + '</span>';
-          button.querySelector('.choice-main').textContent = entry.label;
-          const meta = document.createElement('span');
-          meta.className = 'choice-meta';
-          meta.textContent = entry.meta;
-          button.querySelector('.choice-main').appendChild(meta);
-          // Stop the click bubbling to the document outside-click handler:
-          // toggling re-renders the list, detaching this node, which would
-          // otherwise read as a click outside the popover and close it.
-          button.addEventListener('click', (e) => { e.stopPropagation(); toggleAccessEntry(entry); });
-          accessResults.appendChild(button);
-          optionButtons.push(button);
-        }
-        if (activeIndex < 0 || activeIndex >= optionButtons.length) activeIndex = 0;
-        applyActive();
-      };
-
-      // applyActive reflects keyboard-navigation state: highlights the
-      // active option, points aria-activedescendant at it, and keeps it
-      // in view. Distinct from aria-selected, which marks allowlisted
-      // entries.
-      const applyActive = () => {
-        optionButtons.forEach((b, i) => b.classList.toggle('active', i === activeIndex));
-        const active = optionButtons[activeIndex];
-        if (active) {
-          accessSearch.setAttribute('aria-activedescendant', active.id);
-          active.scrollIntoView({ block: 'nearest' });
-        } else {
-          accessSearch.removeAttribute('aria-activedescendant');
-        }
-      };
-
-      const renderSelectedAccess = () => {
-        accessSelected.replaceChildren();
-        for (const entry of selectedPolicyEntries()) {
-          const chip = document.createElement('span');
-          chip.className = 'access-chip';
-          const label = document.createElement('span');
-          label.textContent = entry.label;
-          const remove = document.createElement('button');
-          remove.type = 'button';
-          remove.setAttribute('aria-label', 'Remove ' + entry.label);
-          remove.textContent = 'x';
-          remove.addEventListener('click', (e) => { e.stopPropagation(); toggleAccessEntry(entry); });
-          chip.append(label, remove);
-          accessSelected.appendChild(chip);
-        }
-      };
+      const accessPicker = window.SpotAccess.createPicker({
+        search: accessSearch,
+        results: accessResults,
+        selected: accessSelected,
+        visitorsTab: accessVisitors,
+        maintainersTab: accessMaintainers,
+        identity: () => identity,
+        onChange: (kind) => {
+          if (kind === 'toggle') accessFileWarning = '';
+          renderAccess();
+        },
+        onEscape: () => closeAccess(),
+      });
 
       const renderAccess = () => {
+        const selectedAccess = accessPicker.visitors;
+        const selectedMaintainers = accessPicker.maintainers;
         const count = selectedAccess.length;
         const denyAllVisitors = accessAllowPresent && count === 0;
         if (denyAllVisitors) {
@@ -1345,28 +1028,23 @@
           accessNote.textContent = 'Only these ' + count + ' people can open it on the mesh. Deploys _access.json.';
         }
         accessOpen.classList.toggle('restricted', count > 0 || denyAllVisitors);
-        accessVisitors.setAttribute('aria-selected', accessMode === 'visitors' ? 'true' : 'false');
-        accessMaintainers.setAttribute('aria-selected', accessMode === 'maintainers' ? 'true' : 'false');
-        $('access-title').textContent = accessMode === 'maintainers'
+        $('access-title').textContent = accessPicker.mode === 'maintainers'
           ? 'People and groups who can deploy, delete, and publish this site'
           : 'Everyone on the mesh unless you invite specific people';
-        accessSearch.placeholder = accessMode === 'maintainers' ? 'Search maintainers' : 'Search visitors by email';
-        if (accessMode === 'maintainers') {
+        if (accessPicker.mode === 'maintainers') {
           accessNote.textContent = selectedMaintainers.length
             ? selectedMaintainers.length + ' maintainer' + (selectedMaintainers.length === 1 ? '' : 's') + ' can manage this site.'
             : 'Only the immutable owner and platform admins can manage this site.';
         }
-        renderAccessResults();
-        renderSelectedAccess();
+        accessPicker.render();
       };
 
       const openAccess = () => {
         accessPopover.hidden = false;
         accessOpen.setAttribute('aria-expanded', 'true');
         accessSearch.setAttribute('aria-expanded', 'true');
-        activeIndex = 0;
         renderAccess();
-        accessSearch.focus();
+        accessPicker.focus();
       };
 
       const closeAccess = () => {
@@ -1377,6 +1055,8 @@
       };
 
       const accessPolicyFile = () => {
+        const selectedAccess = accessPicker.visitors;
+        const selectedMaintainers = accessPicker.maintainers;
         const policy = { ...accessPolicyFields };
         if (selectedAccess.length || accessAllowPresent) policy.allow = selectedAccess.map((entry) => entry.value);
         if (selectedMaintainers.length || accessMaintainersPresent) policy.maintainers = selectedMaintainers.map((entry) => entry.value);
@@ -1405,46 +1085,12 @@
       accessClear.addEventListener('click', () => {
         accessFileWarning = '';
         accessCleared = true;
-        if (accessMode === 'maintainers') {
-          selectedMaintainers = [];
-          accessMaintainersPresent = false;
-        } else {
-          selectedAccess = [];
-          accessAllowPresent = false;
-        }
-        accessSearch.value = '';
-        directoryOptions = [];
+        if (accessPicker.mode === 'maintainers') accessMaintainersPresent = false;
+        else accessAllowPresent = false;
+        accessPicker.clear();
+        accessPicker.resetSearch();
         renderAccess();
-        accessSearch.focus();
-      });
-      accessVisitors.addEventListener('click', () => { accessMode = 'visitors'; renderAccess(); });
-      accessMaintainers.addEventListener('click', () => { accessMode = 'maintainers'; renderAccess(); });
-      accessSearch.addEventListener('input', () => {
-        activeIndex = 0; // highlight the first match as the list changes
-        fetchSuggestions(accessSearch.value.trim());
-        renderAccessResults();
-      });
-      accessSearch.addEventListener('keydown', (e) => {
-        if (e.key === 'ArrowDown') {
-          e.preventDefault();
-          if (optionButtons.length) {
-            activeIndex = Math.min(optionButtons.length - 1, activeIndex + 1);
-            applyActive();
-          }
-        } else if (e.key === 'ArrowUp') {
-          e.preventDefault();
-          if (optionButtons.length) {
-            activeIndex = Math.max(0, activeIndex - 1);
-            applyActive();
-          }
-        } else if (e.key === 'Enter') {
-          // Toggle the highlighted option (a directory match or the
-          // typed-email entry); selecting keeps the popover open.
-          e.preventDefault();
-          if (optionButtons[activeIndex]) optionButtons[activeIndex].click();
-        } else if (e.key === 'Escape') {
-          closeAccess();
-        }
+        accessPicker.focus();
       });
       document.addEventListener('click', (e) => {
         if (!accessPopover.hidden && !accessWrap.contains(e.target)) closeAccess();
@@ -1473,14 +1119,13 @@
         picked = [];
         filePick.value = '';
         singlePick.value = '';
-        selectedAccess = [];
-        selectedMaintainers = [];
+        accessPicker.set([], []);
         accessPolicyFields = {};
         accessAllowPresent = false;
         accessMaintainersPresent = false;
         accessCleared = false;
         accessFileSupplied = false;
-        accessSearch.value = '';
+        accessPicker.resetSearch();
         clearError();
         show(idle);
       });

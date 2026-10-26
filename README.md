@@ -582,7 +582,8 @@ itself is never served to visitors and is left out of source downloads.
 
 A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an
-`_access.json` without `allow`, change it through the API, or deploy with the
+`_access.json` without `allow`, change it from My spots (Mesh access), with
+`spot access <site> --everyone`, or through the API, or deploy with the
 form field `preserve_access=false` (`spot deploy --replace-access`, or Clear
 in the web deployer), which removes the stored policy. The field accepts
 `true`/`false` (or `1`/`0`, `yes`/`no`, `on`/`off`) and `require`, which keeps
@@ -669,10 +670,20 @@ Important APIs:
   `cursor` the whole filtered list is returned. `public` and `visible` add
   `tag_counts`, the top tags across the listing; `manageable` adds `active`
   and `deleted` counts.
+- `GET /api/sites/{name}/access` returns a site's stored policy to the owner,
+  an admin, or a maintainer: `policy` (with `allow` only when visitors are
+  restricted, so `[]` means nobody), `restricted`, `readable` (false for a
+  policy that does not parse; its content is not returned), `pending` (an
+  interrupted policy change awaits recovery), and `version`, also sent as the
+  `ETag`.
 - `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
   redeploy. The owner, an admin, or a maintainer may call it, with the same
-  rights as a deploy, including changing `maintainers`. A concurrent content
-  change returns `409`.
+  rights as a deploy, including changing `maintainers`. Send
+  `If-Match: <version>` to apply the change only if the stored policy still
+  has the version you read; otherwise it answers `412` with the current
+  `version`. Without `If-Match` the change is unconditional. A concurrent
+  content change returns `409`. The response carries the new `version`.
+  My spots (Mesh access) and `spot access` both use this read-modify-write.
 - `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
   publication status.
 - `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site

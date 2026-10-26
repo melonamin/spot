@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func accessRequest(site, email, body string) *http.Request {
@@ -426,5 +427,299 @@ func TestDeployPreserveAccessIsStrict(t *testing.T) {
 		if rec := st.do(asForwardUser(req, "owner@example.com")); rec.Code != http.StatusOK {
 			t.Fatalf("preserve_access=%q = %d %s, want 200", value, rec.Code, rec.Body.String())
 		}
+	}
+}
+
+type accessReadBody struct {
+	Site       string          `json:"site"`
+	Version    string          `json:"version"`
+	Readable   bool            `json:"readable"`
+	Restricted bool            `json:"restricted"`
+	Pending    bool            `json:"pending"`
+	Policy     json.RawMessage `json:"policy"`
+	Error      string          `json:"error"`
+}
+
+func readAccess(t *testing.T, st *loginTestStack, site, email string) (*httptest.ResponseRecorder, accessReadBody) {
+	t.Helper()
+	req := siteRequest(http.MethodGet, "sites.localhost:8443", "/api/sites/"+site+"/access")
+	if email != "" {
+		asForwardUser(req, email)
+	}
+	rec := st.do(req)
+	var body accessReadBody
+	if rec.Code == http.StatusOK {
+		if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+			t.Fatal(err)
+		}
+		if got := rec.Header().Get("ETag"); got == "" || got != body.Version {
+			t.Fatalf("ETag %q, body version %q", got, body.Version)
+		}
+	}
+	return rec, body
+}
+
+func conditionalAccessRequest(site, email, version, body string) *http.Request {
+	req := accessRequest(site, email, body)
+	req.Header.Set("If-Match", version)
+	return req
+}
+
+func TestSiteAccessRead(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.registry.admins = &AccessPolicy{Allow: []string{"admin@example.com"}, restrictAccess: true}
+	const stored = `{"allow":["owner@example.com","platform"],"maintainers":["maint@example.com"],"ai":"visitors","download":false}`
+	st.deploy(t, "owner@example.com", "demo", stored)
+	st.deploy(t, "owner@example.com", "open", "")
+
+	// Denied paths: anonymous, a visitor who may view but not manage, an
+	// unknown site, and a site-host caller.
+	if rec, _ := readAccess(t, st, "demo", ""); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous read = %d, want 401", rec.Code)
+	}
+	if rec, _ := readAccess(t, st, "demo", "viewer@example.com"); rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "maint@") {
+		t.Fatalf("visitor read = %d %s, want 403 without the policy", rec.Code, rec.Body.String())
+	}
+	if rec, _ := readAccess(t, st, "missing", "owner@example.com"); rec.Code != http.StatusNotFound {
+		t.Fatalf("unknown site read = %d, want 404", rec.Code)
+	}
+	onSite := asForwardUser(siteRequest(http.MethodGet, "demo.sites.localhost:8443", "/api/sites/demo/access"), "owner@example.com")
+	if rec := st.do(onSite); rec.Code != http.StatusBadRequest {
+		t.Fatalf("read from a site host = %d, want 400", rec.Code)
+	}
+
+	// Allowed: owner, maintainer and admin read every field, so a client can
+	// write back the policy it read without losing ai or download.
+	for _, who := range []string{"owner@example.com", "maint@example.com", "admin@example.com"} {
+		rec, body := readAccess(t, st, "demo", who)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s read = %d %s", who, rec.Code, rec.Body.String())
+		}
+		var policy map[string]any
+		if err := json.Unmarshal(body.Policy, &policy); err != nil {
+			t.Fatal(err)
+		}
+		if !body.Readable || !body.Restricted || body.Pending || body.Site != "demo" ||
+			policy["ai"] != "visitors" || policy["download"] != false ||
+			len(policy["allow"].([]any)) != 2 || len(policy["maintainers"].([]any)) != 1 {
+			t.Fatalf("%s read = %+v policy %v", who, body, policy)
+		}
+		if want := accessPolicyVersion([]byte(stored), false); body.Version != want {
+			t.Fatalf("version = %s, want %s", body.Version, want)
+		}
+	}
+
+	// A site without a policy file is open and versioned as absent.
+	if rec, body := readAccess(t, st, "open", "owner@example.com"); rec.Code != http.StatusOK ||
+		body.Version != `"absent"` || body.Restricted || string(body.Policy) != "{}" {
+		t.Fatalf("open read = %d %+v", rec.Code, body)
+	}
+
+	// Deny-all keeps its empty allow list; an open policy has none.
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":[],"maintainers":["maint@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("deny-all = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, body := readAccess(t, st, "demo", "owner@example.com"); !body.Restricted ||
+		string(body.Policy) != `{"allow":[],"maintainers":["maint@example.com"]}` {
+		t.Fatalf("deny-all read = %+v %s", body, body.Policy)
+	}
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"maintainers":["maint@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("open = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, body := readAccess(t, st, "demo", "owner@example.com"); body.Restricted ||
+		string(body.Policy) != `{"maintainers":["maint@example.com"]}` {
+		t.Fatalf("open policy read = %+v %s", body, body.Policy)
+	}
+
+	// A deleted site has no access to manage.
+	if rec := st.do(asForwardUser(siteRequest(http.MethodDelete, "sites.localhost:8443", "/api/sites/open"), "owner@example.com")); rec.Code != http.StatusOK {
+		t.Fatalf("delete = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec, _ := readAccess(t, st, "open", "owner@example.com"); rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted site read = %d, want 404", rec.Code)
+	}
+}
+
+func TestSiteAccessIfMatch(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"],"maintainers":["maint@example.com"]}`)
+	_, read := readAccess(t, st, "demo", "owner@example.com")
+
+	// A change conditioned on the version read succeeds and returns the new one.
+	next := `{"allow":["owner@example.com","platform"],"maintainers":["maint@example.com"]}`
+	rec := st.do(conditionalAccessRequest("demo", "owner@example.com", read.Version, next))
+	if rec.Code != http.StatusOK {
+		t.Fatalf("conditional change = %d %s", rec.Code, rec.Body.String())
+	}
+	nextVersion := accessPolicyVersion([]byte(next), false)
+	if rec.Header().Get("ETag") != nextVersion || !strings.Contains(rec.Body.String(), `"version":"\"sha256:`) {
+		t.Fatalf("change ETag = %q body %s, want %s", rec.Header().Get("ETag"), rec.Body.String(), nextVersion)
+	}
+
+	// A second editor still holding the first version is refused, told the
+	// current version, and the stored policy is untouched.
+	rec = st.do(conditionalAccessRequest("demo", "maint@example.com", read.Version, `{}`))
+	if rec.Code != http.StatusPreconditionFailed || rec.Header().Get("ETag") != nextVersion {
+		t.Fatalf("stale change = %d %s etag %q, want 412", rec.Code, rec.Body.String(), rec.Header().Get("ETag"))
+	}
+	if _, body := readAccess(t, st, "demo", "owner@example.com"); body.Version != nextVersion {
+		t.Fatalf("version after refused change = %s, want %s", body.Version, nextVersion)
+	}
+	if got := accessAuditCount(t, st, "demo", "maint@example.com", "success"); got != 0 {
+		t.Fatalf("refused change audited as success %d times", got)
+	}
+	if rec := st.do(siteRequest(http.MethodGet, "demo.sites.localhost:8443", "/")); rec.Code != http.StatusUnauthorized {
+		t.Fatalf("site after refused opening change = %d, want still restricted", rec.Code)
+	}
+
+	// A deploy that ships a new policy also invalidates an earlier read.
+	_, read = readAccess(t, st, "demo", "owner@example.com")
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	if rec := st.do(conditionalAccessRequest("demo", "owner@example.com", read.Version, `{}`)); rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("change after a policy deploy = %d %s, want 412", rec.Code, rec.Body.String())
+	}
+
+	// A stranger learns nothing from a precondition: authorization comes first.
+	if rec := st.do(conditionalAccessRequest("demo", "stranger@example.com", `"absent"`, `{}`)); rec.Code != http.StatusForbidden || rec.Header().Get("ETag") != "" {
+		t.Fatalf("stranger conditional change = %d etag %q, want 403 without a version", rec.Code, rec.Header().Get("ETag"))
+	}
+
+	// Only one strong version is a precondition; "*", weak and listed tags
+	// are refused before anything changes.
+	for _, header := range []string{`*`, `W/` + nextVersion, nextVersion + `, "absent"`, `sha256:abc`} {
+		if rec := st.do(conditionalAccessRequest("demo", "owner@example.com", header, `{}`)); rec.Code != http.StatusBadRequest {
+			t.Fatalf("If-Match %s = %d %s, want 400", header, rec.Code, rec.Body.String())
+		}
+	}
+
+	// Without If-Match the change is unconditional, as before.
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{}`)); rec.Code != http.StatusOK {
+		t.Fatalf("unconditional change = %d %s", rec.Code, rec.Body.String())
+	}
+
+	// A site without a policy file matches the absent version.
+	st.deploy(t, "owner@example.com", "open", "")
+	if rec := st.do(conditionalAccessRequest("open", "owner@example.com", `"absent"`, `{"allow":["owner@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("change from absent = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(conditionalAccessRequest("open", "owner@example.com", `"absent"`, `{}`)); rec.Code != http.StatusPreconditionFailed {
+		t.Fatalf("second change from absent = %d %s, want 412", rec.Code, rec.Body.String())
+	}
+}
+
+// Reading the policy does not wait for a site mutation, such as a long
+// deploy holding the site lock; If-Match catches a read taken mid-change.
+func TestSiteAccessReadDoesNotWaitForSiteLock(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	lock := st.srv.siteMutationLock("demo")
+	lock.Lock()
+	defer lock.Unlock()
+	done := make(chan int, 1)
+	go func() {
+		rec, _ := readAccess(t, st, "demo", "owner@example.com")
+		done <- rec.Code
+	}()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("read during a site mutation = %d, want 200", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read waited for the site mutation lock")
+	}
+}
+
+// An unparsable stored policy fails closed for visitors; the access API
+// reports it without echoing the file and lets a manager replace it.
+func TestSiteAccessReadUnreadablePolicy(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	ctx := context.Background()
+	broken := []byte(`{"allow":"secret@example.com"}`)
+	if err := st.srv.sites.Put(ctx, "demo", accessFileName, "application/json", broken); err != nil {
+		t.Fatal(err)
+	}
+	st.srv.policies.Invalidate("demo")
+
+	rec, body := readAccess(t, st, "demo", "owner@example.com")
+	if rec.Code != http.StatusOK || body.Readable || !body.Restricted || string(body.Policy) != "null" ||
+		body.Version != accessPolicyVersion(broken, false) || strings.Contains(rec.Body.String(), "secret@") {
+		t.Fatalf("unreadable read = %d %s", rec.Code, rec.Body.String())
+	}
+
+	mine := st.do(asForwardUser(sitesRequestFor("/api/sites/mine"), "owner@example.com"))
+	manageable := st.do(asForwardUser(sitesRequestFor("/api/sites/manageable"), "owner@example.com"))
+	for name, listing := range map[string]*httptest.ResponseRecorder{"mine": mine, "manageable": manageable} {
+		if listing.Code != http.StatusOK || !strings.Contains(listing.Body.String(), `"policy_unreadable":true`) {
+			t.Fatalf("%s listing = %d %s, want policy_unreadable", name, listing.Code, listing.Body.String())
+		}
+	}
+
+	if rec := st.do(conditionalAccessRequest("demo", "owner@example.com", body.Version, `{"allow":["owner@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("repair = %d %s", rec.Code, rec.Body.String())
+	}
+	if _, body := readAccess(t, st, "demo", "owner@example.com"); !body.Readable {
+		t.Fatalf("after repair = %+v", body)
+	}
+	if listing := st.do(asForwardUser(sitesRequestFor("/api/sites/mine"), "owner@example.com")); strings.Contains(listing.Body.String(), "policy_unreadable") {
+		t.Fatalf("listing after repair = %s", listing.Body.String())
+	}
+}
+
+// While a policy transition is pending the maintainers list is unknown, so
+// only the owner or an admin may read the policy, and it is marked pending.
+func TestSiteAccessReadDuringPendingTransition(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"],"maintainers":["maint@example.com"]}`)
+	ctx := context.Background()
+	generation, err := st.registry.SiteContentGeneration(ctx, "demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := st.registry.BeginPolicyTransition(ctx, "demo", generation, absentPolicyHash, "sha256:next"); err != nil {
+		t.Fatal(err)
+	}
+	for _, who := range []string{"maint@example.com", "stranger@example.com"} {
+		if rec, _ := readAccess(t, st, "demo", who); rec.Code != http.StatusForbidden {
+			t.Fatalf("%s read during transition = %d %s, want 403", who, rec.Code, rec.Body.String())
+		}
+	}
+	if rec, body := readAccess(t, st, "demo", "owner@example.com"); rec.Code != http.StatusOK || !body.Pending {
+		t.Fatalf("owner read during transition = %d %s, want pending", rec.Code, rec.Body.String())
+	}
+}
+
+// An access change records how the visitor and maintainer lists changed, so
+// the audit log is reviewable without the stored file.
+func TestSiteAccessAuditSummary(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", "")
+	if rec := st.do(accessRequest("demo", "owner@example.com", `{"allow":["owner@example.com","platform"],"maintainers":["maint@example.com"]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("access change = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := st.do(accessRequest("demo", "maint@example.com", `{"allow":[]}`)); rec.Code != http.StatusOK {
+		t.Fatalf("maintainer change = %d %s", rec.Code, rec.Body.String())
+	}
+	rows, err := st.registry.db.Query(`SELECT message FROM site_deploy_audit
+		WHERE site = 'demo' AND action = 'access' AND status = 'success' ORDER BY id`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var message string
+		if err := rows.Scan(&message); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, message)
+	}
+	want := []string{
+		"visitors none -> 2; maintainers none -> 1",
+		"visitors 2 -> 0; maintainers 1 -> none",
+	}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("audit messages = %q, want %q", got, want)
 	}
 }

@@ -52,10 +52,49 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(b'{"created": true}' if self.path == "/api/types" else b"ok")
 
+    # A stored access policy for /api/sites/<site>/access. Its version is a
+    # digest of the policy; race_after_get changes it right after that many
+    # GETs, like an edit made elsewhere between the CLI's read and write.
+    access_policy = {"allow": ["a@example.com"], "maintainers": ["m@example.com"], "download": False}
+    access_race = 0
+    access_puts = 0
+
+    @staticmethod
+    def access_version():
+        return '"sha256:' + str(abs(hash(json.dumps(Handler.access_policy, sort_keys=True)))) + '"'
+
+    def send_json(self, status, payload, etag=None):
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        if etag:
+            self.send_header("ETag", etag)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/api/sites/") and self.path.endswith("/access"):
+            version = Handler.access_version()
+            self.send_json(200, {"site": "deck", "readable": True, "restricted": "allow" in Handler.access_policy,
+                                 "pending": False, "policy": Handler.access_policy, "version": version}, version)
+            if Handler.access_race:
+                Handler.access_race -= 1
+                Handler.access_policy = {**Handler.access_policy, "allow": Handler.access_policy.get("allow", []) + ["late@example.com"]}
+            return
+        super().do_GET()
+
     def do_PUT(self):
         length = int(self.headers.get("content-length", "0"))
         Handler.last_body = self.rfile.read(length)
         Handler.last_path, Handler.last_method = self.path, "PUT"
+        if self.path.endswith("/access"):
+            Handler.access_puts += 1
+            if self.headers.get("If-Match") != Handler.access_version():
+                self.send_json(412, {"error": "changed", "version": Handler.access_version()})
+                return
+            Handler.access_policy = json.loads(Handler.last_body)
+            self.send_json(200, {"site": "deck", "version": Handler.access_version()})
+            return
         if "/fail/" in self.path:
             self.send_response(409)
             self.end_headers()
@@ -264,6 +303,42 @@ try:
         assert json.loads(Handler.last_body) == {"version": "1.2.0", "track": "major"}, Handler.last_body
         run(["./cli/spot", "types", "repin", "deck", "--track", "pinned"])
         assert json.loads(Handler.last_body) == {"track": "pinned"}, Handler.last_body
+
+        # spot access shows the policy, and edits it relative to what it
+        # read, keeping fields it does not manage.
+        shown = run(["./cli/spot", "access", "deck"]).stdout
+        assert '"maintainers"' in shown and '"version"' in shown, shown
+        run(["./cli/spot", "access", "deck", "--add", "b@example.com, ops", "--remove", "A@example.com",
+             "--add-maintainer", "x@example.com"])
+        assert Handler.access_policy == {"allow": ["b@example.com", "ops"], "download": False,
+                                         "maintainers": ["m@example.com", "x@example.com"]}, Handler.access_policy
+        run(["./cli/spot", "access", "deck", "--everyone", "--maintainers", ""])
+        assert Handler.access_policy == {"download": False, "maintainers": []}, Handler.access_policy
+        # A change made between the read and the write is not overwritten:
+        # the CLI reads again and reapplies its edits once.
+        Handler.access_policy, Handler.access_race, Handler.access_puts = {"allow": ["a@example.com"]}, 1, 0
+        run(["./cli/spot", "access", "deck", "--add", "b@example.com"])
+        assert Handler.access_puts == 2, Handler.access_puts
+        assert Handler.access_policy == {"allow": ["a@example.com", "late@example.com", "b@example.com"]}, Handler.access_policy
+        Handler.access_race, Handler.access_puts = 2, 0
+        racing = subprocess.run(["./cli/spot", "access", "deck", "--add", "c@example.com"], cwd=root, env=env,
+                                text=True, capture_output=True)
+        assert racing.returncode != 0 and "keeps changing" in racing.stderr and Handler.access_puts == 2, racing.stderr
+        Handler.access_race = 0
+        for bad in [["--add"], ["--bogus", "x"], ["--remove"]]:
+            failed = subprocess.run(["./cli/spot", "access", "deck", *bad], cwd=root, env=env,
+                                    text=True, capture_output=True)
+            assert failed.returncode != 0 and "error:" in failed.stderr, (bad, failed.stderr)
+        # Removal matches stored entries the way the server does, trimmed and
+        # case-insensitive, so padded entries cannot survive a --remove.
+        Handler.access_policy = {"allow": [" Alice@Example.com ", "bob@example.com"], "maintainers": [" Ops "]}
+        run(["./cli/spot", "access", "deck", "--remove", "alice@example.com", "--remove-maintainer", "ops",
+             "--add", " BOB@example.com "])
+        assert Handler.access_policy == {"allow": ["bob@example.com"], "maintainers": []}, Handler.access_policy
+        Handler.access_policy = {}
+        open_remove = subprocess.run(["./cli/spot", "access", "deck", "--remove", "a@example.com"], cwd=root, env=env,
+                                     text=True, capture_output=True)
+        assert open_remove.returncode != 0 and "open to everyone" in open_remove.stderr, open_remove.stderr
 
         # Every types command fails with the API: automation must not read a
         # refused upload, yank or repin as success.
