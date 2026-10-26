@@ -7,16 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-10-26
+
 ### Added
 
-- My spots can show and change a site's mesh access without a redeploy: the Mesh chip and a new Mesh access action open a dialog to switch between everyone and invited people, add or remove visitors and maintainers, and save at once. It warns before you remove people (their open pages lose access too) or lock yourself out, and never overwrites a change someone else saved meanwhile. (#31)
-- `spot access <site>` prints a site's access policy, and `--everyone`, `--allow`, `--add`, `--remove`, `--maintainers`, `--add-maintainer` and `--remove-maintainer` change it without a redeploy, keeping its other settings. (#31)
-- `GET /api/sites/{name}/access` returns a site's stored access policy and its version to the people who may change it, and `PUT /api/sites/{name}/access` accepts `If-Match` to refuse a change with `412` when the policy changed since it was read. (#31)
-- Site listings mark a site whose access policy cannot be read with `policy_unreadable`, and My spots shows it as "⚠ Mesh · unreadable" rather than as a site shared with nobody. (#31)
+- My spots can show and change a site's mesh access without a redeploy: the Mesh chip and a new Mesh access action open a dialog to switch between everyone and invited people, add or remove visitors and maintainers, and save at once. It warns before you remove people (their open pages lose access too) or lock yourself out, and never overwrites a change someone else saved meanwhile. (#32)
+- `spot access <site>` prints a site's access policy, and `--everyone`, `--allow`, `--add`, `--remove`, `--maintainers`, `--add-maintainer` and `--remove-maintainer` change it without a redeploy, keeping its other settings. (#32)
+- `GET /api/sites/{name}/access` returns a site's stored access policy and its version to the people who may change it, and `PUT /api/sites/{name}/access` accepts `If-Match` to refuse a change with `412` when the policy changed since it was read. (#32)
+- Site listings mark a site whose access policy cannot be read with `policy_unreadable`, and My spots shows it as "⚠ Mesh · unreadable" rather than as a site shared with nobody. (#32)
 
 ### Changed
 
-- Access-change audit rows record how many visitors and maintainers the policy had before and after.
+- Access-change audit rows record how many visitors and maintainers the policy had before and after. (#32)
+
+### Security
+
+- Built with Go 1.26.10, which fixes a `crypto/x509` vulnerability (GO-2026-6809) reachable from the server, and updated `golang.org/x/crypto`, `golang.org/x/net`, `golang.org/x/text` and `github.com/klauspost/compress` to releases that fix vulnerabilities reported in them. (#32)
 
 ## [0.8.1] - 2026-10-19
 
@@ -176,7 +182,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.8.1...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.9.0...HEAD
+[0.9.0]: https://github.com/melonamin/spot/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/melonamin/spot/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/melonamin/spot/compare/v0.7.0...v0.8.0
 [0.7.0]: https://github.com/melonamin/spot/compare/v0.6.3...v0.7.0

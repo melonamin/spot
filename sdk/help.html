@@ -865,18 +865,33 @@
             </div>
 
             <article class="release">
-              <p class="mini-label release-date"><span class="release-version">v0.6.0</span><time datetime="2026-09-29">September 29, 2026</time></p>
-              <h3>Private sites fit into your app.</h3>
-              <p class="release-summary">An embedding application can now sign viewers in to restricted spots, control which pages can frame them, and update site access without redeploying.</p>
+              <p class="mini-label release-date"><span class="release-version">v0.9.0</span><time datetime="2026-10-26">October 26, 2026</time></p>
+              <h3>Change who sees a spot without shipping it again.</h3>
+              <p class="release-summary">Mesh access is now a setting you can change. Open a spot to everyone on the mesh, invite specific people, or hand it to maintainers, from My spots or the command line, and the change applies right away.</p>
               <ul>
-                <li><strong>Sign viewers in from your application</strong> with short-lived, single-use delegated login tokens and per-site sessions.</li>
-                <li><strong>Change who can visit</strong> through the site access API without uploading the site again.</li>
-                <li><strong>Keep access rules across updates</strong> when a deploy omits <code>_access.json</code>; clear them explicitly when needed.</li>
-                <li><strong>Embed restricted sites safely</strong> with configurable frame ancestors and site-scoped upload access.</li>
+                <li><strong>Edit access from My spots.</strong> Click a spot’s Mesh chip, or Mesh access, to switch between everyone and invited people, and add or remove visitors and maintainers.</li>
+                <li><strong>No accidental lockouts.</strong> Spot warns before people lose access, including pages they already have open, and before you remove yourself, with a one-click “Add me”.</li>
+                <li><strong>No lost edits.</strong> If someone else changes a spot’s access while you are editing, Spot shows you their version instead of overwriting it.</li>
+                <li><strong>From the terminal too.</strong> <code>spot access my-spot</code> shows who can open it; <code>--add</code>, <code>--remove</code>, <code>--everyone</code> and the maintainer options change it.</li>
               </ul>
-              <a class="release-source" href="https://github.com/melonamin/spot/releases/tag/v0.6.0">Read the full v0.6.0 release →</a>
+              <a class="release-source" href="https://github.com/melonamin/spot/releases/tag/v0.9.0">Read the full v0.9.0 release →</a>
             </article>
             <div class="release-history" aria-label="Earlier releases">
+              <article class="older-release">
+                <div class="older-release-meta"><span>v0.8.0</span><time datetime="2026-10-18">October 18, 2026</time></div>
+                <div><h3>Spots got types.</h3><p>Admins can publish a reusable viewer once; each spot built on it ships only its data, and can stay on one version or follow new releases.</p></div>
+                <a href="https://github.com/melonamin/spot/releases/tag/v0.8.0">Full release →</a>
+              </article>
+              <article class="older-release">
+                <div class="older-release-meta"><span>v0.7.0</span><time datetime="2026-10-12">October 12, 2026</time></div>
+                <div><h3>Big galleries stay quick.</h3><p>The gallery and My spots load a page at a time, with search, tags and sorting done on the server, so large installs browse much faster.</p></div>
+                <a href="https://github.com/melonamin/spot/releases/tag/v0.7.0">Full release →</a>
+              </article>
+              <article class="older-release">
+                <div class="older-release-meta"><span>v0.6.0</span><time datetime="2026-09-29">September 29, 2026</time></div>
+                <div><h3>Private sites fit into your app.</h3><p>An embedding application could sign viewers in to restricted spots, control which pages can frame them, and update site access without redeploying.</p></div>
+                <a href="https://github.com/melonamin/spot/releases/tag/v0.6.0">Full release →</a>
+              </article>
               <article class="older-release">
                 <div class="older-release-meta"><span>v0.5.0</span><time datetime="2026-08-28">August 28, 2026</time></div>
                 <div><h3>Automation arrived. Reports grew up.</h3><p>Spot added scoped repository publishing keys, richer visual reports, reliable previews, and clearer publisher attribution.</p></div>
