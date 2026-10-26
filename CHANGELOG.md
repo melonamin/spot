@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-10-26
+
 ### Security
 
 - The `spot-caddy` image no longer trusts the compromised eMudhra intermediate CAs. It is built on Caddy 2.11.7 with Go 1.27.3, whose `crypto/x509` rejects them (GO-2026-6809), and refreshes the Alpine CA bundle at build time; the 0.9.0 image still accepted certificates forged under `EM DV TLS CA - G3B`, including for the Cloudflare API it calls with the DNS token in `tls-cloudflare` mode. (#33)
@@ -186,7 +188,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.9.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.9.1...HEAD
+[0.9.1]: https://github.com/melonamin/spot/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/melonamin/spot/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/melonamin/spot/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/melonamin/spot/compare/v0.7.0...v0.8.0
