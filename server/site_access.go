@@ -124,8 +124,8 @@ func (s *Server) accessRequestSite(w http.ResponseWriter, r *http.Request) (stri
 }
 
 // authorizeAccessManager answers whether actor may read and change site's
-// access policy, writing the error response when it may not. Call it under
-// the site mutation lock. While a policy transition is pending the
+// access policy, writing the error response when it may not. A change must
+// call it under the site mutation lock. While a policy transition is pending the
 // maintainers list is unknown, so only the owner or an admin passes. A
 // denial is passed to denied before the 403 is written.
 func authorizeAccessManager(w http.ResponseWriter, r *http.Request, manager siteAccessManager, site string, actor Identity, denied func(string)) (ManagementDecision, bool) {
@@ -183,14 +183,15 @@ func accessPolicyBody(policy *AccessPolicy) map[string]any {
 // may change it, with its version as an ETag for a conditional PUT. It reads
 // storage rather than the policy cache so the version names exact bytes. An
 // unparsable policy is reported as unreadable, and can then be replaced.
+//
+// It does not take the site mutation lock, which a deploy holds for its whole
+// upload: a read taken mid-change carries that moment's version, and a PUT
+// with If-Match refuses to apply an edit made from it.
 func (s *Server) handleSiteAccessRead(w http.ResponseWriter, r *http.Request) {
 	site, manager, actor, ok := s.accessRequestSite(w, r)
 	if !ok {
 		return
 	}
-	siteLock := s.siteMutationLock(site)
-	siteLock.Lock()
-	defer siteLock.Unlock()
 	if _, ok := authorizeAccessManager(w, r, manager, site, actor, nil); !ok {
 		return
 	}

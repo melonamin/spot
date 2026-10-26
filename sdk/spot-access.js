@@ -76,8 +76,8 @@
   // createPicker wires a search box, a result list, a chip list and the
   // Visitors/Maintainers tabs. options.identity() returns the signed-in
   // identity, offered first as "You"; options.onChange(kind) runs after an
-  // entry is toggled ('toggle') or the tab changes ('mode'); options.onEscape
-  // runs when Escape is pressed in the search box.
+  // entry is toggled ('toggle') or the tab changes ('mode') and must call
+  // render(); options.onEscape runs when Escape is pressed in the search box.
   const createPicker = (options) => {
     const { search, results, selected, visitorsTab, maintainersTab } = options;
     const idPrefix = options.idPrefix || 'access-opt-';
@@ -135,7 +135,6 @@
       lists[mode] = isSelected(entry)
         ? current().filter((item) => key(item) !== key(entry))
         : [...current(), entry];
-      render();
       onChange('toggle');
     };
 
@@ -235,7 +234,6 @@
     const setMode = (next) => {
       mode = next;
       activeIndex = 0;
-      render();
       onChange('mode');
     };
 

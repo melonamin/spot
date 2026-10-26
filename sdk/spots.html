@@ -1955,7 +1955,10 @@
         maintainersTab: $('mesh-access-maintainers'),
         idPrefix: 'mesh-access-opt-',
         identity: () => meIdentity,
-        onChange: () => renderMeshAccess(),
+        onChange: () => {
+          meshPicker.render();
+          renderMeshAccess();
+        },
       });
 
       const accessURL = (site) => '/api/sites/' + encodeURIComponent(site.name) + '/access';

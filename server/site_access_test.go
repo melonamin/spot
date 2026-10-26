@@ -7,6 +7,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func accessRequest(site, email, body string) *http.Request {
@@ -603,6 +604,29 @@ func TestSiteAccessIfMatch(t *testing.T) {
 	}
 	if rec := st.do(conditionalAccessRequest("open", "owner@example.com", `"absent"`, `{}`)); rec.Code != http.StatusPreconditionFailed {
 		t.Fatalf("second change from absent = %d %s, want 412", rec.Code, rec.Body.String())
+	}
+}
+
+// Reading the policy does not wait for a site mutation, such as a long
+// deploy holding the site lock; If-Match catches a read taken mid-change.
+func TestSiteAccessReadDoesNotWaitForSiteLock(t *testing.T) {
+	st := newLoginTestStack(t)
+	st.deploy(t, "owner@example.com", "demo", `{"allow":["owner@example.com"]}`)
+	lock := st.srv.siteMutationLock("demo")
+	lock.Lock()
+	defer lock.Unlock()
+	done := make(chan int, 1)
+	go func() {
+		rec, _ := readAccess(t, st, "demo", "owner@example.com")
+		done <- rec.Code
+	}()
+	select {
+	case code := <-done:
+		if code != http.StatusOK {
+			t.Fatalf("read during a site mutation = %d, want 200", code)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("read waited for the site mutation lock")
 	}
 }
 

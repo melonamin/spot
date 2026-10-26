@@ -329,6 +329,12 @@ try:
             failed = subprocess.run(["./cli/spot", "access", "deck", *bad], cwd=root, env=env,
                                     text=True, capture_output=True)
             assert failed.returncode != 0 and "error:" in failed.stderr, (bad, failed.stderr)
+        # Removal matches stored entries the way the server does, trimmed and
+        # case-insensitive, so padded entries cannot survive a --remove.
+        Handler.access_policy = {"allow": [" Alice@Example.com ", "bob@example.com"], "maintainers": [" Ops "]}
+        run(["./cli/spot", "access", "deck", "--remove", "alice@example.com", "--remove-maintainer", "ops",
+             "--add", " BOB@example.com "])
+        assert Handler.access_policy == {"allow": ["bob@example.com"], "maintainers": []}, Handler.access_policy
         Handler.access_policy = {}
         open_remove = subprocess.run(["./cli/spot", "access", "deck", "--remove", "a@example.com"], cwd=root, env=env,
                                      text=True, capture_output=True)

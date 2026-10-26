@@ -1707,18 +1707,21 @@ policy = body.get("policy") or {}
 if body.get("readable") is False:
     print("warning: the stored policy is unreadable; it is replaced, and any ai, slack or download settings reset", file=sys.stderr)
     policy = {"allow": []}
+# Entries match the way the server matches them: trimmed, case-insensitive.
+def norm(v):
+    return v.strip().lower()
 def items(raw):
     return [v.strip() for v in raw.split(",") if v.strip()]
 def plus(values, add):
-    out, seen = list(values), {v.lower() for v in values}
+    out, seen = list(values), {norm(v) for v in values}
     for v in add:
-        if v.lower() not in seen:
-            seen.add(v.lower())
+        if norm(v) not in seen:
+            seen.add(norm(v))
             out.append(v)
     return out
 def without(values, drop):
-    drop = {v.lower() for v in drop}
-    return [v for v in values if v.lower() not in drop]
+    drop = {norm(v) for v in drop}
+    return [v for v in values if norm(v) not in drop]
 for flag, raw in ops:
     if flag == "--everyone":
         policy.pop("allow", None)
