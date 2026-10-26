@@ -456,9 +456,21 @@ or `"slack":"visitors"` only when permitted visitors should spend the
 deployment's server-side credentials. Add `"download":false` to disable source
 ZIP downloads while keeping normal page access unchanged.
 
-A redeploy without `_access.json` keeps the site's stored policy. To open a
-restricted site, deploy an `_access.json` without `allow`, or remove the
-stored policy with `spot deploy --replace-access`.
+A redeploy without `_access.json` keeps the site's stored policy. To change
+access without redeploying, use `spot access`:
+
+```sh
+spot access <site-name>                                 # print the policy
+spot access <site-name> --add alice@corp.com,team-ops   # also allow these
+spot access <site-name> --remove alice@corp.com         # stop allowing her
+spot access <site-name> --allow alice@corp.com          # only she may view
+spot access <site-name> --everyone                      # open to the mesh
+spot access <site-name> --add-maintainer bob@corp.com   # or --maintainers, --remove-maintainer
+```
+
+Changes apply at once, keep the policy's other settings, and never overwrite
+an edit made elsewhere in the meantime. People can do the same from My spots
+(Mesh access). `spot deploy --replace-access` removes the stored policy.
 
 The first deploy of a site claims an immutable owner. Later deploys, including
 changes to `_access.json`, require that owner, a platform admin, or a maintainer
