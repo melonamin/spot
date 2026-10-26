@@ -36,26 +36,30 @@ type manageableSiteAdmin interface {
 }
 
 type ownedSiteJSON struct {
-	Name            string          `json:"name"`
-	URL             string          `json:"url"`
-	Title           string          `json:"title"`
-	Description     string          `json:"description"`
-	Tags            []string        `json:"tags"`
-	DownloadAllowed bool            `json:"download_allowed"`
-	CreatedAt       time.Time       `json:"created_at"`
-	UpdatedAt       time.Time       `json:"updated_at"`
-	FileCount       int             `json:"file_count"`
-	TotalBytes      int64           `json:"total_bytes"`
-	Restricted      bool            `json:"restricted"`
-	AllowCount      int             `json:"allow_count"`
-	Allow           []string        `json:"allow"`
-	Cloudflare      any             `json:"cloudflare,omitempty"`
-	Owner           string          `json:"owner,omitempty"`
-	OwnerEmail      string          `json:"owner_email,omitempty"`
-	ManagementRole  string          `json:"management_role,omitempty"`
-	State           SiteState       `json:"state,omitempty"`
-	LastDeploy      *lastDeployJSON `json:"last_deploy,omitempty"`
-	Type            *siteTypeJSON   `json:"type,omitempty"`
+	Name            string    `json:"name"`
+	URL             string    `json:"url"`
+	Title           string    `json:"title"`
+	Description     string    `json:"description"`
+	Tags            []string  `json:"tags"`
+	DownloadAllowed bool      `json:"download_allowed"`
+	CreatedAt       time.Time `json:"created_at"`
+	UpdatedAt       time.Time `json:"updated_at"`
+	FileCount       int       `json:"file_count"`
+	TotalBytes      int64     `json:"total_bytes"`
+	Restricted      bool      `json:"restricted"`
+	AllowCount      int       `json:"allow_count"`
+	Allow           []string  `json:"allow"`
+	// PolicyUnreadable marks a site whose _access.json cannot be read or
+	// parsed; it is listed as restricted to nobody because serving fails
+	// closed.
+	PolicyUnreadable bool            `json:"policy_unreadable,omitempty"`
+	Cloudflare       any             `json:"cloudflare,omitempty"`
+	Owner            string          `json:"owner,omitempty"`
+	OwnerEmail       string          `json:"owner_email,omitempty"`
+	ManagementRole   string          `json:"management_role,omitempty"`
+	State            SiteState       `json:"state,omitempty"`
+	LastDeploy       *lastDeployJSON `json:"last_deploy,omitempty"`
+	Type             *siteTypeJSON   `json:"type,omitempty"`
 }
 
 type lastDeployJSON struct {
@@ -118,6 +122,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			policy, policyErr := s.policyForSite(r.Context(), site.Name)
 			entry.Restricted, entry.AllowCount, entry.DownloadAllowed = policySummary(policy, policyErr)
 			entry.Allow = allowListFor(policy, policyErr)
+			entry.PolicyUnreadable = policyErr != nil
 			contentHash := site.ContentHash
 			if site.ContentHashUncertain {
 				contentHash = ""
@@ -250,20 +255,21 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 			contentHash = ""
 		}
 		out[i] = ownedSiteJSON{
-			Name:            site.Name,
-			OwnerEmail:      site.OwnerEmail,
-			URL:             s.siteURL(r, site.Name),
-			Title:           site.Title,
-			Description:     site.Description,
-			Tags:            cloneSiteTags(site.Tags),
-			DownloadAllowed: downloadAllowed,
-			CreatedAt:       site.CreatedAt,
-			UpdatedAt:       site.UpdatedAt,
-			FileCount:       site.FileCount,
-			TotalBytes:      site.TotalBytes,
-			Restricted:      restricted,
-			AllowCount:      allowCount,
-			Allow:           allowListFor(policy, policyErr),
+			Name:             site.Name,
+			OwnerEmail:       site.OwnerEmail,
+			URL:              s.siteURL(r, site.Name),
+			Title:            site.Title,
+			Description:      site.Description,
+			Tags:             cloneSiteTags(site.Tags),
+			DownloadAllowed:  downloadAllowed,
+			CreatedAt:        site.CreatedAt,
+			UpdatedAt:        site.UpdatedAt,
+			FileCount:        site.FileCount,
+			TotalBytes:       site.TotalBytes,
+			Restricted:       restricted,
+			AllowCount:       allowCount,
+			Allow:            allowListFor(policy, policyErr),
+			PolicyUnreadable: policyErr != nil,
 			Cloudflare: s.cloudflareSummaryForSite(
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),

@@ -987,11 +987,30 @@ func (s *Server) storedPolicyBytes(ctx context.Context, site string) ([]byte, bo
 }
 
 func (s *Server) commitPolicyObject(ctx context.Context, site string, generation int64, next []byte, remove bool) error {
+	return s.commitPolicyObjectIf(ctx, site, generation, next, remove, "")
+}
+
+// policyVersionMismatchError reports that the stored policy no longer has
+// the digest a conditional change expected; Current is the stored digest.
+type policyVersionMismatchError struct{ Current string }
+
+func (e *policyVersionMismatchError) Error() string {
+	return "stored policy digest is " + e.Current
+}
+
+// commitPolicyObjectIf is commitPolicyObject that, when expected is not
+// empty, first requires the stored policy's digest to equal it. The digest
+// comes from the same read that fences the transition, so the caller's
+// site mutation lock makes the check and the write one step.
+func (s *Server) commitPolicyObjectIf(ctx context.Context, site string, generation int64, next []byte, remove bool, expected string) error {
 	previous, previousAbsent, err := s.storedPolicyBytes(ctx, site)
 	if err != nil {
 		return err
 	}
 	previousHash := policyObjectHash(previous, previousAbsent)
+	if expected != "" && expected != previousHash {
+		return &policyVersionMismatchError{Current: previousHash}
+	}
 	nextHash := policyObjectHash(next, remove)
 	registry, fenced := s.deployAuth.(policyTransitionRegistry)
 	if fenced {

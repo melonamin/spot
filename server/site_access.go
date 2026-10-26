@@ -6,6 +6,8 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"strconv"
+	"strings"
 )
 
 const maxAccessPolicyBody = 64 << 10
@@ -28,35 +30,220 @@ func allowListFor(policy *AccessPolicy, err error) []string {
 	return policyAllowList(policy)
 }
 
-// handleSiteAccess replaces a site's _access.json without redeploying its
-// content. It follows the deploy path's fencing: the site mutation lock, a
-// management decision, a pending-transition reconcile, and a generation-fenced
-// policy commit.
-func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
+// siteAccessManager is the management decision the access API needs from
+// the site registry; siteContentGenerations fences its writes.
+type siteAccessManager interface {
+	ManagementDecision(context.Context, string, Identity) (ManagementDecision, error)
+}
+
+type siteContentGenerations interface {
+	SiteContentGeneration(context.Context, string) (int64, error)
+}
+
+// accessPolicyVersion is the strong entity tag of a stored policy object: its
+// digest, or the absent-policy sentinel when the site has no _access.json.
+func accessPolicyVersion(data []byte, absent bool) string {
+	return quoteETag(policyObjectHash(data, absent))
+}
+
+func quoteETag(digest string) string { return `"` + digest + `"` }
+
+// parseIfMatch returns the policy digest an If-Match header names, "" when
+// the header is absent. Only one strong tag is accepted: "*" and weak or
+// listed tags have no meaning for a policy that may legitimately be absent.
+func parseIfMatch(header string) (string, bool) {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return "", true
+	}
+	if len(header) < 3 || header[0] != '"' || header[len(header)-1] != '"' {
+		return "", false
+	}
+	digest := header[1 : len(header)-1]
+	if strings.ContainsAny(digest, `", `) {
+		return "", false
+	}
+	return digest, true
+}
+
+// policyListChange describes how a policy list changed for the audit log.
+func policyListChange(name string, before, after *AccessPolicy, list func(*AccessPolicy) []string, present func(*AccessPolicy) bool) string {
+	describe := func(p *AccessPolicy) string {
+		if p == nil || !present(p) {
+			return "none"
+		}
+		return strconv.Itoa(len(list(p)))
+	}
+	return name + " " + describe(before) + " -> " + describe(after)
+}
+
+// accessChangeSummary is the audit message for an access change: how many
+// visitor and maintainer entries the policy had before and after, with
+// "none" for an open site or no maintainers list, and "unreadable" when the
+// previous policy could not be read.
+func accessChangeSummary(before *AccessPolicy, beforeErr error, after *AccessPolicy) string {
+	if beforeErr != nil {
+		before = nil
+	}
+	allow := policyListChange("visitors", before, after,
+		func(p *AccessPolicy) []string { return p.Allow }, (*AccessPolicy).RestrictsAccess)
+	maintainers := policyListChange("maintainers", before, after,
+		func(p *AccessPolicy) []string { return p.Maintainers }, func(p *AccessPolicy) bool { return p.Maintainers != nil })
+	summary := allow + "; " + maintainers
+	if beforeErr != nil {
+		summary = "previous policy unreadable; " + summary
+	}
+	return summary
+}
+
+// accessRequestSite validates the common preconditions of the access API and
+// returns the site name, the management lookup, and the authenticated actor.
+func (s *Server) accessRequestSite(w http.ResponseWriter, r *http.Request) (string, siteAccessManager, Identity, bool) {
 	if !s.requireSitesAPI(w, r) {
-		return
+		return "", nil, Identity{}, false
 	}
 	if s.sites == nil {
 		httpError(w, http.StatusServiceUnavailable, "site store not configured")
-		return
+		return "", nil, Identity{}, false
 	}
 	site := r.PathValue("name")
 	if !siteNameRe.MatchString(site) {
 		httpError(w, http.StatusBadRequest, "invalid site name")
-		return
+		return "", nil, Identity{}, false
 	}
-	manager, ok := s.siteManager.(interface {
-		ManagementDecision(context.Context, string, Identity) (ManagementDecision, error)
-	})
-	generations, hasGenerations := s.siteAdmin.(interface {
-		SiteContentGeneration(context.Context, string) (int64, error)
-	})
-	if !ok || !hasGenerations {
+	manager, ok := s.siteManager.(siteAccessManager)
+	if !ok {
 		httpError(w, http.StatusServiceUnavailable, "site access management is not configured")
-		return
+		return "", nil, Identity{}, false
 	}
 	actor, ok := s.requireDeployIdentity(w, r)
 	if !ok {
+		return "", nil, Identity{}, false
+	}
+	return site, manager, actor, true
+}
+
+// authorizeAccessManager answers whether actor may read and change site's
+// access policy, writing the error response when it may not. Call it under
+// the site mutation lock. While a policy transition is pending the
+// maintainers list is unknown, so only the owner or an admin passes. A
+// denial is passed to denied before the 403 is written.
+func authorizeAccessManager(w http.ResponseWriter, r *http.Request, manager siteAccessManager, site string, actor Identity, denied func(string)) (ManagementDecision, bool) {
+	decision, err := manager.ManagementDecision(r.Context(), site, actor)
+	denial := "actor is not the site owner, a maintainer, or a platform admin"
+	if errors.Is(err, ErrManagementPolicyUnresolved) && decision.State == SiteStateActive {
+		decision, err = ManagementDecision{State: decision.State}, nil
+		denial = "actor is not the site owner or a platform admin, and a pending policy transition hides the maintainers list"
+	}
+	switch {
+	case errors.Is(err, ErrSiteNotFound) || (err == nil && decision.State != SiteStateActive):
+		httpError(w, http.StatusNotFound, "no active site named "+site)
+		return decision, false
+	case err != nil:
+		log.Printf("access %s: authorize: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not authorize access management")
+		return decision, false
+	case !decision.Allowed:
+		if denied != nil {
+			denied(denial)
+		}
+		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can manage this site's access")
+		return decision, false
+	}
+	return decision, true
+}
+
+// accessPolicyBody is a stored policy as the access API returns it. Allow is
+// present only when the policy restricts visitors, so an empty list still
+// means nobody may view the site.
+func accessPolicyBody(policy *AccessPolicy) map[string]any {
+	body := map[string]any{}
+	if policy == nil {
+		return body
+	}
+	if policy.RestrictsAccess() {
+		body["allow"] = policyAllowList(policy)
+	}
+	if policy.Maintainers != nil {
+		body["maintainers"] = append([]string{}, policy.Maintainers...)
+	}
+	if policy.AI != "" {
+		body["ai"] = policy.AI
+	}
+	if policy.Slack != "" {
+		body["slack"] = policy.Slack
+	}
+	if policy.Download != nil {
+		body["download"] = *policy.Download
+	}
+	return body
+}
+
+// handleSiteAccessRead returns a site's stored _access.json to someone who
+// may change it, with its version as an ETag for a conditional PUT. It reads
+// storage rather than the policy cache so the version names exact bytes. An
+// unparsable policy is reported as unreadable, and can then be replaced.
+func (s *Server) handleSiteAccessRead(w http.ResponseWriter, r *http.Request) {
+	site, manager, actor, ok := s.accessRequestSite(w, r)
+	if !ok {
+		return
+	}
+	siteLock := s.siteMutationLock(site)
+	siteLock.Lock()
+	defer siteLock.Unlock()
+	if _, ok := authorizeAccessManager(w, r, manager, site, actor, nil); !ok {
+		return
+	}
+	// A pending transition means the stored bytes may be either side of an
+	// interrupted change; the next PUT reconciles it before writing.
+	pending := false
+	if registry, ok := s.deployAuth.(pendingPolicyTransitionRegistry); ok {
+		transition, err := registry.PendingPolicyTransition(r.Context(), site)
+		if err != nil {
+			log.Printf("access %s: read policy transition: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's access state")
+			return
+		}
+		pending = transition.Generation != 0
+	}
+	data, absent, err := s.storedPolicyBytes(r.Context(), site)
+	if err != nil {
+		log.Printf("access %s: read policy: %v", site, err)
+		httpError(w, http.StatusInternalServerError, "could not read "+accessFileName)
+		return
+	}
+	version := accessPolicyVersion(data, absent)
+	body := map[string]any{"site": site, "version": version, "pending": pending}
+	if absent {
+		body["readable"], body["restricted"], body["policy"] = true, false, accessPolicyBody(nil)
+	} else if policy, parseErr := parseAccessPolicy(site, data); parseErr != nil {
+		// An unreadable policy denies every visitor; say so without
+		// echoing the file, and let the manager replace it.
+		body["readable"], body["restricted"], body["policy"] = false, true, nil
+		body["error"] = parseErr.Error()
+	} else {
+		body["readable"], body["restricted"], body["policy"] = true, policy.RestrictsAccess(), accessPolicyBody(policy)
+	}
+	w.Header().Set("ETag", version)
+	w.Header().Set("Cache-Control", "no-store")
+	writeJSON(w, http.StatusOK, body)
+}
+
+// handleSiteAccess replaces a site's _access.json without redeploying its
+// content. It follows the deploy path's fencing: the site mutation lock, a
+// management decision, a pending-transition reconcile, and a generation-fenced
+// policy commit. An If-Match header makes the change conditional on the
+// stored policy still having the version the caller read; every writer of
+// _access.json holds the site mutation lock, and the check uses the read
+// that fences the commit, so it cannot race.
+func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
+	site, manager, actor, ok := s.accessRequestSite(w, r)
+	if !ok {
+		return
+	}
+	generations, ok := s.siteAdmin.(siteContentGenerations)
+	if !ok {
+		httpError(w, http.StatusServiceUnavailable, "site access management is not configured")
 		return
 	}
 	body, err := io.ReadAll(http.MaxBytesReader(w, r.Body, maxAccessPolicyBody))
@@ -69,32 +256,23 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid "+accessFileName+": "+err.Error())
 		return
 	}
+	expected, ok := parseIfMatch(r.Header.Get("If-Match"))
+	if !ok {
+		httpError(w, http.StatusBadRequest, "If-Match must be one quoted version from GET /api/sites/{name}/access")
+		return
+	}
 
 	siteLock := s.siteMutationLock(site)
 	siteLock.Lock()
 	defer siteLock.Unlock()
 	// Authorize before reconciling, so a caller who cannot manage the site
-	// learns nothing about a pending policy transition. While one is pending
-	// the maintainers list is unknown, so only the owner or an admin passes.
-	decision, err := manager.ManagementDecision(r.Context(), site, actor)
-	denial := "actor is not the site owner, a maintainer, or a platform admin"
-	if errors.Is(err, ErrManagementPolicyUnresolved) && decision.State == SiteStateActive {
-		decision, err = ManagementDecision{State: decision.State}, nil
-		denial = "actor is not the site owner or a platform admin, and a pending policy transition hides the maintainers list"
-	}
-	switch {
-	case errors.Is(err, ErrSiteNotFound) || (err == nil && decision.State != SiteStateActive):
-		httpError(w, http.StatusNotFound, "no active site named "+site)
-		return
-	case err != nil:
-		log.Printf("access %s: authorize: %v", site, err)
-		httpError(w, http.StatusInternalServerError, "could not authorize the access change")
-		return
-	case !decision.Allowed:
+	// learns nothing about a pending policy transition.
+	decision, ok := authorizeAccessManager(w, r, manager, site, actor, func(denial string) {
 		s.recordDeployAudit(r, DeployAuditEvent{
 			Site: site, Actor: actor, Action: "access", Status: "denied", Message: denial,
 		})
-		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can change this site's access")
+	})
+	if !ok {
 		return
 	}
 	if err := s.reconcilePolicyTransition(r.Context(), site, DeployPrincipal{Actor: actor}); err != nil {
@@ -115,7 +293,17 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not read the site's content generation")
 		return
 	}
-	if err := s.commitPolicyObject(r.Context(), site, generation, body, false); err != nil {
+	if err := s.commitPolicyObjectIf(r.Context(), site, generation, body, false, expected); err != nil {
+		var mismatch *policyVersionMismatchError
+		if errors.As(err, &mismatch) {
+			current := quoteETag(mismatch.Current)
+			w.Header().Set("ETag", current)
+			writeJSON(w, http.StatusPreconditionFailed, map[string]string{
+				"error":   "the site's access changed since it was read; reload and try again",
+				"version": current,
+			})
+			return
+		}
 		if errors.Is(err, ErrPolicyTransitionConflict) {
 			httpError(w, http.StatusConflict, "the site changed while its access was being updated; retry")
 			return
@@ -139,11 +327,16 @@ func (s *Server) handleSiteAccess(w http.ResponseWriter, r *http.Request) {
 	s.recordDeployAudit(r, DeployAuditEvent{
 		Site: site, Actor: actor, Action: "access", Status: "success",
 		AuthorizedAs: decision.Role, ContentGeneration: generation,
+		Message: accessChangeSummary(current, currentErr, next),
 	})
+	version := accessPolicyVersion(body, false)
+	w.Header().Set("ETag", version)
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":       site,
 		"allow":      policyAllowList(next),
 		"restricted": next.RestrictsAccess(),
+		"policy":     accessPolicyBody(next),
+		"version":    version,
 	})
 }
 
