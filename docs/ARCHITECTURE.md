@@ -286,6 +286,18 @@ Deploy invariants:
   removed. The exception is `_access.json`: an update that omits it keeps the
   stored policy (which may come from the access API) unless the deploy sends
   `preserve_access=false`.
+- `mode=merge` writes the upload into an active site and keeps every other
+  file (a stored `_access.json` still goes with `preserve_access=false`). It
+  lists and reads the kept files under the site lock, before any storage
+  mutation, to refuse shape collisions and to apply the file-count and size
+  limits to the merged site; its audit row records the merged site's count,
+  size and content hash, which listings and the Cloudflare staleness check
+  read.
+- Every site has a deploy version (`sites.deploy_version`), stamped when a
+  deploy completes and when a repin or follow move changes the pinned version,
+  and published as the `_spot_deploys` event `version`. `if_version` is
+  compared with it under the site lock, after authorization.
+- Audit rows record the deploy `mode` (`replace` or `merge`).
 - Deploy audit rows are recorded for success, failure, and denied attempts.
   They include the authentication method and, for publishing keys, the key ID
   and human-readable publisher name. Public gallery responses omit this data.

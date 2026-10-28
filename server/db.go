@@ -112,6 +112,21 @@ func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
 	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS sites_type_idx ON sites (type_name, type_track)`); err != nil {
 		return fmt.Errorf("create sites type index: %w", err)
 	}
+	if err := ensureColumn(ctx, db, "sites", "deploy_version",
+		`ALTER TABLE sites ADD COLUMN deploy_version text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// Sites last deployed before versions were stored get one from updated_at,
+	// in the format new versions use, so if_version works for them too.
+	if _, err := db.ExecContext(ctx, `UPDATE sites
+		SET deploy_version = strftime('%Y%m%dT%H%M', updated_at) || strftime('%f', updated_at) || '000000Z'
+		WHERE deploy_version = ''`); err != nil {
+		return fmt.Errorf("backfill site deploy versions: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "mode",
+		`ALTER TABLE site_deploy_audit ADD COLUMN mode text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	if err := ensureColumn(ctx, db, "site_deploy_audit", "content_hash",
 		`ALTER TABLE site_deploy_audit ADD COLUMN content_hash text NOT NULL DEFAULT ''`); err != nil {
 		return err

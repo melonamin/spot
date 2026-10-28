@@ -35,6 +35,8 @@ CREATE TABLE IF NOT EXISTS sites (
     type_name text NOT NULL DEFAULT '',
     type_version text NOT NULL DEFAULT '',
     type_track text NOT NULL DEFAULT '',
+    -- Opaque stamp of the last change that published a _spot_deploys event.
+    deploy_version text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
@@ -77,6 +79,7 @@ CREATE TABLE IF NOT EXISTS site_deploy_audit (
     auth_method text NOT NULL DEFAULT '',
     publisher_key_id text NOT NULL DEFAULT '',
     publisher_name text NOT NULL DEFAULT '',
+    mode text NOT NULL DEFAULT '',
     message text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );

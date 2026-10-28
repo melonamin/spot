@@ -69,6 +69,8 @@ type typeFollowMoveJSON struct {
 	Site string `json:"site"`
 	From string `json:"from"`
 	To   string `json:"to"`
+	// deployVersion is the site's deploy version after the move.
+	deployVersion string
 }
 
 func typeVersionDetail(v *siteTypeVersion) typeVersionDetailJSON {
@@ -596,7 +598,8 @@ func (s *Server) followSiteLocked(r *http.Request, site string, actor Identity) 
 		return nil, err
 	}
 	next := siteTypeRef{Name: current.Name, Version: candidate.Version, Track: typeTrackMajor}
-	if err := s.types.Repin(ctx, site, current, next); err != nil {
+	deployVersion, err := s.types.Repin(ctx, site, current, next)
+	if err != nil {
 		if errors.Is(err, ErrTypePinChanged) {
 			return nil, nil
 		}
@@ -606,11 +609,6 @@ func (s *Server) followSiteLocked(r *http.Request, site string, actor Identity) 
 		Site: site, Actor: actor, Action: "type", Status: "success",
 		Message: "followed " + current.String() + " to " + next.String(),
 	})
-	s.publishSiteTypeEvent(r, site, next)
-	return &typeFollowMoveJSON{Site: site, From: current.Version, To: next.Version}, nil
-}
-
-func (s *Server) publishSiteTypeEvent(r *http.Request, site string, ref siteTypeRef) {
-	version := time.Now().UTC().Format("20060102T150405.000000000Z")
-	s.publishDeployEvent(site, version, s.siteURL(r, site), ref.String())
+	s.publishDeployEvent(site, deployVersion, s.siteURL(r, site), next.String())
+	return &typeFollowMoveJSON{Site: site, From: current.Version, To: next.Version, deployVersion: deployVersion}, nil
 }

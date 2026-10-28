@@ -68,6 +68,8 @@ type DeployAuthorization struct {
 	// values before authorization, restored when the deploy is cancelled.
 	PreviousContentGeneration int64
 	PreviousUpdatedAt         string
+	// PreviousVersion is the site's deploy version before this deploy.
+	PreviousVersion string
 }
 
 type DeployAuditEvent struct {
@@ -84,6 +86,8 @@ type DeployAuditEvent struct {
 	AuthMethod        string
 	PublisherKeyID    string
 	PublisherName     string
+	// Mode is the deploy's mode (replace or merge); empty for other actions.
+	Mode string
 }
 
 type SiteRegistry struct {
@@ -109,7 +113,7 @@ type deployAuthorizationCanceler interface {
 }
 
 type deployCompleter interface {
-	CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization) error
+	CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization, version string) error
 }
 
 type SiteRecord struct {
@@ -127,6 +131,9 @@ type SiteRecord struct {
 	// Type is the site's pin and TypeTitle the pinned version's title.
 	Type      siteTypeRef
 	TypeTitle string
+	// DeployVersion is the opaque stamp of the site's last deploy, repin or
+	// follow move, the version of its latest _spot_deploys event.
+	DeployVersion string
 }
 
 func NewSiteRegistry(db *sql.DB, admins *AccessPolicy) *SiteRegistry {
@@ -265,6 +272,7 @@ func (r *SiteRegistry) authorizeDeploy(ctx context.Context, site string, actor I
 			Action: action, AuthorizedAs: role, PreviousState: snapshot.State,
 			ContentGeneration: generation, ContentWasDirty: snapshot.ContentDirty,
 			PreviousContentGeneration: snapshot.ContentGeneration, PreviousUpdatedAt: current.UpdatedAtText,
+			PreviousVersion: current.DeployVersion,
 		}, nil
 	}
 	return DeployAuthorization{}, fmt.Errorf("authorize deploy for %s: site changed concurrently", site)
@@ -293,11 +301,11 @@ func (r *SiteRegistry) readDeployAuthorizationRecord(ctx context.Context, q inte
 	var record deployAuthorizationRecord
 	err := q.QueryRowContext(ctx, `SELECT name, owner_email, owner_peer_ip, owner_name, state,
 		policy_transition_generation, content_dirty, content_generation, content_external_mutation,
-		CAST(updated_at AS TEXT)
+		CAST(updated_at AS TEXT), deploy_version
 		FROM sites WHERE name = ?`, site).Scan(
 		&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.State,
 		&record.PolicyTransitionGeneration, &record.ContentDirty, &record.ContentGeneration, &record.ExternalMutationActive,
-		&record.UpdatedAtText,
+		&record.UpdatedAtText, &record.DeployVersion,
 	)
 	if err != nil {
 		return deployAuthorizationRecord{}, err
@@ -373,6 +381,7 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 		event.AuthMethod,
 		event.PublisherKeyID,
 		event.PublisherName,
+		event.Mode,
 		event.Message,
 	)
 	if err != nil {
@@ -402,11 +411,11 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 	return nil
 }
 
-func (r *SiteRegistry) CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'active'
+func (r *SiteRegistry) CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization, version string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'active', deploy_version = ?
 		WHERE name = ? AND content_generation = ? AND content_external_mutation = 0
 		  AND policy_transition_generation = 0
-		  AND state IN ('active', 'provisioning')`, site, authz.ContentGeneration)
+		  AND state IN ('active', 'provisioning')`, version, site, authz.ContentGeneration)
 	if err != nil {
 		return fmt.Errorf("complete deploy for %s: %w", site, err)
 	}
@@ -539,7 +548,7 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle,
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle, &site.DeployVersion,
 			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
 			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan manageable site candidate: %w", err)
@@ -609,7 +618,7 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle,
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle, &site.DeployVersion,
 			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
 			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan owned site: %w", err)
@@ -977,6 +986,20 @@ func (r *SiteRegistry) SiteContentGeneration(ctx context.Context, site string) (
 	return generation, nil
 }
 
+// SiteVersion returns an active site's deploy version; empty for any other
+// site.
+func (r *SiteRegistry) SiteVersion(ctx context.Context, site string) (string, error) {
+	var version string
+	err := r.db.QueryRowContext(ctx, `SELECT deploy_version FROM sites WHERE name = ? AND state = 'active'`, site).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read deploy version for %s: %w", site, err)
+	}
+	return version, nil
+}
+
 type siteRecordScanner interface {
 	Scan(dest ...any) error
 }
@@ -985,7 +1008,7 @@ func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	var rawTags string
 	if err := row.Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName,
 		&record.Title, &record.Description, &rawTags, &record.State, &record.PolicyTransitionGeneration, &record.CreatedAt, &record.UpdatedAt,
-		&record.Type.Name, &record.Type.Version, &record.Type.Track, &record.TypeTitle); err != nil {
+		&record.Type.Name, &record.Type.Version, &record.Type.Track, &record.TypeTitle, &record.DeployVersion); err != nil {
 		return err
 	}
 	record.Tags = decodeSiteTags(rawTags)
@@ -997,10 +1020,11 @@ func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	return nil
 }
 
-// siteTypeColumnsSQL selects a site row's pin and the pinned version's
-// title, in SiteRecord scan order.
+// siteTypeColumnsSQL selects a site row's pin, the pinned version's title
+// and the deploy version, in SiteRecord scan order.
 const siteTypeColumnsSQL = `type_name, type_version, type_track,
-	COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = sites.type_name AND v.version = sites.type_version), '')`
+	COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = sites.type_name AND v.version = sites.type_version), ''),
+	deploy_version`
 
 const (
 	insertSiteSQL = `INSERT INTO sites
@@ -1025,8 +1049,8 @@ const (
 	insertDeployAuditSQL = `INSERT INTO site_deploy_audit
 		(site, actor_email, actor_peer_ip, actor_name, actor_groups,
 		 action, status, file_count, total_bytes, content_hash, authorized_as,
-		 auth_method, publisher_key_id, publisher_name, message)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 auth_method, publisher_key_id, publisher_name, mode, message)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
 	// Access-only changes are audited as action 'access' and type pin
 	// changes as 'type'; they never describe deployed content, so the
@@ -1035,6 +1059,7 @@ const (
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
 			s.type_name, s.type_version, s.type_track,
 			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
+			s.deploy_version,
 			COALESCE((SELECT file_count FROM site_deploy_audit
 				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
@@ -1066,6 +1091,7 @@ const (
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
 			s.type_name, s.type_version, s.type_track,
 			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
+			CASE WHEN s.state = 'active' THEN s.deploy_version ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT file_count FROM site_deploy_audit
 				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,

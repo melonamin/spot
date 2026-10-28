@@ -492,18 +492,24 @@ func (r *TypeRegistry) SetDeployedSiteType(ctx context.Context, site string, gen
 }
 
 // Repin moves a site from one pin to another, conditioned on the pin it
-// was decided against.
-func (r *TypeRegistry) Repin(ctx context.Context, site string, from, to siteTypeRef) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE sites SET type_version = ?, type_track = ?
+// was decided against. A version change stamps a new deploy version, which
+// it returns; a track-only change keeps the deploy version and returns "".
+func (r *TypeRegistry) Repin(ctx context.Context, site string, from, to siteTypeRef) (string, error) {
+	version := ""
+	if to.Version != from.Version {
+		version = newDeployVersion()
+	}
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET type_version = ?, type_track = ?,
+		deploy_version = CASE WHEN ? = '' THEN deploy_version ELSE ? END
 		WHERE name = ? AND type_name = ? AND type_version = ? AND type_track = ? AND type_name = ?`,
-		to.Version, to.Track, site, from.Name, from.Version, from.Track, to.Name)
+		to.Version, to.Track, version, version, site, from.Name, from.Version, from.Track, to.Name)
 	if err != nil {
-		return fmt.Errorf("repin %s: %w", site, err)
+		return "", fmt.Errorf("repin %s: %w", site, err)
 	}
 	if n, err := result.RowsAffected(); err == nil && n != 1 {
-		return ErrTypePinChanged
+		return "", ErrTypePinChanged
 	}
-	return nil
+	return version, nil
 }
 
 // Followers lists the sites following a type's major.

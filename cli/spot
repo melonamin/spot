@@ -79,6 +79,11 @@ commands:
          [--follow major|--pinned] [name] [dir]
                         deploy a directory of data to a typed site; the
                         type serves the viewer, so no index.html is needed
+  deploy --merge [name] [path]
+                        write the files into the live site and keep every
+                        other file (no index.html needed)
+  deploy --if-version <version> ...
+                        deploy only while the site still has that version
   access <name> [changes]
                         show or change who can open (visitors) and manage
                         (maintainers) a site, without redeploying it
@@ -292,8 +297,18 @@ deploy_upload() {
     if [ -n "$deploy_type_track" ]; then
         set -- "$@" --form-string "type_track=$deploy_type_track"
     fi
+    if [ -n "$deploy_mode" ]; then
+        set -- "$@" --form-string "mode=$deploy_mode"
+    fi
+    if [ -n "$deploy_if_version" ]; then
+        set -- "$@" --form-string "if_version=$deploy_if_version"
+    fi
     if [ -f "$src" ]; then
-        set -- "$@" -F "files=@\"$file\";filename=\"index.html\""
+        # A replace deploy of one file is the site's index.html; a merge
+        # keeps the file's own name.
+        target=index.html
+        [ -z "$deploy_mode" ] || target=$file
+        set -- "$@" -F "files=@\"$file\";filename=\"$target\""
     else
         while IFS= read -r f; do
             [ -n "$f" ] || continue
@@ -344,6 +359,9 @@ EOF
 deploy_type=
 deploy_type_target=
 deploy_type_track=
+# Deploy mode and version condition, set by --merge and --if-version.
+deploy_mode=
+deploy_if_version=
 
 # option_value prints an option's argument or fails naming the option.
 option_value() {
@@ -374,6 +392,8 @@ deploy() {
                 shift 2
                 ;;
             --pinned) deploy_type_track=pinned; shift ;;
+            --merge) deploy_mode=merge; shift ;;
+            --if-version) deploy_if_version=$(option_value "$@"); shift 2 ;;
             --help|-h) usage ;;
             -*) echo "error: unknown deploy option '$1'" >&2; exit 1 ;;
             *) break ;;
@@ -387,6 +407,12 @@ deploy() {
         ''|?*@?*) ;;
         *) echo "error: --type must be <name>@<version>" >&2; exit 1 ;;
     esac
+    if [ -n "$deploy_if_version" ] && [ "$deploy_screenshot" = 1 ]; then
+        # The screenshot is a second deploy, which the first one's new
+        # version would refuse.
+        echo "error: --if-version cannot be combined with --screenshot" >&2
+        exit 1
+    fi
     name=${1:-$(basename "$PWD")}
     src=${2:-.}
     if [ "$#" -eq 1 ] && [ -f "$1" ] && [ "$(basename "$1")" = "index.html" ]; then
@@ -406,6 +432,13 @@ deploy() {
             exit 1
         fi
         echo "deploying $src -> $name.$SPOT_DOMAIN (type $deploy_type)"
+    elif [ -n "$deploy_mode" ]; then
+        # A merge writes whatever files it names into the live site.
+        if [ ! -e "$src" ]; then
+            echo "error: $src not found" >&2
+            exit 1
+        fi
+        echo "merging $src -> $name.$SPOT_DOMAIN"
     else
         if [ -f "$src" ]; then
             file=$(basename "$src")

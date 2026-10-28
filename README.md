@@ -645,7 +645,20 @@ Restricted sites are not auto-tagged.
 
 Important APIs:
 
-- `POST /api/deploy` deploys a site from the apex only.
+- `POST /api/deploy` deploys a site from the apex only. Optional form fields:
+  `mode` is `replace` (the default: the upload becomes the site's whole file
+  set) or `merge` (the upload is written into an active site and every other
+  file stays, `spot deploy --merge`), and `if_version` applies the deploy only
+  while the site still has that deploy version (`spot deploy --if-version`).
+  The response carries the site's new `version`. A merge into a missing or
+  deleted site answers `404` with `code: "site_not_found"`; a path that
+  collides with a kept file (a file where a directory is, or the reverse)
+  `409 merge_path_conflict`; a merged site over the deploy limits (2000 files,
+  100 MB) `400` or `413 merge_too_large`. A stale `if_version` answers `409`
+  with `code: "site_version_mismatch"` and the site's `current_version` (empty
+  when the site has no live content). A merge never removes files except a
+  stored `_access.json` that `preserve_access=false` drops; it derives title
+  and description from the merged site and keeps the site's tags.
 - `GET` and `POST /api/publishing-keys` list the caller's keys and create a
   named, fixed-prefix key. The secret is returned only by the create response.
 - `DELETE /api/publishing-keys/{id}` irrevocably revokes a key. Administrators
@@ -669,7 +682,11 @@ Important APIs:
   pages remain; pass it back with the same filters. Without `limit` or
   `cursor` the whole filtered list is returned. `public` and `visible` add
   `tag_counts`, the top tags across the listing; `manageable` adds `active`
-  and `deleted` counts.
+  and `deleted` counts. Entries carry the site's deploy `version` (active
+  sites only): the stamp of its last deploy, repin or follow move and the
+  `version` of its latest `_spot_deploys` event. A source download
+  (`GET /api/download`) sends the same value as `X-Spot-Version`, read
+  together with the file list.
 - `GET /api/sites/{name}/access` returns a site's stored policy to the owner,
   an admin, or a maintainer: `policy` (with `allow` only when visitors are
   restricted, so `[]` means nobody), `restricted`, `readable` (false for a

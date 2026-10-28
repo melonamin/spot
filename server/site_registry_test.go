@@ -40,7 +40,7 @@ func TestCancelDeployAuthorizationRestoresTheTouch(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", authz); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", authz, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.DeleteSite(ctx, "demo", owner, noPurge); err != nil {
@@ -78,7 +78,7 @@ func TestCancelDeployAuthorizationKeepsTheGenerationOfAnOpenPolicyFence(t *testi
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", authz); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", authz, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	authz, err = registry.AuthorizeDeploy(ctx, "demo", owner)

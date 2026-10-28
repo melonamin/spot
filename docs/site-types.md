@@ -176,6 +176,23 @@ Sync semantics are unchanged: the uploaded set replaces the site's files and
 stale files are removed, so an untyped site deployed with `type` loses its old
 root `index.html`. `preserve_access` behaves as for any deploy.
 
+### Merge deploys
+
+A typed deploy with `mode=merge` writes its files into the live instance and
+keeps every other file, including platform files it does not ship. It follows
+the typed normalization and the pin rules below: it needs `type`, and each
+uploaded path is validated against the pinned version's data paths; kept files
+were validated when they were written. It may change `type_track`. Refused:
+
+- `type_target`: `400 invalid_type_field`. A repin changes the data contract
+  of the whole site, which a partial upload cannot state; repin with a replace
+  deploy or `PUT /api/sites/{name}/type`, which validates the retained data.
+- A merge with `type` into an untyped site: `409 site_untyped`. The kept files
+  never passed a data contract, so a merge cannot make a site typed.
+- A missing, deleted or provisioning site: `404 site_not_found`.
+
+`if_version` works for typed deploys as for any deploy.
+
 ### Pin rules
 
 The site's current pin is read under the site's mutation lock, after deploy
@@ -234,7 +251,9 @@ generation, after the files are written and before the site is activated.
 }
 ```
 
-`type` is present only for typed sites.
+`type` is present only for typed sites. `files` counts the site's files after
+the deploy, also for a merge. `version` is the site's new deploy version
+(below); when following moved the pin, it is the version that move stamped.
 
 ## Repin and following
 
@@ -297,7 +316,10 @@ A deploy, a repin that changes the version, and a follow move publish the
  "url": "https://deck.spot.example.com/", "site_type": "card@1.2.0"}
 ```
 
-`site_type` is present for typed sites. Events are best effort: they are lost
+`site_type` is present for typed sites. `version` is the site's deploy
+version after the change: the site listings and `X-Spot-Version` report it, and
+a deploy's `if_version` compares against it. A track-only repin publishes no
+event and keeps the version. Events are best effort: they are lost
 on slow sockets and are not replayed after a reconnect. In delegated-login
 deployments only signed-in visitors receive them; otherwise the deployment's
 identity mode decides who may open `/api/ws`. Viewers must not depend on
@@ -444,16 +466,21 @@ data beside it, and serve the directory with any static server.
 "type": {"name": "card", "version": "1.1.0", "track": "pinned", "title": "Card"}
 ```
 
-`title` is the pinned version's title.
+`title` is the pinned version's title. Active entries, typed or not, also
+carry the site's deploy `version`.
 
 ### Source download
 
 `GET /api/download` on a typed site's origin sets `X-Spot-Type:
-name@version`. The ZIP contains the site's own files (never the viewer). A
+name@version`, and on any active site `X-Spot-Version` with its deploy
+version, the `if_version` for publishing the downloaded copy back. The ZIP contains the site's own files (never the viewer). A
 typed site with no files returns an empty ZIP rather than `404`. The pin and
 the file list are read under the site lock; the lock is released before the
 ZIP streams. A repin during the stream can label migrated bytes with the old
-version; the next publish with that `type` gets `409 type_pin_mismatch`.
+version; the next publish with that `type` gets `409 type_pin_mismatch`. A
+deploy during the stream can mix newer files into the ZIP under the older
+`X-Spot-Version`; a publish with that `if_version` is then refused, so the
+writer downloads again.
 
 ### Cloudflare Pages
 
