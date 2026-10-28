@@ -9,14 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- `POST /api/deploy` takes `mode=merge` to write the uploaded files into an active site and keep every other file, including `_access.json`, `_spot.json` and screenshots it does not ship (`spot deploy --merge`). Typed merges validate the uploaded paths against the pinned version's data paths; a merge refuses `type_target`, cannot make an untyped site typed, answers `404 site_not_found` for a missing or deleted site and `409 merge_path_conflict` for a path that collides with a kept file, and the file-count and size limits apply to the merged site (`merge_too_large`).
-- `POST /api/deploy` takes `if_version` to apply a deploy only while the site still has that deploy version, checked under the site lock; otherwise it answers `409 site_version_mismatch` with `current_version` (`spot deploy --if-version`).
-- Every site has a stored deploy version: the deploy response's `version`, the `version` of site listing entries, and `X-Spot-Version` on source downloads, equal to the `version` of the site's latest `_spot_deploys` event. Existing sites get one from their last update time at startup.
-- Deploy audit rows record the deploy mode (`replace` or `merge`).
+- `POST /api/deploy` takes `mode=merge` to write the uploaded files into an active site and keep every other file, including `_access.json`, `_spot.json` and screenshots it does not ship (`spot deploy --merge`). Typed merges validate the uploaded paths against the pinned version's data paths; a merge refuses `type_target`, cannot make an untyped site typed, answers `404 site_not_found` for a missing or deleted site and `409 merge_path_conflict` for a path that collides with a kept file, and the file-count and size limits apply to the merged site (`merge_too_large`). (#34)
+- `POST /api/deploy` takes `if_version` to apply a deploy only while the site still has that deploy version, checked under the site lock; otherwise it answers `409 site_version_mismatch` with `current_version` (`spot deploy --if-version`). (#34)
+- Every site has a stored deploy version: the deploy response's `version`, the `version` of site listing entries, and `X-Spot-Version` on source downloads, equal to the `version` of the site's latest `_spot_deploys` event. Existing sites get one from their last update time at startup. (#34)
+- Deploy audit rows record the deploy mode (`replace` or `merge`). (#34)
 
 ### Changed
 
-- A repin or follow move that changes a site's type version now stamps a new deploy version, so the `_spot_deploys` event it publishes carries the version listings report; a deploy whose follow move changes the pin publishes one event instead of two.
+- A repin or follow move that changes a site's type version now stamps a new deploy version, so the `_spot_deploys` event it publishes carries the version listings report; a deploy whose follow move changes the pin publishes one event instead of two. (#34)
 
 ## [0.9.1] - 2026-10-26
 
