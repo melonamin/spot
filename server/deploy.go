@@ -569,6 +569,19 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		mergeResult = plan
 		metadata = plan.metadata
 	}
+	// Validation is over. The new version is stored before the first storage
+	// mutation, so a deploy that fails or is cancelled after changing live
+	// files still invalidates the version its writers read; they read the
+	// site again. CompleteDeploy keeps this version.
+	version := newDeployVersion()
+	if stamper, ok := s.deployAuth.(deployVersionStamper); ok {
+		if err := stamper.StampDeployVersion(r.Context(), site, authz, version); err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: stamp version: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not record the site's version")
+			return
+		}
+	}
 	var policyOnFailure *failurePolicyCache
 	var previousPolicy *AccessPolicy
 	var previousPolicyErr error
@@ -788,7 +801,6 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	version := newDeployVersion()
 	if completer, ok := s.deployAuth.(deployCompleter); ok {
 		if err := completer.CompleteDeploy(r.Context(), site, authz, version); err != nil {
 			log.Printf("deploy %s: activate: %v", site, err)

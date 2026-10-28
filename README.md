@@ -656,7 +656,10 @@ Important APIs:
   `409 merge_path_conflict`; a merged site over the deploy limits (2000 files,
   100 MB) `400` or `413 merge_too_large`. A stale `if_version` answers `409`
   with `code: "site_version_mismatch"` and the site's `current_version` (empty
-  when the site has no live content). A merge never removes files except a
+  when the site has no live content). A deploy refused during validation
+  keeps the site's version; one that fails or is cancelled after it began
+  writing leaves a new version, so a writer reads the site again. A merge
+  never removes files except a
   stored `_access.json` that `preserve_access=false` drops; it derives title
   and description from the merged site and keeps the site's tags.
 - `GET` and `POST /api/publishing-keys` list the caller's keys and create a

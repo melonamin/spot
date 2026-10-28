@@ -112,6 +112,10 @@ type deployAuthorizationCanceler interface {
 	CancelDeployAuthorization(ctx context.Context, site string, authz DeployAuthorization) error
 }
 
+type deployVersionStamper interface {
+	StampDeployVersion(ctx context.Context, site string, authz DeployAuthorization, version string) error
+}
+
 type deployCompleter interface {
 	CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization, version string) error
 }
@@ -407,6 +411,22 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 	}
 	if err := tx.Commit(); err != nil {
 		return fmt.Errorf("commit deploy audit for %s: %w", event.Site, err)
+	}
+	return nil
+}
+
+// StampDeployVersion stores a deploy's version before its first storage
+// write, fenced by the content generation the deploy reserved.
+func (r *SiteRegistry) StampDeployVersion(ctx context.Context, site string, authz DeployAuthorization, version string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET deploy_version = ?
+		WHERE name = ? AND content_generation = ?`, version, site, authz.ContentGeneration)
+	if err != nil {
+		return fmt.Errorf("stamp deploy version for %s: %w", site, err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("count stamped deploy version for %s: %w", site, err)
+	} else if n != 1 {
+		return fmt.Errorf("stamp deploy version for %s: generation changed", site)
 	}
 	return nil
 }

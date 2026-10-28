@@ -293,10 +293,14 @@ Deploy invariants:
   limits to the merged site; its audit row records the merged site's count,
   size and content hash, which listings and the Cloudflare staleness check
   read.
-- Every site has a deploy version (`sites.deploy_version`), stamped when a
-  deploy completes and when a repin or follow move changes the pinned version,
-  and published as the `_spot_deploys` event `version`. `if_version` is
-  compared with it under the site lock, after authorization.
+- Every site has a deploy version (`sites.deploy_version`), published as the
+  `_spot_deploys` event `version`. A deploy stores its new version after
+  validation and before its first storage mutation, so a deploy refused during
+  validation keeps the version, while one that fails or is cancelled after it
+  may have changed live files leaves a new version over them and stale
+  `if_version` writers must read the site again. Repins and follow moves that
+  change the pinned version stamp one too. `if_version` is compared with it
+  under the site lock, after authorization.
 - Audit rows record the deploy `mode` (`replace` or `merge`).
 - Deploy audit rows are recorded for success, failure, and denied attempts.
   They include the authentication method and, for publishing keys, the key ID

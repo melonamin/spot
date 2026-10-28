@@ -319,7 +319,10 @@ A deploy, a repin that changes the version, and a follow move publish the
 `site_type` is present for typed sites. `version` is the site's deploy
 version after the change: the site listings and `X-Spot-Version` report it, and
 a deploy's `if_version` compares against it. A track-only repin publishes no
-event and keeps the version. Events are best effort: they are lost
+event and keeps the version. A deploy stores its new version before its first
+storage write, so a deploy that fails or is cancelled after changing files
+still invalidates the old version; a deploy refused during validation keeps
+it. Events are best effort: they are lost
 on slow sockets and are not replayed after a reconnect. In delegated-login
 deployments only signed-in visitors receive them; otherwise the deployment's
 identity mode decides who may open `/api/ws`. Viewers must not depend on

@@ -1,12 +1,15 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -443,5 +446,105 @@ func TestDeployAuditRecordsTheModeOfRefusedDeploys(t *testing.T) {
 	}
 	if audit := env.lastAudit("demo"); audit.Status != "denied" || audit.Mode != "merge" {
 		t.Fatalf("denied audit = %+v", audit)
+	}
+}
+
+// cancelAfterPutsSiteStore cancels the request once a number of writes have
+// succeeded, like a client that disconnects after the last file is stored.
+type cancelAfterPutsSiteStore struct {
+	SiteStorage
+	cancel context.CancelFunc
+	after  int
+	puts   int
+}
+
+func (s *cancelAfterPutsSiteStore) Put(ctx context.Context, site, path, contentType string, data []byte) error {
+	if err := s.SiteStorage.Put(ctx, site, path, contentType, data); err != nil {
+		return err
+	}
+	if s.puts++; s.puts == s.after {
+		s.cancel()
+	}
+	return nil
+}
+
+// A deploy that fails after changing live files leaves a new version over
+// them, so a writer holding the old version is refused, and a writer that
+// reads the site again can publish.
+func TestFailedDeployAfterAWriteInvalidatesTheVersion(t *testing.T) {
+	env := newTypesEnv(t)
+	v1 := env.mustDeployVersion("demo", map[string]string{"index.html": "<h1>v1</h1>", "a.txt": "original"}, nil)
+
+	live := env.srv.sites
+	env.srv.sites = &failAfterPutSiteStore{SiteStorage: live, maxPuts: 1}
+	rec := env.deploy("demo", map[string]string{"a.txt": "human edit", "b.txt": "b"}, map[string]string{"mode": "merge"})
+	env.srv.sites = live
+	if rec.Code != http.StatusInternalServerError || env.siteFile("demo", "a.txt") != "human edit" {
+		t.Fatalf("partial merge = %d %s, a.txt %q", rec.Code, rec.Body.String(), env.siteFile("demo", "a.txt"))
+	}
+	v2 := env.listedVersion("manageable", "demo")
+	if v2 == v1 {
+		t.Fatal("a deploy that changed live files kept the old version")
+	}
+	if rec := env.get("demo.spot.localhost", "/api/download"); rec.Header().Get("X-Spot-Version") != v2 {
+		t.Fatalf("download X-Spot-Version = %q, want %q", rec.Header().Get("X-Spot-Version"), v2)
+	}
+	rec = env.deploy("demo", map[string]string{"index.html": "<h1>v1</h1>", "a.txt": "original"}, map[string]string{"if_version": v1})
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != "site_version_mismatch" {
+		t.Fatalf("stale publish after a partial deploy = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := env.siteFile("demo", "a.txt"); got != "human edit" {
+		t.Fatalf("a.txt after the refused publish = %q", got)
+	}
+	env.mustDeploy("demo", map[string]string{"b.txt": "b"}, map[string]string{"mode": "merge", "if_version": v2})
+}
+
+func TestCancelledDeployAfterTheLastWriteInvalidatesTheVersion(t *testing.T) {
+	env := newTypesEnv(t)
+	v1 := env.mustDeployVersion("demo", map[string]string{"index.html": "<h1>v1</h1>", "a.txt": "original"}, nil)
+
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	live := env.srv.sites
+	env.srv.sites = &cancelAfterPutsSiteStore{SiteStorage: live, cancel: cancel, after: 2}
+	req := deployRequestOrderedFields(t, "spot.localhost", "demo",
+		[][2]string{{"a.txt", "human edit"}, {"b.txt", "b"}}, map[string]string{"mode": "merge"})
+	rec := env.do(req.WithContext(ctx))
+	env.srv.sites = live
+	if rec.Code == http.StatusOK || env.siteFile("demo", "b.txt") != "b" {
+		t.Fatalf("cancelled merge = %d %s", rec.Code, rec.Body.String())
+	}
+	if v2 := env.listedVersion("manageable", "demo"); v2 == v1 {
+		t.Fatal("a cancelled deploy that changed live files kept the old version")
+	}
+	rec = env.deploy("demo", map[string]string{"index.html": "<h1>v1</h1>", "a.txt": "original"}, map[string]string{"if_version": v1})
+	if rec.Code != http.StatusConflict || errorCode(t, rec) != "site_version_mismatch" {
+		t.Fatalf("stale publish after a cancelled deploy = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestConcurrentConditionalMergesHaveOneWinner(t *testing.T) {
+	env := newTypesEnv(t)
+	v1 := env.mustDeployVersion("demo", map[string]string{"index.html": "<h1>v1</h1>"}, nil)
+	codes := make([]int, 2)
+	var wg sync.WaitGroup
+	for i := range codes {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			req := deployRequestOrderedFields(t, "spot.localhost", "demo",
+				[][2]string{{fmt.Sprintf("edit-%d.txt", i), "x"}}, map[string]string{"mode": "merge", "if_version": v1})
+			rec := httptest.NewRecorder()
+			env.handler.ServeHTTP(rec, req)
+			codes[i] = rec.Code
+		}()
+	}
+	wg.Wait()
+	slices.Sort(codes)
+	if !slices.Equal(codes, []int{http.StatusOK, http.StatusConflict}) {
+		t.Fatalf("concurrent conditional merges = %v, want one 200 and one 409", codes)
+	}
+	if n := len(env.siteFiles("demo")); n != 2 {
+		t.Fatalf("site has %d files, want index.html and the winner's edit", n)
 	}
 }
