@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-29
+
 ### Added
 
 - `POST /api/deploy` takes `mode=merge` to write the uploaded files into an active site and keep every other file, including `_access.json`, `_spot.json` and screenshots it does not ship (`spot deploy --merge`). Typed merges validate the uploaded paths against the pinned version's data paths; a merge refuses `type_target`, cannot make an untyped site typed, answers `404 site_not_found` for a missing or deleted site and `409 merge_path_conflict` for a path that collides with a kept file, and the file-count and size limits apply to the merged site (`merge_too_large`). (#34)
@@ -199,7 +201,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.9.1...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/melonamin/spot/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/melonamin/spot/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/melonamin/spot/compare/v0.8.1...v0.9.0
 [0.8.1]: https://github.com/melonamin/spot/compare/v0.8.0...v0.8.1
