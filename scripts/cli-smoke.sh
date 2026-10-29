@@ -284,6 +284,18 @@ try:
                                  text=True, capture_output=True)
         assert untyped.returncode != 0 and "index.html not found" in untyped.stderr, untyped.stderr
 
+        # A merge sends mode=merge, needs no index.html and keeps a single
+        # file's own name; --if-version sends the condition.
+        run(["./cli/spot", "deploy", "--merge", "--if-version", "20261017T120000.000000000Z", "deck", str(data)])
+        for field in [b'name="mode"\r\n\r\nmerge\r\n', b'name="if_version"\r\n\r\n20261017T120000.000000000Z\r\n',
+                      b'filename="card.json"']:
+            assert field in Handler.last_body, (field, Handler.last_body[:600])
+        run(["./cli/spot", "deploy", "--merge", "deck", str(data / "card.json")])
+        assert b'filename="card.json"' in Handler.last_body and b'filename="index.html"' not in Handler.last_body, Handler.last_body[:600]
+        conflicting = subprocess.run(["./cli/spot", "deploy", "--if-version", "v", "--screenshot", "deck", str(out)],
+                                     cwd=root, env=env, text=True, capture_output=True)
+        assert conflicting.returncode != 0 and "--if-version cannot be combined" in conflicting.stderr, conflicting.stderr
+
         # A package upload sends every file, and refuses symlinks.
         pkg = root / "examples" / "types" / "card"
         uploaded = run(["./cli/spot", "types", "upload", str(pkg)])

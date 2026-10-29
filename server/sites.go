@@ -60,6 +60,9 @@ type ownedSiteJSON struct {
 	State            SiteState       `json:"state,omitempty"`
 	LastDeploy       *lastDeployJSON `json:"last_deploy,omitempty"`
 	Type             *siteTypeJSON   `json:"type,omitempty"`
+	// Version is the site's deploy version, the if_version of a conditional
+	// deploy; empty for an inactive site.
+	Version string `json:"version,omitempty"`
 }
 
 type lastDeployJSON struct {
@@ -117,6 +120,7 @@ func (s *Server) handleManageableSites(w http.ResponseWriter, r *http.Request) {
 			Owner: ownerDisplay(site.SiteRecord), OwnerEmail: site.OwnerEmail, ManagementRole: string(site.ManagementRole), State: site.State,
 			LastDeploy: lastDeployForSite(site.OwnedSite),
 			Type:       siteTypeJSONFor(site.Type, site.TypeTitle),
+			Version:    site.DeployVersion,
 		}
 		if site.State == SiteStateActive {
 			policy, policyErr := s.policyForSite(r.Context(), site.Name)
@@ -152,6 +156,7 @@ type publicSiteJSON struct {
 	CreatedAt       time.Time     `json:"created_at"`
 	UpdatedAt       time.Time     `json:"updated_at"`
 	Type            *siteTypeJSON `json:"type,omitempty"`
+	Version         string        `json:"version,omitempty"`
 }
 
 type siteStatsJSON struct {
@@ -274,6 +279,7 @@ func (s *Server) handleMySites(w http.ResponseWriter, r *http.Request) {
 				r.Context(), site.Name, contentHash, false),
 			LastDeploy: lastDeployForSite(site),
 			Type:       siteTypeJSONFor(site.Type, site.TypeTitle),
+			Version:    site.DeployVersion,
 		}
 	})
 	writeJSON(w, http.StatusOK, siteListBody(page, out))
@@ -368,6 +374,7 @@ func (s *Server) handlePublicSites(w http.ResponseWriter, r *http.Request) {
 			CreatedAt:       site.CreatedAt,
 			UpdatedAt:       site.UpdatedAt,
 			Type:            siteTypeJSONFor(site.Type, site.TypeTitle),
+			Version:         site.DeployVersion,
 		}
 	})
 	body := siteListBody(page, out)

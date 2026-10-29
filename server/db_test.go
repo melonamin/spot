@@ -391,3 +391,38 @@ func TestCloudflareProjectManagedMigrationIsRestartSafe(t *testing.T) {
 		t.Fatal("legacy publication lost project cleanup ownership after migration retry")
 	}
 }
+
+// Sites deployed before deploy versions were stored get one from updated_at,
+// in the format new versions use; a stored version is kept.
+func TestApplyAdditiveMigrationsBackfillsDeployVersions(t *testing.T) {
+	ctx := context.Background()
+	db, err := openSQLiteDB(ctx, filepath.Join(t.TempDir(), "spot.db"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close()
+	if _, err := db.ExecContext(ctx, `ALTER TABLE sites DROP COLUMN deploy_version`); err != nil {
+		t.Fatalf("drop deploy_version column: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO sites (name, updated_at) VALUES ('legacy', '2026-10-17 12:00:00.250')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyAdditiveMigrations(ctx, db); err != nil {
+		t.Fatalf("migrate: %v", err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO sites (name, deploy_version) VALUES ('current', '20261027T080000.000000001Z')`); err != nil {
+		t.Fatal(err)
+	}
+	if err := applyAdditiveMigrations(ctx, db); err != nil {
+		t.Fatalf("migrate twice: %v", err)
+	}
+	for site, want := range map[string]string{"legacy": "20261017T120000.250000000Z", "current": "20261027T080000.000000001Z"} {
+		var got string
+		if err := db.QueryRowContext(ctx, `SELECT deploy_version FROM sites WHERE name = ?`, site).Scan(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != want {
+			t.Errorf("%s deploy_version = %q, want %q", site, got, want)
+		}
+	}
+}

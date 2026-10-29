@@ -49,7 +49,9 @@ spot deploy <site-name> <folder>
 ```
 
 A site is a folder containing `index.html`, or a single `index.html` file. Plain
-HTML/CSS/JS works. Deployed sites can load the browser SDK with:
+HTML/CSS/JS works. To change some files of a live site without resending the
+rest, `spot deploy --merge <site-name> <folder-or-file>` writes them and keeps
+every other file. Deployed sites can load the browser SDK with:
 
 ```html
 <script src="/spot.js"></script>

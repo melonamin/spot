@@ -486,24 +486,29 @@ func cloudflareAssetExtension(filePath string) string {
 }
 
 func cloudflareContentHashForDeploy(files []deployFile) string {
-	type digestFile struct {
-		path   string
-		digest string
-	}
-	digests := make([]digestFile, 0, len(files))
+	digests := make(map[string]string, len(files))
 	for _, file := range files {
-		if isSiteAccessFile(file.path) {
-			continue
-		}
 		sum := sha256.Sum256(file.data)
-		digests = append(digests, digestFile{path: file.path, digest: hex.EncodeToString(sum[:])})
+		digests[file.path] = hex.EncodeToString(sum[:])
 	}
-	sort.Slice(digests, func(i, j int) bool { return digests[i].path < digests[j].path })
+	return cloudflareContentHash(digests)
+}
+
+// cloudflareContentHash is the snapshot content hash over a site's file
+// digests (hex SHA-256 by path), leaving out access files as the snapshot does.
+func cloudflareContentHash(digests map[string]string) string {
+	paths := make([]string, 0, len(digests))
+	for path := range digests {
+		if !isSiteAccessFile(path) {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
 	h := sha256.New()
-	for _, file := range digests {
-		h.Write([]byte(file.path))
+	for _, path := range paths {
+		h.Write([]byte(path))
 		h.Write([]byte{0})
-		h.Write([]byte(file.digest))
+		h.Write([]byte(digests[path]))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))

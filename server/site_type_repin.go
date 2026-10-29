@@ -133,8 +133,10 @@ func (s *Server) handleSiteTypeRepin(w http.ResponseWriter, r *http.Request) {
 	if req.Track != nil {
 		next.Track = *req.Track
 	}
+	deployVersion := ""
 	if next != current {
-		if err := s.types.Repin(r.Context(), site, current, next); err != nil {
+		var err error
+		if deployVersion, err = s.types.Repin(r.Context(), site, current, next); err != nil {
 			log.Printf("repin %s: %v", site, err)
 			httpError(w, http.StatusInternalServerError, "could not repin the site")
 			return
@@ -153,8 +155,8 @@ func (s *Server) handleSiteTypeRepin(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	// A follow move announces the final pin itself; announce once.
-	if next.Version != current.Version && !followed {
-		s.publishSiteTypeEvent(r, site, next)
+	if deployVersion != "" && !followed {
+		s.publishDeployEvent(site, deployVersion, s.siteURL(r, site), next.String())
 	}
 	writeJSON(w, http.StatusOK, map[string]any{
 		"site":     site,

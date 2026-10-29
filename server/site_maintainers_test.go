@@ -65,7 +65,7 @@ func TestSiteMaintainerLifecycleAndRecovery(t *testing.T) {
 	if decision, err := registry.ManagementDecision(ctx, "demo", maintainer); err != nil || decision.Allowed {
 		t.Fatalf("provisioning maintainer decision = %+v, %v; want denied", decision, err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", create); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", create, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	for _, actor := range []Identity{maintainer, groupMaintainer} {
@@ -82,7 +82,7 @@ func TestSiteMaintainerLifecycleAndRecovery(t *testing.T) {
 	if err != nil || update.AuthorizedAs != ManagementRoleMaintainer {
 		t.Fatalf("maintainer deploy = %+v, %v", update, err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", update); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", update, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.RecordDeploy(ctx, DeployAuditEvent{
@@ -171,7 +171,7 @@ func TestSiteOwnerNameUsesNetBirdPeerName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := registry.CompleteDeploy(ctx, "existing-site", create); err != nil {
+		if err := registry.CompleteDeploy(ctx, "existing-site", create, newDeployVersion()); err != nil {
 			t.Fatal(err)
 		}
 
@@ -199,7 +199,7 @@ func TestSiteOwnerNameUsesNetBirdPeerName(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := registry.CompleteDeploy(ctx, "maintained-site", create); err != nil {
+		if err := registry.CompleteDeploy(ctx, "maintained-site", create, newDeployVersion()); err != nil {
 			t.Fatal(err)
 		}
 		maintainer := Identity{Email: "maintainer@example.com", Name: "Maintainer"}
@@ -302,7 +302,7 @@ func TestManageableSitesAPIIncludesMaintainerAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", authz); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", authz, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	srv := &Server{
@@ -362,7 +362,7 @@ func TestPolicyTransitionReadBackAndDurableFence(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if err := registry.CompleteDeploy(ctx, "demo", create); err != nil {
+			if err := registry.CompleteDeploy(ctx, "demo", create, newDeployVersion()); err != nil {
 				t.Fatal(err)
 			}
 			authz, err := registry.AuthorizeDeploy(ctx, "demo", owner)
@@ -438,7 +438,7 @@ func TestPolicyTransitionsAndExternalMutationsAreMutuallyExclusive(t *testing.T)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", create); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", create, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	generation, err := registry.SiteContentGeneration(ctx, "demo")
@@ -574,7 +574,7 @@ func TestDeployAuditAtomicallyClearsContentDirty(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", authz); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", authz, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `CREATE TRIGGER fail_deploy_audit BEFORE INSERT ON site_deploy_audit
@@ -638,7 +638,7 @@ func TestSitePreviewHonorsLifecycleAndPolicyFence(t *testing.T) {
 	if rec := preview(); rec.Code != http.StatusNotFound {
 		t.Fatalf("provisioning preview = %d %s, want 404", rec.Code, rec.Body.String())
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", authz); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", authz, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	if err := registry.BeginPolicyTransition(ctx, "demo", authz.ContentGeneration, absentPolicyHash, "sha256:next"); err != nil {
@@ -669,7 +669,7 @@ func TestPublishedDeleteDoesNotStageRestrictivePolicy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", create); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", create, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	publications := NewCloudflarePublicationStore(db)
@@ -715,7 +715,7 @@ func TestDeniedDeleteThroughManagementDecisionIsAudited(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := registry.CompleteDeploy(ctx, "demo", create); err != nil {
+	if err := registry.CompleteDeploy(ctx, "demo", create, newDeployVersion()); err != nil {
 		t.Fatal(err)
 	}
 	sites, err := NewLocalSiteStore(t.TempDir())
