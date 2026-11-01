@@ -152,6 +152,23 @@ func (s *SiteStore) OpenTypeFile(ctx context.Context, name, version, path string
 	return obj, nil
 }
 
+func (s *SiteStore) DeleteTypeFiles(ctx context.Context, name string) error {
+	if !siteNameRe.MatchString(name) {
+		return fmt.Errorf("invalid type name %q", name)
+	}
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix: typeObjectRootPrefix + name + "/", Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return fmt.Errorf("list type files %s: %w", name, obj.Err)
+		}
+		if err := s.client.RemoveObject(ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+			return fmt.Errorf("delete type file %s: %w", obj.Key, err)
+		}
+	}
+	return nil
+}
+
 func (s *SiteStore) Remove(ctx context.Context, site, path string) error {
 	key := site + "/" + path
 	if err := s.client.RemoveObject(ctx, s.bucket, key, minio.RemoveObjectOptions{}); err != nil {

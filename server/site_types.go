@@ -36,6 +36,7 @@ var (
 	ErrTypeNotFound   = errors.New("site type version not found")
 	ErrTypeExists     = errors.New("site type version already exists")
 	ErrTypePinChanged = errors.New("site type pin changed concurrently")
+	ErrTypeInUse      = errors.New("site type is used by sites")
 )
 
 // siteTypeRef is the type a site pins. The zero value is an ordinary site.
@@ -282,6 +283,7 @@ func typePackageHash(inventory []typeInventoryFile) string {
 type TypeFileStorage interface {
 	PutTypeFile(ctx context.Context, name, version, path, contentType string, data []byte) error
 	OpenTypeFile(ctx context.Context, name, version, path string) (io.ReadCloser, error)
+	DeleteTypeFiles(ctx context.Context, name string) error
 }
 
 func typeObjectKey(name, version, path string) (string, error) {
@@ -462,6 +464,37 @@ func (r *TypeRegistry) PinCounts(ctx context.Context, name string) (map[string]i
 	return counts, rows.Err()
 }
 
+// DeleteUnused removes registry records only when no live or provisioning site references them.
+func (r *TypeRegistry) DeleteUnused(ctx context.Context, name string) (int64, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, fmt.Errorf("begin type deletion %s: %w", name, err)
+	}
+	defer tx.Rollback()
+	result, err := tx.ExecContext(ctx, `DELETE FROM site_type_versions WHERE name = ?
+		AND NOT EXISTS (SELECT 1 FROM sites WHERE type_name = ? AND state != 'deleted')`, name, name)
+	if err != nil {
+		return 0, fmt.Errorf("delete type %s: %w", name, err)
+	}
+	deleted, err := result.RowsAffected()
+	if err != nil {
+		return 0, err
+	}
+	if deleted == 0 {
+		var used bool
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM sites WHERE type_name = ? AND state != 'deleted')`, name).Scan(&used); err != nil {
+			return 0, fmt.Errorf("check type usage %s: %w", name, err)
+		}
+		if used {
+			return 0, ErrTypeInUse
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, fmt.Errorf("commit type deletion %s: %w", name, err)
+	}
+	return deleted, nil
+}
+
 // SiteType returns the site's pin; the zero ref for an ordinary site.
 func (r *TypeRegistry) SiteType(ctx context.Context, site string) (siteTypeRef, error) {
 	var ref siteTypeRef
@@ -481,7 +514,9 @@ func (r *TypeRegistry) SiteType(ctx context.Context, site string) (siteTypeRef, 
 // mutation has since claimed.
 func (r *TypeRegistry) SetDeployedSiteType(ctx context.Context, site string, generation int64, ref siteTypeRef) error {
 	result, err := r.db.ExecContext(ctx, `UPDATE sites SET type_name = ?, type_version = ?, type_track = ?
-		WHERE name = ? AND content_generation = ?`, ref.Name, ref.Version, ref.Track, site, generation)
+		WHERE name = ? AND content_generation = ?
+		AND (? = '' OR EXISTS (SELECT 1 FROM site_type_versions WHERE name = ? AND version = ?))`,
+		ref.Name, ref.Version, ref.Track, site, generation, ref.Name, ref.Name, ref.Version)
 	if err != nil {
 		return fmt.Errorf("record site type for %s: %w", site, err)
 	}
@@ -532,7 +567,7 @@ func (r *TypeRegistry) Followers(ctx context.Context, name string) ([]string, er
 	return sites, rows.Err()
 }
 
-// typeMutationLock serializes uploads and yank changes of one type name.
+// typeMutationLock serializes uploads, deletion and yank changes of one type name.
 func (s *Server) typeMutationLock(name string) *sync.Mutex {
 	s.typeLocksMu.Lock()
 	defer s.typeLocksMu.Unlock()
@@ -559,6 +594,6 @@ func (s *Server) cachedTypeVersion(ctx context.Context, name, version string) (*
 	if err != nil {
 		return nil, err
 	}
-	s.typeVersionCache.Store(key, v)
-	return v, nil
+	stored, _ := s.typeVersionCache.LoadOrStore(key, v)
+	return stored.(*siteTypeVersion), nil
 }
