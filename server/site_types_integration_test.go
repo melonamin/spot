@@ -8,6 +8,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"net/http"
 	"os"
 	"strings"
@@ -16,6 +17,34 @@ import (
 
 	"github.com/minio/minio-go/v7"
 )
+
+func TestDeleteTypeS3Roundtrip(t *testing.T) {
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:9000"
+	}
+	requireTestS3Endpoint(t, endpoint)
+	store, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := newTypesEnv(t)
+	env.srv.sites = store
+	name := fmt.Sprintf("delete-type-%d", time.Now().UnixNano())
+	for _, version := range []string{"1.0.0", "2.0.0-rc.1"} {
+		env.mustUpload(renamedType(t, name, version))
+	}
+	env.as(typesAdminEmail)
+	if rec := env.jsonRequest(http.MethodDelete, "/api/types/"+name, ""); rec.Code != http.StatusOK {
+		t.Fatalf("delete type = %d %s", rec.Code, rec.Body.String())
+	}
+	if rec := env.get("spot.localhost", "/api/types/"+name); rec.Code != http.StatusNotFound {
+		t.Fatalf("deleted type read = %d", rec.Code)
+	}
+	for object := range store.client.ListObjects(t.Context(), store.bucket, minio.ListObjectsOptions{Prefix: typeObjectRootPrefix + name + "/", Recursive: true}) {
+		t.Fatalf("type object remains: %s (%v)", object.Key, object.Err)
+	}
+}
 
 // TestTypedSiteS3Roundtrip runs the type package and typed site paths
 // against real S3 storage (RustFS from `just up`, or SPOT_TEST_S3_ENDPOINT):

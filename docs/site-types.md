@@ -85,7 +85,7 @@ per file: `<path>\t<size in bytes>\t<hex sha256 of the bytes>\n`.
   type_version_exists`, also when that version is yanked.
 - Prereleases (`1.1.0-rc.1`) are ordinary, uploadable versions. They are
   never chosen as "latest" and never followed.
-- Versions are never deleted. Yank removes a version from selection.
+- Yank removes a version from selection. An admin can permanently delete a whole unused type.
 
 ## Path contract
 
@@ -366,6 +366,21 @@ Response `201` (new) or `200` (identical re-upload):
 }
 ```
 
+### `DELETE /api/types/{name}` (admin)
+
+Permanently removes every version and package file of a type. Any active or
+provisioning site referencing the type blocks deletion with `409 type_in_use`,
+including a site pinned to an older or yanked version. Deleting a missing type
+is idempotent. A deleted name can be installed again.
+
+Response `200`: `{"name":"card","deleted_versions":3}`.
+
+Deletion is serialized with uploads and yank changes. The registry deletion
+checks usage atomically, and a deploy cannot commit a pin to a deleted version.
+Registry records are removed before package objects; a storage error includes
+the underlying cause and asks the admin to retry the same deletion, which also
+cleans leftover objects. The successful operation is logged with the actor.
+
 ### `POST /api/types/{name}/{version}/yank` (admin)
 
 Removes the version from selection: no new pins, repins, `type_target` or
@@ -498,6 +513,7 @@ Errors are JSON: `{"error": "<message>", "code": "<code>", ...}`. Codes:
 
 | Status | Code | Meaning | Extra fields |
 | --- | --- | --- | --- |
+| 409 | `type_in_use` | a live or provisioning site references the type being deleted | |
 | 400 | `invalid_type_field` | malformed `type`, `type_target`, `type_track`, or repin body | |
 | 400 | `invalid_package` | package fails validation | `path` when a path is at fault |
 | 400 | `type_data_invalid` | deploy file outside data paths, reserved, or invalid JSON | `path` |

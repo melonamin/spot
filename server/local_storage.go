@@ -272,6 +272,13 @@ func (s *LocalSiteStore) OpenTypeFile(_ context.Context, name, version, path str
 	return file, nil
 }
 
+func (s *LocalSiteStore) DeleteTypeFiles(_ context.Context, name string) error {
+	if !siteNameRe.MatchString(name) {
+		return fmt.Errorf("invalid type name %q", name)
+	}
+	return os.RemoveAll(filepath.Join(s.root, typeObjectRootPrefix, name))
+}
+
 func validSitePath(p string) bool {
 	return validDownloadPath(p)
 }

@@ -11,6 +11,7 @@ import (
 	"mime"
 	"net/http"
 	"strconv"
+	"strings"
 	"time"
 )
 
@@ -249,7 +250,51 @@ func (s *Server) storeTypePackage(ctx context.Context, store TypeFileStorage, pk
 		log.Printf("types: reread %s@%s: %v", pkg.Name, pkg.Version, err)
 		return false, nil, newTypeError(http.StatusInternalServerError, "", "could not read the recorded type version")
 	}
+	s.typeVersionCache.Store(pkg.Name+"@"+pkg.Version, stored)
 	return true, stored, nil
+}
+
+func (s *Server) handleTypeDelete(w http.ResponseWriter, r *http.Request) {
+	actor, ok := s.requireTypeAdmin(w, r)
+	if !ok {
+		return
+	}
+	name := r.PathValue("name")
+	if !siteNameRe.MatchString(name) {
+		writeTypeError(w, invalidTypeField("invalid type name"))
+		return
+	}
+	store, ok := s.typeFileStorage(w)
+	if !ok {
+		return
+	}
+	lock := s.typeMutationLock(name)
+	lock.Lock()
+	defer lock.Unlock()
+	deleted, err := s.types.DeleteUnused(r.Context(), name)
+	if errors.Is(err, ErrTypeInUse) {
+		writeTypeError(w, newTypeError(http.StatusConflict, "type_in_use", "sites still use type "+name+"; delete those sites before deleting the type"))
+		return
+	}
+	if err != nil {
+		log.Printf("types: delete %s: %v", name, err)
+		httpError(w, http.StatusInternalServerError, "could not delete the type registry records: "+err.Error())
+		return
+	}
+	s.typeVersionCache.Range(func(key, _ any) bool {
+		if strings.HasPrefix(key.(string), name+"@") {
+			s.typeVersionCache.Delete(key)
+		}
+		return true
+	})
+	// A retry also purges leftover objects after an interrupted storage deletion.
+	if err := store.DeleteTypeFiles(r.Context(), name); err != nil {
+		log.Printf("types: delete files %s: %v", name, err)
+		httpError(w, http.StatusInternalServerError, "type registry records were deleted, but file cleanup failed; retry deletion: "+err.Error())
+		return
+	}
+	log.Printf("types: %s deleted %s (%d versions)", actor.Email, name, deleted)
+	writeJSON(w, http.StatusOK, map[string]any{"name": name, "deleted_versions": deleted})
 }
 
 func (s *Server) handleTypeYank(w http.ResponseWriter, r *http.Request) {
