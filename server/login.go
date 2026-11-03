@@ -44,10 +44,11 @@ const (
 	loginStateMaxAge     = 10 * time.Minute
 	loginStateBytes      = 32
 
-	// prompt and error follow the OpenID Connect names. Spot adds prompt=none
-	// to the sign-in it starts on its own for a page load, so the login app
-	// may answer error=login_required instead of showing its own sign-in to
-	// a browser that arrived from a site host without choosing to sign in.
+	// prompt and error use the OpenID Connect parameter names (this is not an
+	// OIDC flow). Spot adds prompt=none to the sign-in it starts on its own
+	// for a page load, so the login app may answer error=login_required
+	// instead of showing a sign-in form to a browser that arrived from a site
+	// host without choosing to sign in.
 	loginPromptNone         = "none"
 	loginErrorLoginRequired = "login_required"
 )
@@ -448,7 +449,8 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 // instead of a token. A silent sign-in (prompt=none) that found no signed-in
 // browser answers login_required, and the viewer stays on this host with a
 // link that starts a sign-in they chose, which the login app may show its
-// own sign-in for. Nothing is signed in, so no state binding is needed.
+// own sign-in for. Nothing is signed in and no cookie changes, so the error
+// path needs no state binding; the page is informational (200, no-store).
 func (s *Server) writeLoginError(w http.ResponseWriter, r *http.Request, loginError, returnTo string) {
 	if loginError != loginErrorLoginRequired {
 		log.Printf("auth callback %s: login app error %q", s.loginHost(r), loginError)
@@ -460,9 +462,9 @@ func (s *Server) writeLoginError(w http.ResponseWriter, r *http.Request, loginEr
 		})
 		return
 	}
-	writeStatusPage(w, http.StatusUnauthorized, statusPage{
-		Title:   "This site is private",
-		Message: "Sign in at " + s.login.loginURL.Host + " to view it.",
+	writeStatusPage(w, http.StatusOK, statusPage{
+		Title:   "Sign-in required",
+		Message: "Sign in at " + s.login.loginURL.Host + " to view this site.",
 		Links:   []statusPageLink{{Label: "Sign in", URL: "/api/auth/login?return_to=" + url.QueryEscape(returnTo), Primary: true}},
 	})
 }
@@ -577,6 +579,8 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath, 
 	query := target.Query()
 	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+returnPath)
 	query.Set("state", state)
+	// Spot owns prompt: a value in SPOT_LOGIN_URL would make every sign-in silent.
+	query.Del("prompt")
 	if prompt != "" {
 		query.Set("prompt", prompt)
 	}

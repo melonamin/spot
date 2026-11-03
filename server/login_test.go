@@ -1218,20 +1218,20 @@ func TestAuthzDoesNotStartSignIn(t *testing.T) {
 // A sign-in Spot starts on its own is silent (prompt=none): a login app that
 // finds no signed-in browser answers error=login_required, and the viewer
 // stays on the site host with a link to a sign-in they choose, which carries
-// no prompt. So a private site never forwards a stranger to a sign-in form on
-// another domain, which browsers and search engines treat as phishing.
+// no prompt. So a private site never forwards a stranger unasked to a sign-in
+// form on another domain.
 func TestDelegatedLoginRequiredKeepsVisitorOnSiteHost(t *testing.T) {
 	st := newLoginTestStack(t)
 	const host = "private.sites.localhost:8443"
 	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
 
 	rec := st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?error=login_required&return_to=%2Fdocs%2F%3Fq%3D1"))
-	if rec.Code != http.StatusUnauthorized || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
-		rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
+		rec.Header().Get("Cache-Control") != "no-store" || rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("login_required callback = %d %v", rec.Code, rec.Header())
 	}
 	body := rec.Body.String()
-	if !strings.Contains(body, "This site is private") || !strings.Contains(body, "Sign in at chat.example.com") ||
+	if !strings.Contains(body, "Sign-in required") || !strings.Contains(body, "Sign in at chat.example.com") ||
 		!strings.Contains(body, `href="/api/auth/login?return_to=%2Fdocs%2F%3Fq%3D1"`) {
 		t.Fatalf("login_required page = %s", body)
 	}
@@ -1252,9 +1252,22 @@ func TestDelegatedLoginRequiredKeepsVisitorOnSiteHost(t *testing.T) {
 	if location, err = url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || err != nil || location.Query().Has("prompt") {
 		t.Fatalf("unknown prompt = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
+	// A prompt configured into SPOT_LOGIN_URL does not make the chosen sign-in silent.
+	configured := *st.srv.login.loginURL
+	configured.RawQuery = "prompt=none&app=spot"
+	st.srv.login.loginURL = &configured
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2F")))
+	if location, err = url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || err != nil ||
+		location.Query().Has("prompt") || location.Query().Get("app") != "spot" {
+		t.Fatalf("chosen sign-in with configured prompt = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/")))
+	if location, err = url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || err != nil || location.Query().Get("prompt") != "none" {
+		t.Fatalf("silent sign-in with configured prompt = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
 	// The return path on the page stays on this host.
 	rec = st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?error=login_required&return_to=%2F%2Fevil.example"))
-	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `href="/api/auth/login?return_to=%2F"`) {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `href="/api/auth/login?return_to=%2F"`) {
 		t.Fatalf("open redirect on login_required page = %d %s", rec.Code, rec.Body.String())
 	}
 	// Any other error is a failed sign-in, shown with the error name.
