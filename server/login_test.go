@@ -322,7 +322,7 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 	}
 	location, err := url.Parse(rec.Header().Get("Location"))
 	if err != nil || location.Host != "chat.example.com" || location.Path != "/sites/login" ||
-		location.Query().Get("return_to") != "http://"+host+"/docs/?q=1" {
+		location.Query().Get("return_to") != "http://"+host+"/docs/?q=1" || location.Query().Get("prompt") != "none" {
 		t.Fatalf("login redirect = %q", rec.Header().Get("Location"))
 	}
 	state := responseCookie(t, rec, loginStateCookieName)
@@ -568,10 +568,13 @@ func TestFrameAncestorsAndApexRedirect(t *testing.T) {
 		t.Fatalf("site Referrer-Policy = %q", rec.Header().Get("Referrer-Policy"))
 	}
 
+	// Platform pages name the embedding app instead of redirecting to it, so
+	// the apex never forwards a stranger to a sign-in form on another domain.
 	for _, path := range []string{"/", "/spots", "/gallery/", "/stats", "/help", "/index.html"} {
 		rec := st.do(siteRequest(http.MethodGet, "sites.localhost:8443", path))
-		if rec.Code != http.StatusFound || rec.Header().Get("Location") != "https://chat.example.com/sites" {
-			t.Fatalf("apex %s = %d %q, want redirect", path, rec.Code, rec.Header().Get("Location"))
+		if rec.Code != http.StatusOK || rec.Header().Get("Location") != "" || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
+			!strings.Contains(rec.Body.String(), "managed at chat.example.com") || !strings.Contains(rec.Body.String(), `href="https://chat.example.com/sites"`) {
+			t.Fatalf("apex %s = %d %q %s, want a page linking to the app", path, rec.Code, rec.Header().Get("Location"), rec.Body.String())
 		}
 		if rec.Header().Get("Content-Security-Policy") != "" {
 			t.Fatalf("apex %s carries site CSP", path)
@@ -1209,5 +1212,59 @@ func TestAuthzDoesNotStartSignIn(t *testing.T) {
 	// Page loads elsewhere on the site still start a sign-in.
 	if rec := st.do(navigation(siteRequest(http.MethodGet, host, "/"))); rec.Code != http.StatusFound {
 		t.Fatalf("anonymous page = %d, want login redirect", rec.Code)
+	}
+}
+
+// A sign-in Spot starts on its own is silent (prompt=none): a login app that
+// finds no signed-in browser answers error=login_required, and the viewer
+// stays on the site host with a link to a sign-in they choose, which carries
+// no prompt. So a private site never forwards a stranger to a sign-in form on
+// another domain, which browsers and search engines treat as phishing.
+func TestDelegatedLoginRequiredKeepsVisitorOnSiteHost(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+
+	rec := st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?error=login_required&return_to=%2Fdocs%2F%3Fq%3D1"))
+	if rec.Code != http.StatusUnauthorized || !strings.HasPrefix(rec.Header().Get("Content-Type"), "text/html") ||
+		rec.Header().Get("Location") != "" || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("login_required callback = %d %v", rec.Code, rec.Header())
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, "This site is private") || !strings.Contains(body, "Sign in at chat.example.com") ||
+		!strings.Contains(body, `href="/api/auth/login?return_to=%2Fdocs%2F%3Fq%3D1"`) {
+		t.Fatalf("login_required page = %s", body)
+	}
+	// The link's sign-in is the viewer's choice: no prompt, so the login app
+	// shows its sign-in.
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2Fdocs%2F%3Fq%3D1")))
+	location, err := url.Parse(rec.Header().Get("Location"))
+	if rec.Code != http.StatusFound || err != nil || location.Host != "chat.example.com" ||
+		location.Query().Has("prompt") || location.Query().Get("return_to") != "http://"+host+"/docs/?q=1" {
+		t.Fatalf("chosen sign-in = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// An open-site page may ask for a silent sign-in; other prompts are dropped.
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2F&prompt=none")))
+	if location, err = url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || err != nil || location.Query().Get("prompt") != "none" {
+		t.Fatalf("silent sign-in = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	rec = st.do(navigation(siteRequest(http.MethodGet, host, "/api/auth/login?return_to=%2F&prompt=consent")))
+	if location, err = url.Parse(rec.Header().Get("Location")); rec.Code != http.StatusFound || err != nil || location.Query().Has("prompt") {
+		t.Fatalf("unknown prompt = %d %q", rec.Code, rec.Header().Get("Location"))
+	}
+	// The return path on the page stays on this host.
+	rec = st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?error=login_required&return_to=%2F%2Fevil.example"))
+	if rec.Code != http.StatusUnauthorized || !strings.Contains(rec.Body.String(), `href="/api/auth/login?return_to=%2F"`) {
+		t.Fatalf("open redirect on login_required page = %d %s", rec.Code, rec.Body.String())
+	}
+	// Any other error is a failed sign-in, shown with the error name.
+	rec = st.do(siteRequest(http.MethodGet, host, "/api/auth/callback?error=access_denied&return_to=%2F"))
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "Sign-in failed") ||
+		!strings.Contains(rec.Body.String(), "access_denied") || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("access_denied callback = %d %s", rec.Code, rec.Body.String())
+	}
+	// Auth routes exist only on site hosts.
+	if rec := st.do(siteRequest(http.MethodGet, "sites.localhost:8443", "/api/auth/callback?error=login_required")); rec.Code != http.StatusNotFound {
+		t.Fatalf("apex login_required = %d, want 404", rec.Code)
 	}
 }

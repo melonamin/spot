@@ -4,6 +4,7 @@ import (
 	"html/template"
 	"log"
 	"net/http"
+	"net/url"
 )
 
 // statusPage is a plain, brand-neutral page for browser visitors in delegated
@@ -75,6 +76,20 @@ func (s *Server) sitesLink() []statusPageLink {
 		return nil
 	}
 	return []statusPageLink{{Label: "Go to Sites", URL: s.apexRedirectURL, Primary: true}}
+}
+
+// writeApexPage answers a platform page on the apex when the embedding
+// product owns those pages.
+func (s *Server) writeApexPage(w http.ResponseWriter) {
+	host := s.apexRedirectURL
+	if u, err := url.Parse(s.apexRedirectURL); err == nil && u.Host != "" {
+		host = u.Host
+	}
+	writeStatusPage(w, http.StatusOK, statusPage{
+		Title:   "Sites are managed at " + host,
+		Message: "This address hosts sites published from " + host + ". Each site has its own address under this domain.",
+		Links:   s.sitesLink(),
+	})
 }
 
 // denySiteAccess answers a refused site request: a status page for a browser

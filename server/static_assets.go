@@ -49,8 +49,11 @@ func (s *Server) handleApexStatic(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// An embedding product can own the platform pages; APIs and assets stay.
+	// The visitor gets a page that names the product, not a redirect to it: a
+	// sites domain that forwards strangers to a sign-in form elsewhere looks
+	// like phishing to browsers and search engines.
 	if s.apexRedirectURL != "" && strings.HasSuffix(name, ".html") {
-		http.Redirect(w, r, s.apexRedirectURL, http.StatusFound)
+		s.writeApexPage(w)
 		return
 	}
 	s.serveEmbeddedAsset(w, r, name)

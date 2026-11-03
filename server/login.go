@@ -43,6 +43,13 @@ const (
 	loginStateCookieName = "__Host-spot_login_state"
 	loginStateMaxAge     = 10 * time.Minute
 	loginStateBytes      = 32
+
+	// prompt and error follow the OpenID Connect names. Spot adds prompt=none
+	// to the sign-in it starts on its own for a page load, so the login app
+	// may answer error=login_required instead of showing its own sign-in to
+	// a browser that arrived from a site host without choosing to sign in.
+	loginPromptNone         = "none"
+	loginErrorLoginRequired = "login_required"
 )
 
 type DelegatedLogin struct {
@@ -395,6 +402,10 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	}
 	host := s.loginHost(r)
 	returnTo := s.returnPath(r)
+	if loginError := r.URL.Query().Get("error"); loginError != "" {
+		s.writeLoginError(w, r, loginError, returnTo)
+		return
+	}
 	states := cookieValues(r, loginStateCookieName)
 	if len(states) == 0 {
 		// Another tab's callback already used the shared state and signed
@@ -431,6 +442,29 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 	http.SetCookie(w, loginCookie(loginStateCookieName, "", -1))
 	http.SetCookie(w, sessionCookie(value, int(s.login.sessionTTL/time.Second)))
 	http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
+}
+
+// writeLoginError answers a callback that carries the login app's error
+// instead of a token. A silent sign-in (prompt=none) that found no signed-in
+// browser answers login_required, and the viewer stays on this host with a
+// link that starts a sign-in they chose, which the login app may show its
+// own sign-in for. Nothing is signed in, so no state binding is needed.
+func (s *Server) writeLoginError(w http.ResponseWriter, r *http.Request, loginError, returnTo string) {
+	if loginError != loginErrorLoginRequired {
+		log.Printf("auth callback %s: login app error %q", s.loginHost(r), loginError)
+		writeStatusPage(w, http.StatusBadRequest, statusPage{
+			Title:   "Sign-in failed",
+			Message: "The sign-in did not complete. Open the site again to retry.",
+			Detail:  loginError,
+			Links:   []statusPageLink{{Label: "Open the site again", URL: "/", Primary: true}},
+		})
+		return
+	}
+	writeStatusPage(w, http.StatusUnauthorized, statusPage{
+		Title:   "This site is private",
+		Message: "Sign in at " + s.login.loginURL.Host + " to view it.",
+		Links:   []statusPageLink{{Label: "Sign in", URL: "/api/auth/login?return_to=" + url.QueryEscape(returnTo), Primary: true}},
+	})
 }
 
 var insecureLoginPage = statusPage{
@@ -508,21 +542,26 @@ func (s *Server) denyAnonymousVisitor(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusUnauthorized, s.signInRequiredMessage(r))
 		return
 	}
-	s.startLogin(w, r, r.URL.RequestURI())
+	s.startLogin(w, r, r.URL.RequestURI(), loginPromptNone)
 }
 
-// handleAuthLogin starts a sign-in on request. Open sites serve their pages
-// anonymously, so a page that needs the SDK APIs sends the browser here.
+// handleAuthLogin starts a sign-in on request: from the "Sign in" link of the
+// private-site page, or from an open site's page that needs the SDK APIs.
+// The login app may show its sign-in, unless the page asked for prompt=none.
 func (s *Server) handleAuthLogin(w http.ResponseWriter, r *http.Request) {
 	if !s.requireLoginSiteHost(w, r) {
 		return
 	}
-	s.startLogin(w, r, s.returnPath(r))
+	prompt := ""
+	if r.URL.Query().Get("prompt") == loginPromptNone {
+		prompt = loginPromptNone
+	}
+	s.startLogin(w, r, s.returnPath(r), prompt)
 }
 
 // startLogin gives the browser a login state cookie and redirects it to the
 // login URL carrying that state, returning to returnPath on this host.
-func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath string) {
+func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath, prompt string) {
 	if !s.loginTransportSecure(r) {
 		writeStatusPage(w, http.StatusForbidden, insecureLoginPage)
 		return
@@ -538,6 +577,9 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath s
 	query := target.Query()
 	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+returnPath)
 	query.Set("state", state)
+	if prompt != "" {
+		query.Set("prompt", prompt)
+	}
 	target.RawQuery = query.Encode()
 	w.Header().Set("Cache-Control", "no-store")
 	http.Redirect(w, r, target.String(), http.StatusFound)
