@@ -222,7 +222,8 @@ func (s *LocalSiteStore) Open(_ context.Context, site, path string) (io.ReadClos
 		file.Close()
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
-	return file, SiteFileInfo{LastModified: info.ModTime()}, nil
+	etag := fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano())
+	return file, SiteFileInfo{LastModified: info.ModTime(), ETag: etag}, nil
 }
 
 func (s *LocalSiteStore) Remove(_ context.Context, site, path string) error {
