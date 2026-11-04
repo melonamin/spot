@@ -203,6 +203,22 @@ printf 'fake png' > "$out"
             extra_env={"TMPDIR": tmp, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
         )
         assert Handler.deploys == start_deploys + 2, Handler.deploys
+        assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
+        failing_bin = pathlib.Path(tmp) / "failing-bin"
+        failing_bin.mkdir()
+        (failing_bin / "chromium").write_text("#!/bin/sh\nexit 1\n")
+        (failing_bin / "chromium").chmod(0o755)
+        for _ in range(2):
+            failed = subprocess.run(
+                ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
+                cwd=root,
+                env={**env, "TMPDIR": tmp, "PATH": str(failing_bin) + os.pathsep + os.environ["PATH"]},
+                text=True,
+                capture_output=True,
+            )
+            assert failed.returncode != 0, failed.stdout
+            assert "screenshot capture failed" in failed.stderr, failed.stderr
+            assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
         zero = subprocess.run(
             ["./cli/spot", "show", "watch", "--interval", "0", "demo", str(show)],
             cwd=root,

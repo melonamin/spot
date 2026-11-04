@@ -243,10 +243,15 @@ deploy() {
 
     deploy_upload "$name" "$src" "$preserve_access"
     if [ "$deploy_screenshot" = 1 ]; then
-        shot=$(mktemp "${TMPDIR:-/tmp}/spot-screenshot.XXXXXX.png")
-        capture_screenshot "$SPOT_SCHEME://$name.$SPOT_HOSTPORT/" "$shot"
-        deploy_upload "$name" "$src" "$preserve_access" "$shot"
-        rm -f "$shot"
+        # BSD mktemp only fills trailing X's, so the template has no suffix.
+        # The subshell trap removes the directory when capture or upload exits.
+        shot_dir=$(mktemp -d "${TMPDIR:-/tmp}/spot-screenshot.XXXXXX")
+        (
+            trap 'rm -rf "$shot_dir"' EXIT
+            shot="$shot_dir/screenshot.png"
+            capture_screenshot "$SPOT_SCHEME://$name.$SPOT_HOSTPORT/" "$shot"
+            deploy_upload "$name" "$src" "$preserve_access" "$shot"
+        )
     fi
     echo "live: $SPOT_SCHEME://$name.$SPOT_HOSTPORT/"
 }
