@@ -363,7 +363,8 @@ mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `shared-*` collections and rooms are disabled because sites belong to
 different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
 site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
-embedding app. `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
+embedding app. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in default icons
+(see [Default icons](#default-icons)). `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
 for the apex and active site names; it answers only requests addressed to the
 service's internal name with no forwarded headers (as Caddy's `ask` URL
 does) and returns `404` for anything that came through a proxy or names a Spot
@@ -466,6 +467,16 @@ settings:
 Spot derives generated URLs from the request. Direct HTTP returns
 `http://`, direct TLS returns `https://`, and trusted proxies may send
 `X-Forwarded-Proto`. There is no configured public scheme.
+
+### Default icons
+
+A site without its own icon gets a default at `/favicon.ico` and `/apple-touch-icon.png` (also `/apple-touch-icon-precomposed.png`).
+Browsers and iOS request these root paths on their own, so no site HTML changes and publishers do nothing.
+A site's own file or `<link rel="icon">` tag always wins, and the apex and 404 pages use the same icons.
+
+Set `SPOT_DEFAULT_ICONS_DIR` to replace the built-in icon with your own `favicon.ico` and `apple-touch-icon.png` (opaque, because iOS renders transparency as black).
+Files are read on each request, so replacing them needs no restart.
+The directory replaces the built-in set entirely: a file missing from it returns `404` and never falls back to the built-in icon.
 
 ## Production Deploy
 

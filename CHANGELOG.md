@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Sites without their own icon get a default at `/favicon.ico` and `/apple-touch-icon.png`, on the apex and on 404 pages too, and platform pages use it. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in icon.
 - Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
 
 ## [0.10.0] - 2026-10-29

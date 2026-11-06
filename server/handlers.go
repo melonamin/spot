@@ -29,6 +29,7 @@ type Server struct {
 	forwardAuth       *ForwardAuth
 	login             *DelegatedLogin
 	frameAncestors    string
+	defaultIconsDir   string
 	apexRedirectURL   string
 	policies          *PolicyStore
 	hub               *Hub

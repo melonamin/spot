@@ -67,6 +67,7 @@ type config struct {
 	SessionSecret        string
 	SessionTTL           string
 	FrameAncestors       string
+	DefaultIconsDir      string
 	ApexRedirectURL      string
 	Cloudflare           cloudflareConfig
 }
@@ -147,6 +148,7 @@ func defaultConfigFromEnv() config {
 		SessionSecret:     os.Getenv("SPOT_SESSION_SECRET"),
 		SessionTTL:        envOr("SPOT_SESSION_TTL", "12h"),
 		FrameAncestors:    strings.Join(strings.Fields(os.Getenv("SPOT_FRAME_ANCESTORS")), " "),
+		DefaultIconsDir:   strings.TrimSpace(os.Getenv("SPOT_DEFAULT_ICONS_DIR")),
 		ApexRedirectURL:   strings.TrimSpace(os.Getenv("SPOT_APEX_REDIRECT_URL")),
 		Cloudflare:        loadCloudflareConfigFromEnv(),
 	}
@@ -532,6 +534,9 @@ func main() {
 			log.Printf("identity: warning: delegated login is the only identity source, so only publishing keys can deploy; set SPOT_FORWARD_AUTH or a mesh provider for the platform APIs")
 		}
 	}
+	if cfg.DefaultIconsDir != "" {
+		log.Printf("sites: default icons from %s", cfg.DefaultIconsDir)
+	}
 	if cfg.FrameAncestors != "" {
 		log.Printf("sites: frame-ancestors %s", cfg.FrameAncestors)
 	}
@@ -568,6 +573,7 @@ func main() {
 		forwardAuth:      forwardAuth,
 		login:            login,
 		frameAncestors:   cfg.FrameAncestors,
+		defaultIconsDir:  cfg.DefaultIconsDir,
 		apexRedirectURL:  cfg.ApexRedirectURL,
 		policies:         policies,
 		hub:              hub,
