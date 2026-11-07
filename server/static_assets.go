@@ -215,6 +215,9 @@ func (s *Server) serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, name
 }
 
 func (s *Server) serveEmbedded404(w http.ResponseWriter, r *http.Request) {
+	if s.serveDefaultIcon(w, r) {
+		return
+	}
 	if s.login != nil {
 		writeStatusPage(w, http.StatusNotFound, statusPage{
 			Title:   "Page not found",

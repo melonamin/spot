@@ -71,6 +71,10 @@ key can deploy only; it cannot delete sites or call site/runtime APIs. It may
 create one preview site per pull request and the human who created the key
 remains their immutable owner.
 
+Sites get a default browser icon, so publishing needs no icon work. To give a
+site its own, ship a root `favicon.ico` or a `<link rel="icon">` tag; a root
+`apple-touch-icon.png` sets its iOS home screen icon.
+
 Public gallery sites should ship a root `_screenshot.png`, `_screenshot.jpg`,
 `_screenshot.jpeg`, or `_screenshot.webp` so the gallery shows a real thumbnail
 instead of the generated fallback. For custom sites, pass `--screenshot` when a

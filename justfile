@@ -40,6 +40,18 @@ test-integration:
 test-cloudflare-live:
     cd server && SPOT_CLOUDFLARE_LIVE_TEST=1 go test -count=1 -tags=integration,cloudflarelive -run '^TestCloudflareLivePublishRoundTrip$' .
 
+# Regenerate the built-in default icons from their SVG sources (needs rsvg-convert and ImageMagick).
+default-icons:
+    #!/bin/sh
+    set -eu
+    cd server/default_icons
+    tmp=$(mktemp -d)
+    trap 'rm -rf "$tmp"' EXIT
+    for size in 16 32 48; do rsvg-convert -w "$size" -h "$size" favicon.svg -o "$tmp/$size.png"; done
+    magick "$tmp/16.png" "$tmp/32.png" "$tmp/48.png" favicon.ico
+    rsvg-convert -w 180 -h 180 apple-touch-icon.svg -o "$tmp/touch.png"
+    magick "$tmp/touch.png" -background '#5a4bf0' -alpha remove -alpha off -strip PNG24:apple-touch-icon.png
+
 # Sync the embedded SDK copy under server/static_assets/sdk.
 generate:
     cd server && go generate ./...
