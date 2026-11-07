@@ -149,6 +149,17 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		return
 	}
 	defer rc.Close()
+	if !typedData {
+		// Browsers otherwise reuse subresources by heuristic freshness, so a
+		// normal reload after a redeploy shows new HTML with old images.
+		// Restricted sites keep the no-store authorizeSiteAccess set.
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if info.ETag != "" {
+			w.Header().Set("ETag", info.ETag)
+		}
+	}
 	if seeker, ok := rc.(io.ReadSeeker); ok {
 		modTime := info.LastModified
 		if typedData {

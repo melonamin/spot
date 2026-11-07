@@ -138,7 +138,7 @@ func TestUntypedSiteServingIsUnchanged(t *testing.T) {
 	env := newTypesEnv(t)
 	env.mustDeploy("plain", map[string]string{"index.html": "<h1>plain</h1>", "_type/x.js": "x"}, nil)
 	rec := env.get("plain.spot.localhost", "/")
-	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "" || rec.Header().Get("Last-Modified") == "" {
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" || rec.Header().Get("Last-Modified") == "" {
 		t.Fatalf("untyped index = %d %v", rec.Code, rec.Header())
 	}
 	// _type/ is ordinary content on an untyped site.

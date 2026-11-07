@@ -52,6 +52,10 @@ type SiteStorage interface {
 
 type SiteFileInfo struct {
 	LastModified time.Time
+	// ETag is a quoted strong validator that changes whenever the stored
+	// bytes are rewritten, so it also tells apart two deploys inside one
+	// Last-Modified second.
+	ETag string
 }
 
 // SiteStore writes deployed sites into an S3-compatible bucket. Deploys
@@ -117,7 +121,7 @@ func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser,
 		}
 		return nil, SiteFileInfo{}, fmt.Errorf("stat site file %s: %w", key, err)
 	}
-	return obj, SiteFileInfo{LastModified: info.LastModified}, nil
+	return obj, SiteFileInfo{LastModified: info.LastModified, ETag: `"` + strings.Trim(info.ETag, `"`) + `"`}, nil
 }
 
 func (s *SiteStore) PutTypeFile(ctx context.Context, name, version, path, contentType string, data []byte) error {

@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
 
+### Fixed
+
+- Site files are served with `Cache-Control: no-cache` and a strong `ETag`, so a normal reload (or the `spot-live.js` refresh) after a redeploy shows replaced images, CSS and scripts instead of browser-cached copies; restricted and typed sites keep `no-store`. (#38)
+
 ## [0.10.0] - 2026-10-29
 
 ### Added

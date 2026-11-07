@@ -185,3 +185,42 @@ func mustOutbound(t *testing.T, req *http.Request, url string) *http.Request {
 	out.Header = req.Header
 	return out
 }
+
+// TestSiteStoreETagFollowsContent pins the validator serveStatic sends for
+// S3-backed sites: quoted, stable for identical bytes, new for new bytes.
+func TestSiteStoreETagFollowsContent(t *testing.T) {
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:9000"
+	}
+	requireTestS3Endpoint(t, endpoint)
+	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
+	if err != nil {
+		t.Fatalf("site store: %v", err)
+	}
+	ctx := context.Background()
+	const site = "it-etag"
+	t.Cleanup(func() { sites.Remove(ctx, site, "photo.png") })
+	etagAfterPut := func(content string) string {
+		t.Helper()
+		if err := sites.Put(ctx, site, "photo.png", "image/png", []byte(content)); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		rc, info, err := sites.Open(ctx, site, "photo.png")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		rc.Close()
+		if len(info.ETag) < 3 || info.ETag[0] != '"' || info.ETag[len(info.ETag)-1] != '"' {
+			t.Fatalf("ETag %q is not a quoted validator", info.ETag)
+		}
+		return info.ETag
+	}
+	blue := etagAfterPut("blue")
+	if again := etagAfterPut("blue"); again != blue {
+		t.Errorf("identical bytes changed ETag %q -> %q", blue, again)
+	}
+	if red := etagAfterPut("red"); red == blue {
+		t.Errorf("new bytes kept ETag %q", blue)
+	}
+}
