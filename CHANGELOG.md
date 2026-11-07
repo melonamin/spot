@@ -7,20 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-11-06
+
 ### Added
 
-- Sites without their own icon get a default at `/favicon.ico` and `/apple-touch-icon.png`, on the apex and on 404 pages too, and platform pages use it. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in icon.
-- The Spot Show schema, agent how-to, skill and `spot show init` template recommend separating as was or as is versus to be comparisons by background color, with theme-aware amber and green values for HTML tables and Mermaid subgraphs. (#42)
-- Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
-- Delegated login can keep a stranger on the site host, using the OpenID Connect parameter names: the sign-in Spot starts on its own for a page load carries `prompt=none`, the login app may answer `/api/auth/callback?error=login_required` for a browser with no session, and Spot then shows a "Sign-in required" page on the site host with a "Sign in" link (which starts a sign-in without `prompt`). Any other `error` shows a "Sign-in failed" page. `/api/auth/login` passes `prompt=none` through for open-site pages that ask for it, and Spot drops a `prompt` configured into `SPOT_LOGIN_URL`. A login app that ignores `prompt` keeps working as before.
+- Delegated login supports silent sign-in with `prompt=none`. When the login app honors it, signed-out visitors return to a sign-in notice on the site host and can choose to sign in. (#37)
+- Sites, platform pages, and missing-site pages receive default browser and touch icons. Operators can replace the built-in icons with `SPOT_DEFAULT_ICONS_DIR`. (#43)
+- Platform administrators can permanently delete unused site types and their stored versions and package files. Types still used by a site cannot be deleted. (#36)
+- Spot Show templates and agent guidance use amber and green backgrounds to distinguish current and proposed states in comparison tables and diagrams. (#42)
 
 ### Changed
 
-- With `SPOT_APEX_REDIRECT_URL`, the apex platform pages show a page that names the embedding app and links to it, instead of redirecting to it, so a visitor is not forwarded unasked to a sign-in on another domain.
+- `SPOT_APEX_REDIRECT_URL` now renders a landing page that names and links to the embedding application instead of returning an automatic redirect. APIs, assets, and individual hosted sites retain their existing routes. (#37)
 
 ### Fixed
 
-- Site files are served with `Cache-Control: no-cache` and a strong `ETag`, so a normal reload (or the `spot-live.js` refresh) after a redeploy shows replaced images, CSS and scripts instead of browser-cached copies; restricted and typed sites keep `no-store`. (#38)
+- Redeployed images, stylesheets, and scripts revalidate on normal reloads. Static site files receive `Cache-Control: no-cache` and ETags; restricted and typed content retains `no-store`. (#39)
+- Screenshot deployments use portable temporary directories on macOS and clean up after capture or upload failures. Watch mode reports screenshot failures and preserves pending `--open` requests until a complete deploy succeeds. (#41)
 
 ## [0.10.0] - 2026-10-29
 
@@ -216,7 +219,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/melonamin/spot/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/melonamin/spot/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/melonamin/spot/compare/v0.9.0...v0.9.1
 [0.9.0]: https://github.com/melonamin/spot/compare/v0.8.1...v0.9.0
