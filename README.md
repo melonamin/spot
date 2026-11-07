@@ -318,12 +318,24 @@ the mesh and homelab overlays do.
 1. A browser opens a restricted site with no identity, or only a mesh
    identity the allowlist refuses (the login app may assert groups the mesh
    does not know). Spot sets a short-lived login state cookie on that host and
-   redirects it to `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other
+   redirects it to
+   `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>&prompt=none`. Other
    requests get `401`. A signed-in or forward-auth viewer the allowlist refuses
    gets `403`.
 2. The login app authenticates the browser and redirects it to
    `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`; `return_to`
-   may be the path or the site URL from step 1 unchanged. The token is
+   may be the path or the site URL from step 1 unchanged. `prompt=none` means
+   the browser did not choose to sign in: the login app should answer a
+   browser with no session by redirecting to
+   `<site origin>/api/auth/callback?error=login_required&return_to=<path>`
+   instead of showing its sign-in (the parameter names are OpenID Connect's;
+   the flow is not OIDC). Spot then shows a "Sign-in required" page on the
+   site host that names the login host and offers a "Sign in" link, which
+   starts the flow again without `prompt`, so the login app may show its
+   sign-in. When the login app honors `prompt=none`, a stranger on a sites
+   domain is never forwarded unasked to a sign-in form on another domain. A
+   login app that ignores `prompt` still works as before. Any other `error` shows a "Sign-in failed" page. Spot sets `prompt`
+   itself and drops one configured into `SPOT_LOGIN_URL`. The token is
    a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
    (`spot-login`), `host` (the exact site host, lowercase, with any non-default
    port), `state` (the `state` query value, unchanged), `email`, optional
@@ -341,6 +353,9 @@ the mesh and homelab overlays do.
 Open sites serve their pages without sign-in, so a page that needs the SDK
 APIs starts the flow itself by navigating to
 `/api/auth/login?return_to=<path>` on its own host; step 2 onward is the same.
+The page may add `prompt=none` so a visitor with no session is not shown a
+sign-in; that visitor then lands on the "Sign-in required" page rather than
+back on the site, so use it only when the page cannot work anonymously.
 
 Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
 site could plant cookies, so Spot shows a "needs a secure connection" page and
@@ -362,9 +377,11 @@ mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
 `/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
 `shared-*` collections and rooms are disabled because sites belong to
 different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
-site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
-embedding app. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in default icons
-(see [Default icons](#default-icons)). `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
+site response; with `SPOT_APEX_REDIRECT_URL` the apex HTML pages become one
+page that names the embedding app and links to it, so a visitor is not
+forwarded unasked to a sign-in on another domain. `SPOT_DEFAULT_ICONS_DIR`
+replaces the built-in default icons (see [Default icons](#default-icons)).
+`GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
 for the apex and active site names; it answers only requests addressed to the
 service's internal name with no forwarded headers (as Caddy's `ask` URL
 does) and returns `404` for anything that came through a proxy or names a Spot

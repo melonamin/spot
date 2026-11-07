@@ -471,7 +471,9 @@ Resolvers:
 `resolvePeer` checks forward auth first, then the delegated-login session
 cookie (site hosts only), then the mesh resolver. With delegated login, a site
 that refuses a mesh identity starts a sign-in, so the login app's identity can
-take its place.
+take its place. A sign-in Spot starts on its own is silent (`prompt=none`);
+when the login app answers `error=login_required`, the visitor stays on the
+site host with a page that links to a sign-in they choose.
 
 Handlers call `resolveIdentity` using `clientIP`. If a trusted proxy is in
 front, `clientIP` may use trusted forwarded headers; otherwise it uses the

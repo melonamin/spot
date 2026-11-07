@@ -12,6 +12,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Sites without their own icon get a default at `/favicon.ico` and `/apple-touch-icon.png`, on the apex and on 404 pages too, and platform pages use it. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in icon.
 - The Spot Show schema, agent how-to, skill and `spot show init` template recommend separating as was or as is versus to be comparisons by background color, with theme-aware amber and green values for HTML tables and Mermaid subgraphs. (#42)
 - Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
+- Delegated login can keep a stranger on the site host, using the OpenID Connect parameter names: the sign-in Spot starts on its own for a page load carries `prompt=none`, the login app may answer `/api/auth/callback?error=login_required` for a browser with no session, and Spot then shows a "Sign-in required" page on the site host with a "Sign in" link (which starts a sign-in without `prompt`). Any other `error` shows a "Sign-in failed" page. `/api/auth/login` passes `prompt=none` through for open-site pages that ask for it, and Spot drops a `prompt` configured into `SPOT_LOGIN_URL`. A login app that ignores `prompt` keeps working as before.
+
+### Changed
+
+- With `SPOT_APEX_REDIRECT_URL`, the apex platform pages show a page that names the embedding app and links to it, instead of redirecting to it, so a visitor is not forwarded unasked to a sign-in on another domain.
 
 ### Fixed
 
