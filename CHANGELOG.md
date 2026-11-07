@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- The Spot Show schema, agent how-to, skill and `spot show init` template recommend separating as was or as is versus to be comparisons by background color, with theme-aware amber and green values for HTML tables and Mermaid subgraphs. (#42)
 - Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
 
 ### Fixed
