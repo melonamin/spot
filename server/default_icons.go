@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path"
+	"time"
 )
 
 // Regenerate with `just default-icons` after editing the SVG sources.
@@ -48,12 +49,6 @@ func (s *Server) serveDefaultIcon(w http.ResponseWriter, r *http.Request) bool {
 		return true
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		log.Printf("default icon %s: %v", icon.name, err)
-		httpError(w, http.StatusInternalServerError, "could not read default icon")
-		return true
-	}
 	seeker, ok := file.(io.ReadSeeker)
 	if !ok {
 		httpError(w, http.StatusInternalServerError, "default icon is not seekable")
@@ -66,6 +61,9 @@ func (s *Server) serveDefaultIcon(w http.ResponseWriter, r *http.Request) bool {
 	if h.Get("Cache-Control") == "" {
 		h.Set("Cache-Control", "no-cache")
 	}
-	http.ServeContent(w, r, icon.name, info.ModTime(), seeker)
+	// This URL may previously have served a site's own icon. Its timestamp
+	// cannot validate this fallback, which may be older or keep its mtime
+	// when replaced by the operator.
+	http.ServeContent(w, r, icon.name, time.Time{}, seeker)
 	return true
 }

@@ -146,6 +146,9 @@ Rules of thumb:
 - Use `image` for visual evidence.
 - Use `trace` when the sequence and status of agent work matter.
 - Use `html` sparingly when the other blocks cannot express the idea.
+- Separate as was or as is versus to be by background color in every table and
+  diagram: amber for the current state, green for the proposed state. See "As
+  Was / To Be comparison" in the schema for the exact values.
 
 The viewer offers system/light/dark appearance, copyable card links, and
 fullscreen Mermaid/image views. Give cards an explicit `id` when a copied link

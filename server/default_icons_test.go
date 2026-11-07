@@ -112,3 +112,67 @@ func TestDefaultIconsDirReplacesBuiltInIcons(t *testing.T) {
 		t.Fatalf("missing operator touch icon = %d, want 404", rec.Code)
 	}
 }
+
+func TestDefaultIconFallbackIgnoresOtherRepresentationModifiedTime(t *testing.T) {
+	dir := t.TempDir()
+	iconPath := filepath.Join(dir, "favicon.ico")
+	operatorTime := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
+	writeOperatorIcon := func(content string) {
+		t.Helper()
+		if err := os.WriteFile(iconPath, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chtimes(iconPath, operatorTime, operatorTime); err != nil {
+			t.Fatal(err)
+		}
+	}
+	writeOperatorIcon("operator icon")
+	handler, sites := newDefaultIconsServer(t, dir)
+	if err := sites.Put(t.Context(), "demo", "favicon.ico", "image/x-icon", []byte("site icon")); err != nil {
+		t.Fatal(err)
+	}
+	own := getDefaultIconsPath(handler, "https://demo.spot.localhost/favicon.ico")
+	modified := own.Header().Get("Last-Modified")
+	if own.Code != http.StatusOK || modified == "" {
+		t.Fatalf("site icon = %d with Last-Modified %q", own.Code, modified)
+	}
+	if err := sites.Remove(t.Context(), "demo", "favicon.ico"); err != nil {
+		t.Fatal(err)
+	}
+	for _, content := range []string{"operator icon", "replacement operator icon"} {
+		// Operator files may be older or retain their mtime when replaced.
+		writeOperatorIcon(content)
+		req := httptest.NewRequest(http.MethodGet, "https://demo.spot.localhost/favicon.ico", nil)
+		// A previously cached icon may have only a time validator.
+		req.Header.Set("If-Modified-Since", modified)
+		rec := httptest.NewRecorder()
+		handler.ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK || rec.Body.String() != content {
+			t.Fatalf("fallback = %d %q, want 200 %q", rec.Code, rec.Body.String(), content)
+		}
+		if got := rec.Header().Get("Last-Modified"); got != "" {
+			t.Fatalf("fallback Last-Modified = %q, want no time validator", got)
+		}
+	}
+}
+
+func TestRestrictedDefaultIconsRequireAccess(t *testing.T) {
+	env := newTypesEnv(t)
+	env.mustDeploy("private", map[string]string{
+		"index.html":   "private",
+		accessFileName: `{"allow":["` + typesOwnerEmail + `"]}`,
+	}, nil)
+	for iconPath := range defaultIconFiles {
+		rec := env.get("private.spot.localhost", iconPath)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Fatalf("allowed %s = %d %v", iconPath, rec.Code, rec.Header())
+		}
+	}
+	env.as("stranger@example.com")
+	for iconPath := range defaultIconFiles {
+		rec := env.get("private.spot.localhost", iconPath, "If-Modified-Since", "Mon, 01 Jan 2035 00:00:00 GMT")
+		if rec.Code != http.StatusForbidden {
+			t.Fatalf("denied %s = %d, want 403", iconPath, rec.Code)
+		}
+	}
+}

@@ -6,6 +6,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -217,11 +219,57 @@ func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
 				target, rec.Code, rec.Header().Get("Cache-Control"))
 		}
 	}
-	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "" {
-		t.Errorf("open site = %d with Cache-Control %q, want 200 and cacheable", rec.Code, rec.Header().Get("Cache-Control"))
+	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("open site = %d with Cache-Control %q, want 200 and no-cache", rec.Code, rec.Header().Get("Cache-Control"))
 	}
 	if rec := get("open", "/api/me"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("open site /api/me = %d with Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestSiteFilesRevalidateAfterRedeploy(t *testing.T) {
+	dir := t.TempDir()
+	srv := downloadServer(t, dir)
+	srv.serveStatic = true
+	deployed := time.Date(2026, 11, 4, 5, 25, 37, 0, time.UTC)
+	deploy := func(content string, at time.Time) {
+		writeSiteFile(t, dir, "open", "photo.png", content)
+		if err := os.Chtimes(filepath.Join(dir, "open", "photo.png"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(header http.Header) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api/photo.png", nil)
+		req.Header.Set("X-Forwarded-Host", "open.spot.localhost")
+		req.Header.Set("X-Forwarded-For", "100.64.0.7")
+		for name, values := range header {
+			req.Header[name] = values
+		}
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	deploy("blue", deployed)
+	first := get(nil)
+	etag, lastModified := first.Header().Get("ETag"), first.Header().Get("Last-Modified")
+	if first.Code != http.StatusOK || first.Header().Get("Cache-Control") != "no-cache" || etag == "" || lastModified == "" {
+		t.Fatalf("first load = %d, Cache-Control %q, ETag %q, Last-Modified %q; want 200, no-cache and both validators",
+			first.Code, first.Header().Get("Cache-Control"), etag, lastModified)
+	}
+	cached := http.Header{"If-None-Match": {etag}, "If-Modified-Since": {lastModified}}
+	if rec := get(cached); rec.Code != http.StatusNotModified {
+		t.Fatalf("unchanged revalidation = %d, want 304", rec.Code)
+	}
+
+	// A redeploy inside the same Last-Modified second must still replace the file.
+	deploy("red", deployed.Add(500*time.Millisecond))
+	rec := get(cached)
+	if rec.Code != http.StatusOK || rec.Body.String() != "red" {
+		t.Fatalf("revalidation after redeploy = %d %q, want 200 \"red\"", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("ETag") == etag {
+		t.Fatalf("ETag %q did not change after redeploy", etag)
 	}
 }
 

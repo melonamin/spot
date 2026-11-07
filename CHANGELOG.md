@@ -10,7 +10,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Added
 
 - Sites without their own icon get a default at `/favicon.ico` and `/apple-touch-icon.png`, on the apex and on 404 pages too, and platform pages use it. `SPOT_DEFAULT_ICONS_DIR` replaces the built-in icon.
+- The Spot Show schema, agent how-to, skill and `spot show init` template recommend separating as was or as is versus to be comparisons by background color, with theme-aware amber and green values for HTML tables and Mermaid subgraphs. (#42)
 - Platform admins can permanently delete an unused site type, including every version and package file. Sites using any version block deletion.
+
+### Fixed
+
+- Site files are served with `Cache-Control: no-cache` and a strong `ETag`, so a normal reload (or the `spot-live.js` refresh) after a redeploy shows replaced images, CSS and scripts instead of browser-cached copies; restricted and typed sites keep `no-store`. (#38)
 
 ## [0.10.0] - 2026-10-29
 
