@@ -19,6 +19,9 @@ type Event struct {
 	Doc        *Document `json:"doc,omitempty"`
 	Version    string    `json:"version,omitempty"`
 	URL        string    `json:"url,omitempty"`
+	// SiteType is the typed site's pin as name@version, so a viewer can
+	// tell a repin from a data deploy.
+	SiteType string `json:"site_type,omitempty"`
 }
 
 type subKey struct {
@@ -143,7 +146,7 @@ func (h *Hub) DisconnectScope(scope string) {
 	}
 }
 
-func (s *Server) publishDeployEvent(site, version, url string) {
+func (s *Server) publishDeployEvent(site, version, url, siteType string) {
 	if s.hub == nil {
 		return
 	}
@@ -153,6 +156,7 @@ func (s *Server) publishDeployEvent(site, version, url string) {
 		ID:         version,
 		Version:    version,
 		URL:        url,
+		SiteType:   siteType,
 	})
 }
 

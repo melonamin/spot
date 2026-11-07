@@ -25,20 +25,90 @@ sdk = root / "sdk"
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     deploys = 0
+    reject_screenshots = False
+    last_authorization = ""
+    last_body = b""
+    last_path = ""
+    last_method = ""
 
     def __init__(self, *args, **kwargs):
         super().__init__(*args, directory=str(sdk), **kwargs)
 
     def do_POST(self):
-        if self.path != "/api/deploy":
+        if self.path not in ("/api/deploy", "/api/types"):
             self.send_error(404)
             return
         length = int(self.headers.get("content-length", "0"))
-        self.rfile.read(length)
-        Handler.deploys += 1
+        Handler.last_body = self.rfile.read(length)
+        Handler.last_path, Handler.last_method = self.path, "POST"
+        if self.path == "/api/deploy":
+            Handler.deploys += 1
+        Handler.last_authorization = self.headers.get("Authorization", "")
+        if self.path == "/api/deploy" and Handler.reject_screenshots and b'filename="_screenshot.png"' in Handler.last_body:
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(b"screenshot upload refused")
+            return
+        if self.path == "/api/types" and b'filename="conflict"' in Handler.last_body:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "type_version_exists"}')
+            return
+        self.send_response(201 if self.path == "/api/types" else 200)
+        self.end_headers()
+        self.wfile.write(b'{"created": true}' if self.path == "/api/types" else b"ok")
+
+    # A stored access policy for /api/sites/<site>/access. Its version is a
+    # digest of the policy; race_after_get changes it right after that many
+    # GETs, like an edit made elsewhere between the CLI's read and write.
+    access_policy = {"allow": ["a@example.com"], "maintainers": ["m@example.com"], "download": False}
+    access_race = 0
+    access_puts = 0
+
+    @staticmethod
+    def access_version():
+        return '"sha256:' + str(abs(hash(json.dumps(Handler.access_policy, sort_keys=True)))) + '"'
+
+    def send_json(self, status, payload, etag=None):
+        data = json.dumps(payload).encode()
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        if etag:
+            self.send_header("ETag", etag)
+        self.end_headers()
+        self.wfile.write(data)
+
+    def do_GET(self):
+        if self.path.startswith("/api/sites/") and self.path.endswith("/access"):
+            version = Handler.access_version()
+            self.send_json(200, {"site": "deck", "readable": True, "restricted": "allow" in Handler.access_policy,
+                                 "pending": False, "policy": Handler.access_policy, "version": version}, version)
+            if Handler.access_race:
+                Handler.access_race -= 1
+                Handler.access_policy = {**Handler.access_policy, "allow": Handler.access_policy.get("allow", []) + ["late@example.com"]}
+            return
+        super().do_GET()
+
+    def do_PUT(self):
+        length = int(self.headers.get("content-length", "0"))
+        Handler.last_body = self.rfile.read(length)
+        Handler.last_path, Handler.last_method = self.path, "PUT"
+        if self.path.endswith("/access"):
+            Handler.access_puts += 1
+            if self.headers.get("If-Match") != Handler.access_version():
+                self.send_json(412, {"error": "changed", "version": Handler.access_version()})
+                return
+            Handler.access_policy = json.loads(Handler.last_body)
+            self.send_json(200, {"site": "deck", "version": Handler.access_version()})
+            return
+        if "/fail/" in self.path:
+            self.send_response(409)
+            self.end_headers()
+            self.wfile.write(b'{"code": "site_untyped"}')
+            return
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"ok")
+        self.wfile.write(b'{"site": "deck"}')
 
 handler = functools.partial(Handler)
 server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
@@ -183,6 +253,126 @@ try:
         run(["./cli/spot", "show", "deploy", "--no-screenshot", "demo", str(show)], extra_env={"TMPDIR": tmp})
         leaked = list(pathlib.Path(tmp).glob("spot-show.*"))
         assert not leaked, leaked
+        publishing_key = "test_publishing_key_redacted_fixture"
+        curl_home = pathlib.Path(tmp) / "curl-home"
+        curl_home.mkdir()
+        curl_trace = pathlib.Path(tmp) / "curl-trace"
+        (curl_home / ".curlrc").write_text(f'trace-ascii = "{curl_trace}"\n')
+        keyed = run(
+            ["./cli/spot", "deploy", "keydemo", str(out)],
+            extra_env={"SPOT_PUBLISH_KEY": publishing_key, "CURL_HOME": str(curl_home)},
+        )
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
+        assert publishing_key not in keyed.stdout and publishing_key not in keyed.stderr
+        assert not curl_trace.exists(), "secret-bearing curl loaded the default .curlrc"
+        # A plain deploy leaves the stored _access.json to the server default;
+        # --replace-access asks the server to remove it.
+        assert b'name="preserve_access"' not in Handler.last_body, Handler.last_body[:300]
+        run(["./cli/spot", "deploy", "--replace-access", "keydemo", str(out)])
+        assert b'name="preserve_access"\r\n\r\nfalse\r\n' in Handler.last_body, Handler.last_body[:300]
+
+        # A typed deploy sends the type fields and needs no index.html.
+        data = pathlib.Path(tmp) / "typed-data"
+        (data / "media").mkdir(parents=True)
+        (data / "card.json").write_text('{"title": "x"}')
+        (data / "media" / "a.png").write_text("png")
+        typed = run(["./cli/spot", "deploy", "--type", "card@1.0.0", "--type-target", "1.1.0",
+                     "--follow", "major", "deck", str(data)])
+        assert "(type card@1.0.0)" in typed.stdout, typed.stdout
+        for field in [b'name="type"\r\n\r\ncard@1.0.0\r\n', b'name="type_target"\r\n\r\n1.1.0\r\n',
+                      b'name="type_track"\r\n\r\nmajor\r\n', b'filename="media/a.png"', b'filename="card.json"']:
+            assert field in Handler.last_body, (field, Handler.last_body[:600])
+        for bad in [["--follow", "minor", "--type", "card@1.0.0"], ["--type", "card"], ["--follow", "major"]]:
+            failed = subprocess.run(["./cli/spot", "deploy", *bad, "deck", str(data)], cwd=root, env=env,
+                                    text=True, capture_output=True)
+            assert failed.returncode != 0 and "error:" in failed.stderr, (bad, failed.stderr)
+        untyped = subprocess.run(["./cli/spot", "deploy", "deck", str(data)], cwd=root, env=env,
+                                 text=True, capture_output=True)
+        assert untyped.returncode != 0 and "index.html not found" in untyped.stderr, untyped.stderr
+
+        # A merge sends mode=merge, needs no index.html and keeps a single
+        # file's own name; --if-version sends the condition.
+        run(["./cli/spot", "deploy", "--merge", "--if-version", "20261017T120000.000000000Z", "deck", str(data)])
+        for field in [b'name="mode"\r\n\r\nmerge\r\n', b'name="if_version"\r\n\r\n20261017T120000.000000000Z\r\n',
+                      b'filename="card.json"']:
+            assert field in Handler.last_body, (field, Handler.last_body[:600])
+        run(["./cli/spot", "deploy", "--merge", "deck", str(data / "card.json")])
+        assert b'filename="card.json"' in Handler.last_body and b'filename="index.html"' not in Handler.last_body, Handler.last_body[:600]
+        conflicting = subprocess.run(["./cli/spot", "deploy", "--if-version", "v", "--screenshot", "deck", str(out)],
+                                     cwd=root, env=env, text=True, capture_output=True)
+        assert conflicting.returncode != 0 and "--if-version cannot be combined" in conflicting.stderr, conflicting.stderr
+
+        # A package upload sends every file, and refuses symlinks.
+        pkg = root / "examples" / "types" / "card"
+        uploaded = run(["./cli/spot", "types", "upload", str(pkg)])
+        assert Handler.last_path == "/api/types" and '"created"' in uploaded.stdout, uploaded.stdout
+        for name in ["type.json", "index.html", "card.js", "card.css", "SKILL.md"]:
+            assert f'filename="{name}"'.encode() in Handler.last_body, name
+        linked = pathlib.Path(tmp) / "linked-pkg"
+        linked.mkdir()
+        (linked / "type.json").write_text("{}")
+        (linked / "index.html").symlink_to(pkg / "index.html")
+        refused = subprocess.run(["./cli/spot", "types", "upload", str(linked)], cwd=root, env=env,
+                                 text=True, capture_output=True)
+        assert refused.returncode != 0 and "symlinks" in refused.stderr, refused.stderr
+
+        run(["./cli/spot", "types", "repin", "deck", "--version", "1.2.0", "--track", "major"])
+        assert (Handler.last_method, Handler.last_path) == ("PUT", "/api/sites/deck/type"), Handler.last_path
+        assert json.loads(Handler.last_body) == {"version": "1.2.0", "track": "major"}, Handler.last_body
+        run(["./cli/spot", "types", "repin", "deck", "--track", "pinned"])
+        assert json.loads(Handler.last_body) == {"track": "pinned"}, Handler.last_body
+
+        # spot access shows the policy, and edits it relative to what it
+        # read, keeping fields it does not manage.
+        shown = run(["./cli/spot", "access", "deck"]).stdout
+        assert '"maintainers"' in shown and '"version"' in shown, shown
+        run(["./cli/spot", "access", "deck", "--add", "b@example.com, ops", "--remove", "A@example.com",
+             "--add-maintainer", "x@example.com"])
+        assert Handler.access_policy == {"allow": ["b@example.com", "ops"], "download": False,
+                                         "maintainers": ["m@example.com", "x@example.com"]}, Handler.access_policy
+        run(["./cli/spot", "access", "deck", "--everyone", "--maintainers", ""])
+        assert Handler.access_policy == {"download": False, "maintainers": []}, Handler.access_policy
+        # A change made between the read and the write is not overwritten:
+        # the CLI reads again and reapplies its edits once.
+        Handler.access_policy, Handler.access_race, Handler.access_puts = {"allow": ["a@example.com"]}, 1, 0
+        run(["./cli/spot", "access", "deck", "--add", "b@example.com"])
+        assert Handler.access_puts == 2, Handler.access_puts
+        assert Handler.access_policy == {"allow": ["a@example.com", "late@example.com", "b@example.com"]}, Handler.access_policy
+        Handler.access_race, Handler.access_puts = 2, 0
+        racing = subprocess.run(["./cli/spot", "access", "deck", "--add", "c@example.com"], cwd=root, env=env,
+                                text=True, capture_output=True)
+        assert racing.returncode != 0 and "keeps changing" in racing.stderr and Handler.access_puts == 2, racing.stderr
+        Handler.access_race = 0
+        for bad in [["--add"], ["--bogus", "x"], ["--remove"]]:
+            failed = subprocess.run(["./cli/spot", "access", "deck", *bad], cwd=root, env=env,
+                                    text=True, capture_output=True)
+            assert failed.returncode != 0 and "error:" in failed.stderr, (bad, failed.stderr)
+        # Removal matches stored entries the way the server does, trimmed and
+        # case-insensitive, so padded entries cannot survive a --remove.
+        Handler.access_policy = {"allow": [" Alice@Example.com ", "bob@example.com"], "maintainers": [" Ops "]}
+        run(["./cli/spot", "access", "deck", "--remove", "alice@example.com", "--remove-maintainer", "ops",
+             "--add", " BOB@example.com "])
+        assert Handler.access_policy == {"allow": ["bob@example.com"], "maintainers": []}, Handler.access_policy
+        Handler.access_policy = {}
+        open_remove = subprocess.run(["./cli/spot", "access", "deck", "--remove", "a@example.com"], cwd=root, env=env,
+                                     text=True, capture_output=True)
+        assert open_remove.returncode != 0 and "open to everyone" in open_remove.stderr, open_remove.stderr
+
+        # Every types command fails with the API: automation must not read a
+        # refused upload, yank or repin as success.
+        conflict = pathlib.Path(tmp) / "conflict-pkg"
+        conflict.mkdir()
+        (conflict / "type.json").write_text("{}")
+        (conflict / "conflict").write_text("x")
+        for args in [["list"], ["list", "--all"], ["show", "card"], ["show", "card@1.0.0"],
+                     ["skill", "card@1.0.0"], ["yank", "card@1.0.0"], ["unyank", "card@1.0.0"],
+                     ["repin", "fail", "--track", "major"], ["upload", str(conflict)]]:
+            failed = subprocess.run(["./cli/spot", "types", *args], cwd=root, env=env, text=True, capture_output=True)
+            assert failed.returncode != 0, (args, failed.returncode, failed.stdout, failed.stderr)
+            assert "failed (HTTP" in failed.stderr, (args, failed.stderr)
+        unreachable = subprocess.run(["./cli/spot", "types", "list"], cwd=root, text=True, capture_output=True,
+                                     env={**env, "SPOT_URL": "http://127.0.0.1:9"})
+        assert unreachable.returncode != 0 and "could not reach" in unreachable.stderr, unreachable.stderr
         fake_bin = pathlib.Path(tmp) / "fake-bin"
         fake_bin.mkdir()
         chromium = fake_bin / "chromium"
@@ -194,15 +384,33 @@ for arg in "$@"; do
   esac
 done
 [ -n "$out" ] || exit 2
-printf 'fake png' > "$out"
+printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\104\\122\\000\\000\\000\\001\\000\\000\\000\\001\\010\\004\\000\\000\\000\\265\\034\\014\\002\\000\\000\\000\\013\\111\\104\\101\\124\\170\\332\\143\\144\\370\\017\\000\\001\\005\\001\\001\\047\\030\\343\\146\\000\\000\\000\\000\\111\\105\\116\\104\\256\\102\\140\\202' > "$out"
 """)
         chromium.chmod(0o755)
+        valid_chromium = chromium.read_text()
+        start_deploys = Handler.deploys
+        keyed_show = run(
+            ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
+            extra_env={
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_PUBLISH_KEY": publishing_key,
+            },
+        )
+        assert Handler.deploys == start_deploys + 1, Handler.deploys
+        assert "screenshot: skipped for publishing-key deploy" in keyed_show.stdout, keyed_show.stdout
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
         start_deploys = Handler.deploys
         run(
-            ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
-            extra_env={"TMPDIR": tmp, "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"]},
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-explicit", str(show)],
+            extra_env={
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_PUBLISH_KEY": publishing_key,
+            },
         )
         assert Handler.deploys == start_deploys + 2, Handler.deploys
+        assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
         assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
         failing_bin = pathlib.Path(tmp) / "failing-bin"
         failing_bin.mkdir()
@@ -219,6 +427,79 @@ printf 'fake png' > "$out"
             assert failed.returncode != 0, failed.stdout
             assert "screenshot capture failed" in failed.stderr, failed.stderr
             assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf 'not-a-png' > "$out"
+exit 7
+""")
+        failed_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-failed", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            },
+            text=True,
+            capture_output=True,
+        )
+        assert failed_capture.returncode != 0, failed_capture.stdout
+        assert "screenshot capture failed" in failed_capture.stderr, failed_capture.stderr
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf 'not-a-png' > "$out"
+""")
+        invalid_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-invalid", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+            },
+            text=True,
+            capture_output=True,
+        )
+        assert invalid_capture.returncode != 0, invalid_capture.stdout
+        assert "invalid or incomplete PNG" in invalid_capture.stderr, invalid_capture.stderr
+
+        chromium.write_text("""#!/bin/sh
+out=
+for arg in "$@"; do
+  case "$arg" in
+    --screenshot=*) out=${arg#--screenshot=} ;;
+  esac
+done
+printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\104\\122\\000\\000\\000\\001\\000\\000\\000\\001\\010\\004\\000\\000\\000\\265\\034\\014\\002\\000\\000\\000\\013\\111\\104\\101\\124\\170\\332\\143\\144\\370\\017\\000\\001\\005\\001\\001\\047\\030\\343\\146\\000\\000\\000\\000\\111\\105\\116\\104\\256\\102\\140\\202' > "$out"
+trap '' TERM
+exec sleep 30
+""")
+        resistant_capture = subprocess.run(
+            ["./cli/spot", "show", "deploy", "--screenshot", "shotdemo-resistant", str(show)],
+            cwd=root,
+            env={
+                **env,
+                "TMPDIR": tmp,
+                "PATH": str(fake_bin) + os.pathsep + os.environ["PATH"],
+                "SPOT_SCREENSHOT_TIMEOUT": "6",
+            },
+            text=True,
+            capture_output=True,
+            timeout=8,
+        )
+        assert resistant_capture.returncode == 0, resistant_capture.stderr
         zero = subprocess.run(
             ["./cli/spot", "show", "watch", "--interval", "0", "demo", str(show)],
             cwd=root,
@@ -290,6 +571,65 @@ printf 'fake png' > "$out"
                 out, err = watch.communicate(timeout=3)
         assert "could not parse" in err, (out, err)
         assert open_log.read_text().count("\n") == 1, open_log.read_text()
+
+        # Watch calls deploy through a conditional, so errexit cannot propagate
+        # screenshot failures. Keep --open pending until a complete deploy works.
+        for failure in ("capture", "upload"):
+            watch_dir = pathlib.Path(tmp) / ("watch-" + failure)
+            watch_dir.mkdir()
+            watch_spec = watch_dir / "show.json"
+            watch_spec.write_text('{"title":"First attempt","cards":[]}')
+            watch_chrome = watch_dir / "chromium"
+            watch_chrome.write_text("#!/bin/sh\nexit 1\n" if failure == "capture" else valid_chromium)
+            watch_chrome.chmod(0o755)
+            watch_open_log = watch_dir / "open.log"
+            stdout_log, stderr_log = watch_dir / "stdout.log", watch_dir / "stderr.log"
+            Handler.reject_screenshots = failure == "upload"
+            with stdout_log.open("w") as stdout, stderr_log.open("w") as stderr:
+                watch = subprocess.Popen(
+                    ["./cli/spot", "show", "watch", "--open", "--screenshot", "--interval", "1", "watch", str(watch_spec)],
+                    cwd=root,
+                    env={**env, "TMPDIR": str(watch_dir), "SPOT_CHROME": str(watch_chrome),
+                         "PATH": str(open_bin) + os.pathsep + os.environ["PATH"],
+                         "SPOT_OPEN_LOG": str(watch_open_log)},
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                try:
+                    deadline = time.monotonic() + 8
+                    while "watch: deploy failed" not in stderr_log.read_text() and time.monotonic() < deadline:
+                        assert watch.poll() is None, (failure, stdout_log.read_text(), stderr_log.read_text())
+                        time.sleep(0.05)
+                    assert "watch: deploy failed" in stderr_log.read_text(), (failure, stdout_log.read_text(), stderr_log.read_text())
+                    assert "live:" not in stdout_log.read_text(), (failure, stdout_log.read_text())
+                    assert not watch_open_log.exists(), (failure, watch_open_log.read_text())
+                    assert not list(watch_dir.glob("spot-screenshot.*")), failure
+                    assert not list(watch_dir.glob("spot-show.*")), failure
+
+                    # A later edit retries and opens once, after capture and upload.
+                    watch_chrome.write_text(valid_chromium)
+                    Handler.reject_screenshots = False
+                    updated = watch_dir / "updated.json"
+                    updated.write_text('{"title":"Retry succeeds","cards":[]}')
+                    updated.replace(watch_spec)
+                    deadline = time.monotonic() + 8
+                    while not watch_open_log.exists() and time.monotonic() < deadline:
+                        assert watch.poll() is None, (failure, stdout_log.read_text(), stderr_log.read_text())
+                        time.sleep(0.05)
+                    assert watch_open_log.exists(), (failure, stdout_log.read_text(), stderr_log.read_text())
+                    assert watch_open_log.read_text().count("\n") == 1, watch_open_log.read_text()
+                    assert "live:" in stdout_log.read_text(), stdout_log.read_text()
+                    assert not list(watch_dir.glob("spot-screenshot.*")), failure
+                    assert not list(watch_dir.glob("spot-show.*")), failure
+                finally:
+                    Handler.reject_screenshots = False
+                    if watch.poll() is None:
+                        watch.terminate()
+                    try:
+                        watch.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        watch.kill()
+                        watch.wait(timeout=3)
 finally:
     server.shutdown()
 PY

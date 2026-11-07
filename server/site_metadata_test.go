@@ -309,7 +309,7 @@ func TestPublicRedeployDefersAITaggingUntilAfterAccessRemoval(t *testing.T) {
 		},
 	}
 	rec = httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "secret", map[string]string{
+	srv.routes().ServeHTTP(rec, accessRemovingDeployRequest(t, "spot.localhost", "secret", map[string]string{
 		"index.html": `<title>New</title><h1>Public launch</h1>`,
 		"_spot.json": `{"title":"New title"}`,
 	}))
@@ -349,7 +349,7 @@ func TestFailedPublicRedeployDoesNotPublishMetadata(t *testing.T) {
 
 	srv.sites = failRemoveSiteStore{SiteStorage: srv.sites}
 	rec = httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "secret", map[string]string{
+	srv.routes().ServeHTTP(rec, accessRemovingDeployRequest(t, "spot.localhost", "secret", map[string]string{
 		"index.html": `<title>New</title>`,
 		"_spot.json": `{"title":"New title","description":"New description","tags":["new"]}`,
 	}))
@@ -403,7 +403,7 @@ func TestPublicRedeployUpdatesMetadataBeforeRemovingAccessPolicy(t *testing.T) {
 		},
 	}
 	rec = httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "secret", map[string]string{
+	srv.routes().ServeHTTP(rec, accessRemovingDeployRequest(t, "spot.localhost", "secret", map[string]string{
 		"index.html": `<title>New</title>`,
 		"_spot.json": `{"title":"New title","description":"New description","tags":["new"]}`,
 	}))
@@ -480,7 +480,7 @@ func TestFailedDeferredAccessRemovalRollsBackMetadata(t *testing.T) {
 
 	srv.sites = failPathRemoveSiteStore{SiteStorage: srv.sites, path: accessFileName}
 	rec = httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, deployRequest(t, "spot.localhost", "demo", map[string]string{
+	srv.routes().ServeHTTP(rec, accessRemovingDeployRequest(t, "spot.localhost", "demo", map[string]string{
 		"index.html": `<title>New</title>`,
 		"_spot.json": `{"title":"New title","description":"New description","tags":["new"]}`,
 	}))

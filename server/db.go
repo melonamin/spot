@@ -101,12 +101,50 @@ func applyAdditiveMigrations(ctx context.Context, db *sql.DB) error {
 		`ALTER TABLE sites ADD COLUMN content_external_mutation_owner text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
+	for _, column := range []string{"type_name", "type_version", "type_track"} {
+		if err := ensureColumn(ctx, db, "sites", column,
+			`ALTER TABLE sites ADD COLUMN `+column+` text NOT NULL DEFAULT ''`); err != nil {
+			return err
+		}
+	}
+	// Created here rather than in schema.sql: on an older database the
+	// columns exist only after the migration above.
+	if _, err := db.ExecContext(ctx, `CREATE INDEX IF NOT EXISTS sites_type_idx ON sites (type_name, type_track)`); err != nil {
+		return fmt.Errorf("create sites type index: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "sites", "deploy_version",
+		`ALTER TABLE sites ADD COLUMN deploy_version text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	// Sites last deployed before versions were stored get one from updated_at,
+	// in the format new versions use, so if_version works for them too.
+	if _, err := db.ExecContext(ctx, `UPDATE sites
+		SET deploy_version = strftime('%Y%m%dT%H%M', updated_at) || strftime('%f', updated_at) || '000000Z'
+		WHERE deploy_version = ''`); err != nil {
+		return fmt.Errorf("backfill site deploy versions: %w", err)
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "mode",
+		`ALTER TABLE site_deploy_audit ADD COLUMN mode text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
 	if err := ensureColumn(ctx, db, "site_deploy_audit", "content_hash",
 		`ALTER TABLE site_deploy_audit ADD COLUMN content_hash text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	if err := ensureColumn(ctx, db, "site_deploy_audit", "authorized_as",
 		`ALTER TABLE site_deploy_audit ADD COLUMN authorized_as text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "auth_method",
+		`ALTER TABLE site_deploy_audit ADD COLUMN auth_method text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "publisher_key_id",
+		`ALTER TABLE site_deploy_audit ADD COLUMN publisher_key_id text NOT NULL DEFAULT ''`); err != nil {
+		return err
+	}
+	if err := ensureColumn(ctx, db, "site_deploy_audit", "publisher_name",
+		`ALTER TABLE site_deploy_audit ADD COLUMN publisher_name text NOT NULL DEFAULT ''`); err != nil {
 		return err
 	}
 	if err := ensureColumn(ctx, db, "site_cloudflare_publications", "account_id",

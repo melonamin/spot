@@ -408,7 +408,7 @@ func (s *Server) snapshotCloudflareSite(ctx context.Context, site string) (cloud
 	}
 	exportedPaths := make([]string, 0, len(paths))
 	for _, path := range paths {
-		if path != accessFileName {
+		if !isSiteAccessFile(path) {
 			exportedPaths = append(exportedPaths, path)
 		}
 	}
@@ -486,27 +486,52 @@ func cloudflareAssetExtension(filePath string) string {
 }
 
 func cloudflareContentHashForDeploy(files []deployFile) string {
-	type digestFile struct {
-		path   string
-		digest string
-	}
-	digests := make([]digestFile, 0, len(files))
+	digests := make(map[string]string, len(files))
 	for _, file := range files {
-		if file.path == accessFileName {
-			continue
-		}
 		sum := sha256.Sum256(file.data)
-		digests = append(digests, digestFile{path: file.path, digest: hex.EncodeToString(sum[:])})
+		digests[file.path] = hex.EncodeToString(sum[:])
 	}
-	sort.Slice(digests, func(i, j int) bool { return digests[i].path < digests[j].path })
+	return cloudflareContentHash(digests)
+}
+
+// cloudflareContentHash is the snapshot content hash over a site's file
+// digests (hex SHA-256 by path), leaving out access files as the snapshot does.
+func cloudflareContentHash(digests map[string]string) string {
+	paths := make([]string, 0, len(digests))
+	for path := range digests {
+		if !isSiteAccessFile(path) {
+			paths = append(paths, path)
+		}
+	}
+	sort.Strings(paths)
 	h := sha256.New()
-	for _, file := range digests {
-		h.Write([]byte(file.path))
+	for _, path := range paths {
+		h.Write([]byte(path))
 		h.Write([]byte{0})
-		h.Write([]byte(file.digest))
+		h.Write([]byte(digests[path]))
 		h.Write([]byte{0})
 	}
 	return hex.EncodeToString(h.Sum(nil))
+}
+
+// cloudflareEligibilityForSite adds the registry's view to the snapshot
+// checks: a typed site's viewer lives in the type registry, not in the
+// site's files, so a Pages copy of the files would not render.
+func (s *Server) cloudflareEligibilityForSite(ctx context.Context, site string, snap cloudflareSnapshot) cloudflareEligibility {
+	eligibility := checkCloudflareEligibility(snap)
+	if s.types == nil {
+		return eligibility
+	}
+	ref, err := s.types.SiteType(ctx, site)
+	switch {
+	case err != nil && !errors.Is(err, ErrSiteNotFound):
+		eligibility.Eligible = false
+		eligibility.Reasons = append(eligibility.Reasons, "the site's type could not be read")
+	case ref.typed():
+		eligibility.Eligible = false
+		eligibility.Reasons = append(eligibility.Reasons, "typed sites ("+ref.String()+") cannot be published to Cloudflare Pages")
+	}
+	return eligibility
 }
 
 func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
@@ -515,7 +540,7 @@ func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
 		reasons = append(reasons, fmt.Sprintf("site has more than the %d-file Cloudflare Pages Direct Upload limit", maxCloudflareFiles))
 	}
 	for _, file := range snap.Files {
-		if file.Path == accessFileName {
+		if isSiteAccessFile(file.Path) {
 			continue
 		}
 		switch {
@@ -538,12 +563,47 @@ func checkCloudflareEligibility(snap cloudflareSnapshot) cloudflareEligibility {
 		if strings.Contains(text, "spot.") {
 			reasons = append(reasons, file.Path+" references Spot's browser SDK")
 		}
-		if strings.Contains(text, "/api/") {
+		if referencesSameOriginAPI(text) {
 			reasons = append(reasons, file.Path+" references same-origin /api/ paths")
 		}
 	}
 	reasons = uniqueStrings(reasons)
 	return cloudflareEligibility{Eligible: len(reasons) == 0, Reasons: reasons}
+}
+
+// referencesSameOriginAPI reports whether text addresses Spot's /api/ routes
+// as a URL: a string literal or attribute value that starts with /api/ (or
+// ./api/, ../api/), or a template literal that appends /api/ to an
+// interpolated host, as in `${location.host}/api/ws`. Prose that merely
+// mentions a path, such as "POST /boards/api/cards" in documentation, does not
+// issue a request and must not block publishing.
+func referencesSameOriginAPI(text string) bool {
+	for offset := 0; ; {
+		i := strings.Index(text[offset:], "/api/")
+		if i < 0 {
+			return false
+		}
+		at := offset + i
+		offset = at + 1
+		start := at
+		for start > 0 && at-start < 2 && text[start-1] == '.' {
+			start--
+		}
+		if start == 0 {
+			continue
+		}
+		switch text[start-1] {
+		case '"', '\'', '`', '=':
+			return true
+		case '}':
+			if start == at {
+				open := strings.LastIndexByte(text[:start-1], '{')
+				if open > 0 && text[open-1] == '$' {
+					return true
+				}
+			}
+		}
+	}
 }
 
 func uniqueStrings(in []string) []string {

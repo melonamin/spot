@@ -21,7 +21,13 @@ type recordingDeployAuth struct {
 	action        string
 	previousState SiteState
 	auths         []string
+	cancels       []string
 	events        []DeployAuditEvent
+}
+
+func (a *recordingDeployAuth) CancelDeployAuthorization(_ context.Context, site string, authz DeployAuthorization) error {
+	a.cancels = append(a.cancels, site+":"+authz.Action)
+	return nil
 }
 
 func (a *recordingDeployAuth) AuthorizeDeploy(_ context.Context, site string, actor Identity) (DeployAuthorization, error) {
@@ -318,6 +324,17 @@ func deployRequest(t *testing.T, host, site string, files map[string]string) *ht
 	return deployRequestOrdered(t, host, site, ordered)
 }
 
+// accessRemovingDeployRequest is a redeploy that opts out of keeping the
+// stored _access.json, so a bundle without one removes the policy.
+func accessRemovingDeployRequest(t *testing.T, host, site string, files map[string]string) *http.Request {
+	t.Helper()
+	var ordered [][2]string
+	for path, content := range files {
+		ordered = append(ordered, [2]string{path, content})
+	}
+	return deployRequestOrderedFields(t, host, site, ordered, map[string]string{"preserve_access": "false"})
+}
+
 func deployRequestOrdered(t *testing.T, host, site string, files [][2]string) *http.Request {
 	return deployRequestOrderedFields(t, host, site, files, nil)
 }
@@ -358,6 +375,7 @@ func deployRequestOrderedFields(t *testing.T, host, site string, files [][2]stri
 func TestDeployValidation(t *testing.T) {
 	srv := &Server{
 		sites:          newTestSiteStore(t),
+		resolver:       NewStaticResolver("owner@spot.local", "Owner", nil),
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 		// Every request here comes from the same test client IP; the
@@ -415,6 +433,59 @@ func TestDeployValidation(t *testing.T) {
 	if code, body := call(plain); code != http.StatusBadRequest ||
 		!strings.Contains(body, "multipart") {
 		t.Errorf("non-multipart = %d %s, want 400 multipart", code, body)
+	}
+}
+
+// readCountingBody records whether the handler touched the request body.
+type readCountingBody struct {
+	r     io.Reader
+	reads int
+}
+
+func (b *readCountingBody) Read(p []byte) (int, error) {
+	b.reads++
+	return b.r.Read(p)
+}
+
+// An anonymous deploy is refused before its body is read, so it cannot make
+// the server buffer a large upload.
+func TestDeployRefusesUnauthenticatedBeforeReadingBody(t *testing.T) {
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "super-secret-proxy-key-1234"
+	srv := &Server{
+		sites:          newTestSiteStore(t),
+		forwardAuth:    fa,
+		spotDomain:     "spot.localhost",
+		trustedProxies: testTrustedProxies(t),
+		deployLimit:    NewRateLimiter(1000, 1000),
+	}
+	for _, tt := range []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"no identity", nil, http.StatusUnauthorized},
+		{"forward-auth without secret", map[string]string{"Remote-Email": "alice@corp.com"}, http.StatusUnauthorized},
+		{"forward-auth with wrong secret", map[string]string{"Remote-Email": "alice@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusUnauthorized},
+		{"invalid publishing key", map[string]string{"Authorization": "Bearer spot_pk_invalid"}, http.StatusUnauthorized},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			form := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
+			body := &readCountingBody{r: form.Body}
+			req := httptest.NewRequest(http.MethodPost, "http://spot-api/api/deploy", body)
+			req.Header = form.Header.Clone()
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("status = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+			if body.reads != 0 {
+				t.Fatalf("handler read the body %d times before authenticating", body.reads)
+			}
+		})
 	}
 }
 
@@ -538,6 +609,71 @@ func TestDeployPreserveAccessKeepsExistingPolicy(t *testing.T) {
 	}
 }
 
+func TestDeployRequirePreserveAccessKeepsTheActivePolicyAndRefusesWithoutOne(t *testing.T) {
+	for _, tt := range []struct {
+		name          string
+		action        string
+		previousState SiteState
+		files         [][2]string
+		want          int
+		noPolicy      bool
+	}{
+		{"active update keeps the policy", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}}, http.StatusOK, false},
+		{"a new site has none to keep", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}}, http.StatusConflict, false},
+		{"a recovering site has none to keep", "update", SiteStateProvisioning, [][2]string{{"index.html", "<h1>re</h1>"}}, http.StatusConflict, false},
+		{"an active site without a stored policy has none to keep", "update", SiteStateActive, [][2]string{{"index.html", "<h1>open</h1>"}}, http.StatusConflict, true},
+		{"a sent policy contradicts require", "update", SiteStateActive, [][2]string{{"index.html", "<h1>v2</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest, false},
+		{"a sent policy contradicts require on a new site too", "create", "", [][2]string{{"index.html", "<h1>new</h1>"}, {accessFileName, `{}`}}, http.StatusBadRequest, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			sites := newTestSiteStore(t)
+			if !tt.noPolicy {
+				if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"allow":["alice@example.com"]}`)); err != nil {
+					t.Fatal(err)
+				}
+			}
+			auth := &recordingDeployAuth{action: tt.action, previousState: tt.previousState}
+			srv := &Server{
+				sites: sites, deployAuth: auth,
+				resolver: NewStaticResolver("dev@spot.local", "Spot Dev", nil), spotDomain: "spot.localhost",
+				trustedProxies: testTrustedProxies(t), deployLimit: NewRateLimiter(1000, 1000),
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, deployRequestOrderedFields(t, "spot.localhost", "secret", tt.files,
+				map[string]string{"preserve_access": "require"}))
+			if rec.Code != tt.want {
+				t.Fatalf("deploy = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+			if tt.want == http.StatusBadRequest && len(auth.auths) != 0 {
+				t.Fatalf("a contradictory request reached authorization: %v", auth.auths)
+			}
+			if tt.want == http.StatusConflict && len(auth.cancels) != 1 {
+				t.Fatalf("refused deploy cancelled %d authorizations, want 1", len(auth.cancels))
+			}
+			rc, _, err := sites.Open(context.Background(), "secret", accessFileName)
+			if tt.noPolicy {
+				if !errors.Is(err, ErrNotFound) {
+					t.Fatalf("refused deploy stored a policy: %v", err)
+				}
+			} else {
+				if err != nil {
+					t.Fatalf("open %s: %v", accessFileName, err)
+				}
+				data, _ := io.ReadAll(rc)
+				rc.Close()
+				if string(data) != `{"allow":["alice@example.com"]}` {
+					t.Fatalf("policy after deploy = %s", data)
+				}
+			}
+			if tt.want != http.StatusOK {
+				if _, _, err := sites.Open(context.Background(), "secret", "index.html"); !errors.Is(err, ErrNotFound) {
+					t.Fatalf("refused deploy wrote index.html: %v", err)
+				}
+			}
+		})
+	}
+}
+
 func TestDeployDoesNotPreserveAccessWhileRecoveringProvisioningSite(t *testing.T) {
 	sites := newTestSiteStore(t)
 	if err := sites.Put(context.Background(), "secret", accessFileName, "application/json", []byte(`{"maintainers":["stale@example.com"]}`)); err != nil {
@@ -631,27 +767,40 @@ func TestDeployForbiddenIsAuditedBeforeStorage(t *testing.T) {
 }
 
 func TestDeployStorageFailureIsAudited(t *testing.T) {
-	auth := &recordingDeployAuth{action: "update"}
-	srv := &Server{
-		sites:          failingSiteStore{},
-		deployAuth:     auth,
-		resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
-		spotDomain:     "spot.localhost",
-		trustedProxies: testTrustedProxies(t),
-	}
-	req := deployRequest(t, "spot.localhost", "demo", map[string]string{"index.html": "<h1>hi</h1>"})
-	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	for _, tt := range []struct {
+		name, preserve, message string
+	}{
+		{"listing current files", "false", "could not read current files"},
+		{"preserving the stored policy", "", "could not preserve existing " + accessFileName},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			auth := &recordingDeployAuth{action: "update"}
+			srv := &Server{
+				sites:          failingSiteStore{},
+				deployAuth:     auth,
+				resolver:       NewStaticResolver("alice@example.com", "Alice", nil),
+				spotDomain:     "spot.localhost",
+				trustedProxies: testTrustedProxies(t),
+			}
+			var fields map[string]string
+			if tt.preserve != "" {
+				fields = map[string]string{"preserve_access": tt.preserve}
+			}
+			req := deployRequestOrderedFields(t, "spot.localhost", "demo", [][2]string{{"index.html", "<h1>hi</h1>"}}, fields)
+			req.Header.Set("X-Forwarded-For", "100.64.0.7")
 
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("deploy with unreachable store = %d, want 500", rec.Code)
-	}
-	if len(auth.events) != 1 {
-		t.Fatalf("audit events = %d, want 1", len(auth.events))
-	}
-	if event := auth.events[0]; event.Status != "failed" || event.Action != "deploy" {
-		t.Fatalf("audit event = %+v", event)
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != http.StatusInternalServerError {
+				t.Fatalf("deploy with unreachable store = %d, want 500", rec.Code)
+			}
+			if len(auth.events) != 1 {
+				t.Fatalf("audit events = %d, want 1", len(auth.events))
+			}
+			if event := auth.events[0]; event.Status != "failed" || event.Action != "deploy" || event.Message != tt.message || event.FileCount != 1 {
+				t.Fatalf("audit event = %+v", event)
+			}
+		})
 	}
 }
 
@@ -816,9 +965,9 @@ func TestFailedPublicRedeployKeepsRestrictedPolicyCache(t *testing.T) {
 	}
 
 	srv.sites = &failAfterRemoveSiteStore{SiteStorage: sites, maxRemoves: 1}
-	second := deployRequestOrdered(t, "spot.localhost", "secret", [][2]string{
+	second := deployRequestOrderedFields(t, "spot.localhost", "secret", [][2]string{
 		{"index.html", "<h1>public attempt</h1>"},
-	})
+	}, map[string]string{"preserve_access": "false"})
 	second.Header.Set("X-Forwarded-For", "100.64.0.7")
 	rec = httptest.NewRecorder()
 	srv.routes().ServeHTTP(rec, second)

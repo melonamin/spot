@@ -19,6 +19,14 @@ import (
 // default and the platform norm.
 const accessFileName = "_access.json"
 
+// isSiteAccessFile reports whether a site-relative path names the policy
+// file, which lists who may view the site and is never served or
+// downloaded. The match ignores case because a local site store may sit
+// on a case-insensitive filesystem.
+func isSiteAccessFile(sitePath string) bool {
+	return strings.EqualFold(sitePath, accessFileName)
+}
+
 const (
 	slackAccessOwners   = "owners"
 	slackAccessVisitors = "visitors"

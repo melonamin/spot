@@ -14,11 +14,17 @@ import (
 )
 
 type fakeSiteAdmin struct {
-	owned     []OwnedSite
-	all       []SiteRecord
-	err       error
-	deleteErr error
-	deleted   []string
+	owned      []OwnedSite
+	all        []SiteRecord
+	err        error
+	storage    siteStatsStorageJSON
+	storageErr error
+	deleteErr  error
+	deleted    []string
+}
+
+func (f *fakeSiteAdmin) SiteStorageStats(context.Context) (siteStatsStorageJSON, error) {
+	return f.storage, f.storageErr
 }
 
 func (f *fakeSiteAdmin) SitesOwnedBy(_ context.Context, _ Identity) ([]OwnedSite, error) {
@@ -240,10 +246,11 @@ func sitesRequest(method, path string) *http.Request {
 func TestMySitesListsOwnedWithPolicySummary(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "locked-site", `{"allow":["a@example.com","team-x"]}`)
+	now := time.Now()
 	admin := &fakeSiteAdmin{owned: []OwnedSite{
-		{SiteRecord: SiteRecord{Name: "open-site", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{SiteRecord: SiteRecord{Name: "open-site", CreatedAt: now, UpdatedAt: now},
 			FileCount: 7, TotalBytes: 1024},
-		{SiteRecord: SiteRecord{Name: "locked-site", CreatedAt: time.Now(), UpdatedAt: time.Now()},
+		{SiteRecord: SiteRecord{Name: "locked-site", CreatedAt: now, UpdatedAt: now.Add(-time.Minute)},
 			FileCount: 2, TotalBytes: 64},
 	}}
 	srv := &Server{
@@ -326,6 +333,7 @@ func TestSitesAPIRequiresIdentity(t *testing.T) {
 		{http.MethodGet, "/api/sites/mine"},
 		{http.MethodGet, "/api/sites/manageable"},
 		{http.MethodGet, "/api/sites/public"},
+		{http.MethodGet, "/api/sites/stats"},
 		{http.MethodDelete, "/api/sites/demo"},
 	} {
 		rec := httptest.NewRecorder()
@@ -339,7 +347,7 @@ func TestSitesAPIRequiresIdentity(t *testing.T) {
 func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	dir := t.TempDir()
 	writePolicy(t, dir, "locked", `{"allow":["bob@example.com"],"download":false}`)
-	admin := &fakeSiteAdmin{all: []SiteRecord{
+	admin := &fakeSiteAdmin{storage: siteStatsStorageJSON{Files: 14, Bytes: 4096}, all: []SiteRecord{
 		{
 			Name:        "open",
 			OwnerEmail:  "alice@example.com",
@@ -360,6 +368,7 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	srv := &Server{
 		siteAdmin:      admin,
 		policies:       NewPolicyStore(dir, time.Minute),
+		resolver:       NewStaticResolver("viewer@example.com", "Viewer", nil),
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 	}
@@ -379,6 +388,9 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	if body.Totals.Creators != 2 || body.Totals.NoDownloadZip != 1 {
 		t.Fatalf("totals = %+v, want 2 creators and 1 no-download site", body.Totals)
 	}
+	if body.Storage.Files != 14 || body.Storage.Bytes != 4096 {
+		t.Fatalf("storage = %+v, want 14 files and 4096 bytes", body.Storage)
+	}
 	if len(body.Tags) != 2 || body.Tags[0].Tag == "secret-roadmap" || body.Tags[1].Tag == "secret-roadmap" {
 		t.Fatalf("tags = %+v, want only public tags", body.Tags)
 	}
@@ -388,16 +400,84 @@ func TestSiteStatsAggregatesWithoutLeakingPrivateTags(t *testing.T) {
 	}
 }
 
-func TestSiteStatsDoesNotRequireIdentity(t *testing.T) {
+// Stats need an identified caller, as the sibling listings do; the embedding
+// product's admin calls them through forward auth with the shared secret.
+func TestSiteStatsRequiresForwardAuthIdentity(t *testing.T) {
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "super-secret-proxy-key-1234"
 	srv := &Server{
 		siteAdmin:      &fakeSiteAdmin{},
+		forwardAuth:    fa,
 		spotDomain:     "spot.localhost",
 		trustedProxies: testTrustedProxies(t),
 	}
-	rec := httptest.NewRecorder()
-	srv.routes().ServeHTTP(rec, sitesRequest(http.MethodGet, "/api/sites/stats"))
-	if rec.Code != http.StatusOK {
-		t.Fatalf("site stats without identity = %d %s, want 200", rec.Code, rec.Body.String())
+	for _, tt := range []struct {
+		name    string
+		headers map[string]string
+		want    int
+	}{
+		{"anonymous", nil, http.StatusUnauthorized},
+		{"wrong secret", map[string]string{"Remote-Email": "admin@corp.com", "X-Spot-Forward-Auth-Secret": "wrong"}, http.StatusUnauthorized},
+		{"admin with secret", map[string]string{
+			"Remote-Email": "admin@corp.com", "Remote-Groups": "platform-admin",
+			"X-Spot-Forward-Auth-Secret": "super-secret-proxy-key-1234",
+		}, http.StatusOK},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			req := sitesRequest(http.MethodGet, "/api/sites/stats")
+			for k, v := range tt.headers {
+				req.Header.Set(k, v)
+			}
+			rec := httptest.NewRecorder()
+			srv.routes().ServeHTTP(rec, req)
+			if rec.Code != tt.want {
+				t.Fatalf("site stats = %d %s, want %d", rec.Code, rec.Body.String(), tt.want)
+			}
+		})
+	}
+}
+
+func TestSiteStorageStatsUsesLatestSuccessfulActiveDeploys(t *testing.T) {
+	ctx := context.Background()
+	db := openTestDB(t)
+	registry := NewSiteRegistry(db, nil)
+
+	for _, site := range []struct {
+		name  string
+		state SiteState
+	}{
+		{name: "one", state: SiteStateActive},
+		{name: "two", state: SiteStateActive},
+		{name: "gone", state: SiteStateDeleted},
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO sites (name, state) VALUES (?, ?)`, site.name, site.state); err != nil {
+			t.Fatalf("insert site %s: %v", site.name, err)
+		}
+	}
+	for _, deploy := range []struct {
+		site, status, created string
+		files                 int
+		bytes                 int64
+	}{
+		{site: "one", status: "success", files: 2, bytes: 20, created: "2026-01-01 00:00:00"},
+		{site: "one", status: "success", files: 4, bytes: 50, created: "2026-01-02 00:00:00"},
+		{site: "one", status: "failed", files: 100, bytes: 1000, created: "2026-01-03 00:00:00"},
+		{site: "two", status: "success", files: 3, bytes: 25, created: "2026-01-01 00:00:00"},
+		{site: "gone", status: "success", files: 9, bytes: 900, created: "2026-01-01 00:00:00"},
+	} {
+		if _, err := db.ExecContext(ctx, `INSERT INTO site_deploy_audit
+			(site, action, status, file_count, total_bytes, created_at)
+			VALUES (?, 'update', ?, ?, ?, ?)`, deploy.site, deploy.status, deploy.files, deploy.bytes, deploy.created); err != nil {
+			t.Fatalf("insert deploy for %s: %v", deploy.site, err)
+		}
+	}
+
+	stats, err := registry.SiteStorageStats(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if stats.Files != 7 || stats.Bytes != 75 {
+		t.Fatalf("storage = %+v, want 7 files and 75 bytes", stats)
 	}
 }
 
@@ -434,11 +514,12 @@ func TestPublicSitesFiltersRestrictedAndMarksYours(t *testing.T) {
 		t.Fatalf("sites = %+v, want locked and broken filtered out", body.Sites)
 	}
 	mine, theirs := body.Sites[0], body.Sites[1]
-	if mine.Name != "mine" || !mine.Yours || mine.Owner != "Alice" {
+	if mine.Name != "mine" || !mine.Yours || mine.Owner != "Alice" || mine.OwnerEmail != "alice@example.com" {
 		t.Errorf("own site = %+v", mine)
 	}
-	// No owner name on record: the gallery falls back to the email.
-	if theirs.Name != "theirs" || theirs.Yours || theirs.Owner != "bob@example.com" {
+	// No owner name on record: the gallery falls back to the email. The
+	// owner_email field is only for the viewer's own sites.
+	if theirs.Name != "theirs" || theirs.Yours || theirs.Owner != "bob@example.com" || theirs.OwnerEmail != "" {
 		t.Errorf("other site = %+v", theirs)
 	}
 }
@@ -757,5 +838,42 @@ func TestPublicSitesIncludePreviewWhenScreenshotPresent(t *testing.T) {
 	}
 	if preview["plain"] != "" {
 		t.Errorf("plain preview = %q, want empty", preview["plain"])
+	}
+}
+
+func TestReleaseSiteNameRequest(t *testing.T) {
+	ctx := context.Background()
+	registry := newAdminRegistry(t, &AccessPolicy{Allow: []string{"admin@example.com"}})
+	owner := Identity{Email: "owner@example.com"}
+	if _, err := registry.AuthorizeDeploy(ctx, "demo", owner); err != nil {
+		t.Fatal(err)
+	}
+	if err := registry.DeleteSite(ctx, "demo", owner, func(context.Context) error { return nil }); err != nil {
+		t.Fatal(err)
+	}
+	sites, _ := stubSiteStore(t)
+	release := func(email string) (*httptest.ResponseRecorder, *recordingDeployAuth) {
+		audit := &recordingDeployAuth{}
+		srv := &Server{
+			siteAdmin: registry, deployAuth: audit, sites: sites,
+			resolver:   NewStaticResolver(email, email, nil),
+			spotDomain: "spot.localhost", trustedProxies: testTrustedProxies(t), deployLimit: NewRateLimiter(1000, 1000),
+		}
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, sitesRequest(http.MethodDelete, "/api/sites/demo?release=true"))
+		return rec, audit
+	}
+
+	if rec, audit := release("owner@example.com"); rec.Code != http.StatusForbidden ||
+		len(audit.events) != 1 || audit.events[0].Action != "release" || audit.events[0].Status != "denied" {
+		t.Fatalf("owner release = %d %s, audit %+v; want 403 and a denied release", rec.Code, rec.Body.String(), audit.events)
+	}
+	rec, audit := release("admin@example.com")
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `"released":true`) ||
+		len(audit.events) != 1 || audit.events[0].Action != "release" || audit.events[0].Status != "success" {
+		t.Fatalf("admin release = %d %s, audit %+v; want 200 and a successful release", rec.Code, rec.Body.String(), audit.events)
+	}
+	if rec, _ := release("admin@example.com"); rec.Code != http.StatusNotFound {
+		t.Fatalf("second release = %d, want 404", rec.Code)
 	}
 }

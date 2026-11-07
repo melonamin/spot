@@ -26,10 +26,11 @@ spot VM
   `- S3/RustFS  deployed site files and uploads
 ```
 
-Authentication is the mesh itself. NetBird or Tailscale decides who can
-reach the VM, and Spot maps the request's mesh source IP to an identity
-through the provider API. There are no cookies, sessions, OIDC redirects,
-or per-site deploy keys.
+Authentication is normally the mesh itself. NetBird or Tailscale decides who
+can reach the VM, and Spot maps the request's mesh source IP to an identity
+through the provider API. There are no cookies, sessions, or OIDC redirects.
+For trusted repository automation outside the mesh, an owner can create a
+named, fixed-prefix publishing key that authenticates only `POST /api/deploy`.
 
 S3-compatible storage stays in the architecture because deployed sites
 and uploads can be large and are the easiest part to keep in blob storage.
@@ -277,7 +278,11 @@ Notes:
 - To run the proxy off-mesh (where its source IP isn't a reliable identifier),
   set `SPOT_FORWARD_AUTH_SECRET` to a long random value and have the proxy send
   it in the `X-Spot-Forward-Auth-Secret` header. When set, the secret is
-  required and replaces the source-IP check.
+  required and replaces the source-IP check. Requests that prove the secret
+  and assert an identity skip Spot's per-IP rate limits, because the proxy
+  speaks for all its users from one address; the proxy must throttle its own
+  users. AI and Slack, which spend server-side credentials, still limit those
+  requests per asserted user.
 - Pangolin only emits identity headers under SSO. PIN, password, and
   shareable links authenticate but carry no identity, so restricted sites
   behind Pangolin require SSO.
@@ -289,6 +294,80 @@ Notes:
   entrypoint, or strip and re-inject identity headers only after auth.
 - Email is the principal: a user keeps the same site ownership whether they
   arrive via the proxy or the mesh, as long as the email matches.
+
+### Delegated Login (embedding Spot in another app)
+
+Use this when another application owns sign-in and hosts Spot sites for its
+users. That application calls the Spot API with forward-auth headers and a
+shared secret, and signs browsers in to restricted sites:
+
+```env
+SPOT_LOGIN_URL=https://app.example.com/sites/login
+SPOT_LOGIN_TOKEN_SECRET=<32+ random chars>
+SPOT_SESSION_SECRET=<32+ random chars, different>
+SPOT_SESSION_TTL=12h
+SPOT_FRAME_ANCESTORS="'self' https://app.example.com"
+SPOT_APEX_REDIRECT_URL=https://app.example.com/sites
+```
+
+`docker-compose.yml` passes these through. Its default
+`SPOT_DEV_IDENTITY_EMAIL=dev@spot.local` cannot be combined with delegated
+login, so clear it in a compose override (`SPOT_DEV_IDENTITY_EMAIL: ""`), as
+the mesh and homelab overlays do.
+
+1. A browser opens a restricted site with no identity, or only a mesh
+   identity the allowlist refuses (the login app may assert groups the mesh
+   does not know). Spot sets a short-lived login state cookie on that host and
+   redirects it to `SPOT_LOGIN_URL?return_to=<site URL>&state=<state>`. Other
+   requests get `401`. A signed-in or forward-auth viewer the allowlist refuses
+   gets `403`.
+2. The login app authenticates the browser and redirects it to
+   `<site origin>/api/auth/callback?token=<jwt>&return_to=<path>`; `return_to`
+   may be the path or the site URL from step 1 unchanged. The token is
+   a compact HS256 JWT signed with `SPOT_LOGIN_TOKEN_SECRET`, with claims `aud`
+   (`spot-login`), `host` (the exact site host, lowercase, with any non-default
+   port), `state` (the `state` query value, unchanged), `email`, optional
+   `name` and `groups`, `iat`, `exp` (at most 300 s after `iat`), and a
+   single-use `jti`. The callback accepts the token only in the browser that
+   holds the matching state, so a token minted for one account cannot sign
+   someone else's browser in.
+3. Spot sets a signed session cookie for that host only and continues to
+   `/api/auth/check`, which shows an "open in a new tab" page instead of
+   looping when the browser dropped the cookie (for example in a frame).
+   `/api/auth/logout`, opened as a page from the site itself (the browser
+   must send `Sec-Fetch-Site: same-origin` or `none`), clears the cookie;
+   other sites cannot sign a viewer out.
+
+Open sites serve their pages without sign-in, so a page that needs the SDK
+APIs starts the flow itself by navigating to
+`/api/auth/login?return_to=<path>` on its own host; step 2 onward is the same.
+
+Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
+site could plant cookies, so Spot shows a "needs a secure connection" page and
+ignores session cookies. Behind a TLS proxy, make sure Spot sees
+`X-Forwarded-Proto: https` from a trusted proxy. The cookies are
+`__Host-spot_session` and `__Host-spot_login_state`, `SameSite=None; Secure;
+Partitioned` and host-only; the `__Host-` prefix, which Chrome and Firefox
+accept on `http://*.localhost` too (Safari needs HTTPS), stops a sibling site
+from setting them. A request that
+carries the session cookie more than once is treated as signed out
+(`/api/auth/check` answers `400`). The session keeps the `name` and `groups`
+from the login token for `SPOT_SESSION_TTL`, so group changes apply at the next
+sign-in; allowlist changes apply immediately. A realtime connection opened with
+a session closes when the session expires. Sessions are signed cookies with no
+server-side store: sign-out clears the browser's copy, and a stolen cookie
+stays valid until `SPOT_SESSION_TTL` runs out, so keep the TTL short and
+revoke access through the allowlist when needed. In this
+mode the SDK APIs (`/api/db`, `/api/files`, `/api/ws`, `/api/ai`,
+`/api/slack`, `/api/me`) require a signed-in visitor even on open sites, and
+`shared-*` collections and rooms are disabled because sites belong to
+different users. `SPOT_FRAME_ANCESTORS` adds a `frame-ancestors` CSP to every
+site response; `SPOT_APEX_REDIRECT_URL` sends the apex HTML pages to the
+embedding app. `GET /api/tls/ask?domain=` answers Caddy on-demand TLS checks
+for the apex and active site names; it answers only requests addressed to the
+service's internal name with no forwarded headers (as Caddy's `ask` URL
+does) and returns `404` for anything that came through a proxy or names a Spot
+host, so outsiders cannot list site names.
 
 ### Single-User Homelab
 
@@ -498,7 +577,22 @@ visitor access and delegated management by shipping `_access.json` at its root:
 Entries containing `@` match email. Other entries match mesh groups. A
 broken policy fails closed. `allow` and `maintainers` are independent: a
 maintainer can deploy, delete, and manage Cloudflare for an active site but
-cannot visit a restricted site unless `allow` also matches them.
+cannot visit a restricted site unless `allow` also matches them. The policy
+itself is never served to visitors and is left out of source downloads.
+
+A redeploy that ships no `_access.json` keeps the stored policy, including one
+set through `PUT /api/sites/{name}/access`. To open a site, deploy an
+`_access.json` without `allow`, change it from My spots (Mesh access), with
+`spot access <site> --everyone`, or through the API, or deploy with the
+form field `preserve_access=false` (`spot deploy --replace-access`, or Clear
+in the web deployer), which removes the stored policy. The field accepts
+`true`/`false` (or `1`/`0`, `yes`/`no`, `on`/`off`) and `require`, which keeps
+the stored policy like `true` but answers `409` when there is none to keep (a
+new or inactive site, or an active one without a policy) and `400` when the
+deploy also ships an `_access.json`, so a client that must never publish
+without a policy can send its own instead; anything else is refused with
+`400`. A stored policy that no longer parses also blocks a plain
+redeploy; repair it the same ways.
 
 The first deploy claims a site name for an immutable original owner. Later
 deploys, active-site deletes, Cloudflare operations, and owner-mode AI or Slack
@@ -507,12 +601,15 @@ may be performed by that owner, a platform admin from `SPOT_ADMIN_EMAILS` or
 the maintainer list through a later authorized deploy, including removing
 themselves.
 
-If a maintainer deletes a site, Spot purges its content and dependent data but
-keeps a recovery tombstone for the original owner. Only that owner or a
-platform admin can redeploy the reserved name or release it permanently. This
-prevents delegated deletion from becoming ownership transfer. `/spots` shows
-active sites to every authorized manager and shows recovery tombstones only to
-their owner or a platform admin.
+Deleting a site purges its content and dependent data but keeps a tombstone
+for the original owner, whoever deletes it. Only that owner or a platform admin
+can redeploy the reserved name. Deleting it again changes nothing; only a
+platform admin can release it permanently, with
+`DELETE /api/sites/{name}?release=true`. A name never silently passes to another owner: a page from the
+deleted site may still be open in a visitor's browser, or have installed a
+service worker, on the same origin, and would then act on the new site as that
+visitor. `/spots` shows active sites to every authorized manager and shows
+tombstones only to their owner or a platform admin.
 
 In `single-user` mode, every visitor has the same configured identity.
 Ownership still works, but `_access.json` cannot provide per-person
@@ -548,11 +645,65 @@ Restricted sites are not auto-tagged.
 
 Important APIs:
 
-- `POST /api/deploy` deploys a site from the apex only.
+- `POST /api/deploy` deploys a site from the apex only. Optional form fields:
+  `mode` is `replace` (the default: the upload becomes the site's whole file
+  set) or `merge` (the upload is written into an active site and every other
+  file stays, `spot deploy --merge`), and `if_version` applies the deploy only
+  while the site still has that deploy version (`spot deploy --if-version`).
+  The response carries the site's new `version`. A merge into a missing or
+  deleted site answers `404` with `code: "site_not_found"`; a path that
+  collides with a kept file (a file where a directory is, or the reverse)
+  `409 merge_path_conflict`; a merged site over the deploy limits (2000 files,
+  100 MB) `400` or `413 merge_too_large`. A stale `if_version` answers `409`
+  with `code: "site_version_mismatch"` and the site's `current_version` (empty
+  when the site has no live content). A deploy refused during validation
+  keeps the site's version; one that fails or is cancelled after it began
+  writing leaves a new version, so a writer reads the site again. A merge
+  never removes files except a
+  stored `_access.json` that `preserve_access=false` drops; it derives title
+  and description from the merged site and keeps the site's tags.
+- `GET` and `POST /api/publishing-keys` list the caller's keys and create a
+  named, fixed-prefix key. The secret is returned only by the create response.
+- `DELETE /api/publishing-keys/{id}` irrevocably revokes a key. Administrators
+  may revoke a known key ID, but there is no administrator-wide key listing.
 - `GET /api/sites/mine` lists the caller's sites.
 - `GET /api/sites/manageable` lists sites the caller can manage and includes
   `management_role`, immutable owner attribution, and lifecycle state.
 - `GET /api/sites/public` lists unrestricted sites.
+- `GET /api/sites/visible` lists every active site the caller may view (open,
+  allowed, or managed) with `restricted`, and with `allow` for sites the
+  caller owns or manages. `owner_email` appears on the caller's own sites and
+  on restricted sites listed for them; `GET /api/sites/public` includes it
+  only for the caller's own sites. `mine` and `manageable` entries also carry `allow`
+  (`null` when the site has no `allow` field).
+- These four listings share filters and paging: `q` (search over name, title,
+  description, owner, and tags), `tag`, `names` (comma-separated, at most
+  200), `yours` (`true` for the caller's own sites, `false` for everyone
+  else's), `sort` (`updated`, the default, `created`, or `name`), `limit`
+  (1-200), and `cursor`. A response carries `total` (sites the caller may see
+  in that listing), `matched` (after filters), and `next_cursor` while more
+  pages remain; pass it back with the same filters. Without `limit` or
+  `cursor` the whole filtered list is returned. `public` and `visible` add
+  `tag_counts`, the top tags across the listing; `manageable` adds `active`
+  and `deleted` counts. Entries carry the site's deploy `version` (active
+  sites only): the stamp of its last deploy, repin or follow move and the
+  `version` of its latest `_spot_deploys` event. A source download
+  (`GET /api/download`) sends the same value as `X-Spot-Version`, read
+  together with the file list.
+- `GET /api/sites/{name}/access` returns a site's stored policy to the owner,
+  an admin, or a maintainer: `policy` (with `allow` only when visitors are
+  restricted, so `[]` means nobody), `restricted`, `readable` (false for a
+  policy that does not parse; its content is not returned), `pending` (an
+  interrupted policy change awaits recovery), and `version`, also sent as the
+  `ETag`.
+- `PUT /api/sites/{name}/access` replaces a site's `_access.json` without a
+  redeploy. The owner, an admin, or a maintainer may call it, with the same
+  rights as a deploy, including changing `maintainers`. Send
+  `If-Match: <version>` to apply the change only if the stored policy still
+  has the version you read; otherwise it answers `412` with the current
+  `version`. Without `If-Match` the change is unconditional. A concurrent
+  content change returns `409`. The response carries the new `version`.
+  My spots (Mesh access) and `spot access` both use this read-modify-write.
 - `GET /api/sites/{name}/cloudflare` returns optional Cloudflare Pages
   publication status.
 - `POST /api/sites/{name}/cloudflare/publish` publishes an eligible site
@@ -570,8 +721,8 @@ Important APIs:
   DNS, and Access resources were removed manually.
 - `DELETE /api/sites/{name}/cloudflare` unpublishes it from Cloudflare.
 - `DELETE /api/sites/{name}` purges a site's files, uploads, and private docs.
-  Owner/admin deletion releases the registry claim; maintainer deletion leaves
-  an owner-recoverable tombstone.
+  It leaves an owner-recoverable tombstone; deleting a tombstone answers `404`.
+  `?release=true` lets a platform admin free a deleted site's name.
 - `GET /api/download` on a site subdomain downloads a source ZIP,
   unless the site disables downloads.
 
@@ -581,11 +732,83 @@ On the Spot root, the SDK wraps the site APIs:
 const mine = await spot.sites.mine();
 const manageable = await spot.sites.manageable();
 const publicSites = await spot.sites.public();
+const { sites, next_cursor } = await spot.sites.page('public', { limit: 48, q: 'report' });
 await spot.sites.delete('old-demo');
 ```
 
 `mine()` remains the ownership-only compatibility view. Platform management UI
 and new integrations should normally use `manageable()`.
+
+## Repository Publishing Keys
+
+Named publishing keys let a trusted CI repository deploy pull-request sites
+without giving its runner a mesh identity. Create one from **My spots** at
+`/spots`, give it a descriptive name, and bind it to a literal prefix such as
+`spot-pr-`. The key can create, update, or recreate sites such as
+`spot-pr-184`, but it cannot deploy outside that prefix or take over a matching
+site owned by someone else.
+
+The person who creates the key remains the immutable owner of every site the
+key creates. The key name is recorded as publisher attribution in deploy audit
+history and authenticated `/spots` responses. It is not exposed in Gallery.
+Publishing keys authenticate deploys only: they cannot delete sites, publish
+to Cloudflare Pages, manage other keys, or call deployed-site APIs. Trusted
+repository workflows may deploy `_access.json`, with the same validation and
+policy-transition protections as an owner deploy.
+
+The secret is displayed once. Store it as a masked repository secret named
+`SPOT_PUBLISH_KEY`; do not put it in the CLI config file or command line. The
+CLI sends it to curl over standard input so it is not exposed in the process
+argument list. A GitHub Actions step can deploy one site per pull request:
+
+```yaml
+- name: Publish Spot preview
+  env:
+    SPOT_URL: https://spot.example.com
+    SPOT_PUBLISH_KEY: ${{ secrets.SPOT_PUBLISH_KEY }}
+  run: ./cli/spot deploy "spot-pr-${{ github.event.pull_request.number }}" dist
+```
+
+A hosted runner still needs a routable, trusted HTTPS path to the Spot apex;
+the publishing key supplies application authentication, not network access.
+Use one key per repository. To rotate without downtime, create a replacement
+with the same prefix, update the repository secret, confirm its **Last used**
+time in `/spots`, then revoke the old key. Revocation is immediate for deploys
+that have not yet passed Spot's transactional authorization point.
+
+These credentials publish into Spot itself. They are unrelated to the optional
+Cloudflare Pages publishing flow below.
+
+## Site Types
+
+A site type is a viewer package that platform admins upload once: a
+`type.json` manifest, an `index.html` entry, viewer files, and an optional
+`SKILL.md` for agents. A typed site pins one exact version of a type. On the
+site's origin Spot serves the type's `index.html` at `/` and its files under
+`/_type/`; everything else is the site's own data, and a typed deploy may write
+only the paths the type declares. Versions are immutable, sites stay on their
+pinned version unless a manager repins them or opts in to following newer
+versions within a major, and yanking a version only stops new pins.
+
+```sh
+# Platform admin (SPOT_ADMIN_EMAILS / SPOT_ADMIN_GROUPS): upload the example.
+spot types upload examples/types/card
+
+# Anyone who can deploy: create an instance from a data directory.
+spot deploy --type card@1.0.0 my-card examples/types/card-demo
+spot deploy --type card@1.0.0 --follow major my-card examples/types/card-demo
+
+spot types list
+spot types show card
+spot types pull card@1.0.0 preview   # unpack the viewer for a local preview
+spot types repin my-card --version 1.1.0
+```
+
+Spot ships no types and never runs type code on the server; a type is admin
+code running in visitors' browsers on every instance origin, with the same
+reach as the instance's own pages. Typed sites cannot be published to
+Cloudflare Pages. The package format, API, error codes, caching rules, and
+viewer conventions are specified in [docs/site-types.md](docs/site-types.md).
 
 ## Optional Cloudflare Pages Publishing
 

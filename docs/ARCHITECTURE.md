@@ -112,6 +112,8 @@ The apex serves embedded platform assets:
 Site subdomains serve deployed files through `SiteStorage`:
 
 - `/spot.js` is always served from embedded SDK assets.
+- on a typed site, `/` and `/index.html` serve the pinned type's entry and
+  `/_type/` its viewer files (see Site Types).
 - `/` resolves to `index.html`.
 - directory paths resolve to `index.html` under that directory.
 - missing files return the embedded `404.html`.
@@ -156,6 +158,9 @@ Tables:
   can recover a lease left stale for an hour by a killed process.
 - `site_deploy_audit`: deploy and delete audit history, including whether the
   actor was authorized as owner, platform admin, or maintainer.
+- `site_type_versions`: immutable site type versions with their manifest,
+  package hash, file inventory, uploader, and yank time. `sites` carries each
+  typed site's pin (`type_name`, `type_version`, `type_track`).
 - `site_cloudflare_publications`: optional Cloudflare Pages publication
   metadata, including account/zone ownership, explicit project/DNS cleanup
   ownership, managed DNS record identity, project name, hostname, latest
@@ -182,6 +187,15 @@ existing table go through `applyAdditiveMigrations` in `server/db.go`, which
 guards each `ALTER TABLE ADD COLUMN` with a `pragma_table_info` check because
 SQLite has no `ADD COLUMN IF NOT EXISTS`.
 
+Additive migrations let an older binary open a newer database, but they do
+not make the older binary understand the new state. Back up the SQLite
+database and site storage together, as one consistent pair; site storage
+includes the `_types/` package root. Downgrading only the binary after typed
+sites exist is described under "Upgrade and rollback" in
+`docs/site-types.md`: typed sites lose their viewer, and writes made while
+downgraded can be hidden again by the old viewer after re-upgrading. To roll
+back safely, restore a consistent pre-upgrade backup.
+
 ## Storage
 
 There are two storage families with the same runtime interfaces.
@@ -205,12 +219,17 @@ Deploy and upload storage are intentionally separate:
 
 - Deployed site files are the immutable-ish contents of a site deployment.
 - Uploads are user-generated files addressed by random IDs under
-  `/api/files/<site>/<id>/<name>`.
+  `/api/files/<site>/<id>/<name>`. A site host serves only its own site's
+  uploads (another site's path is `404`), because the caller's identity there
+  belongs to that host; the apex serves any site's uploads.
 
-Deleting a site purges deployed files, uploads, and private document scope. An
-owner or platform admin also frees the registry row. A maintainer delete keeps
-an empty `deleted` tombstone tied to the immutable owner; only that owner or an
-admin can recreate the site or permanently release the name. If a Cloudflare
+Deleting a site purges deployed files, uploads, and private document scope and
+keeps an empty `deleted` tombstone tied to the immutable owner, whoever deletes
+it; only that owner or an admin can recreate the site. A second delete never
+releases it: only an admin's explicit `?release=true` does, and it removes only a
+`deleted` row, so it cannot race a delete or a recreate. A released or reassigned name would hand its
+browser origin, where the deleted site's pages or service workers may still
+run, to a new owner. If a Cloudflare
 publication row exists, deletion returns `409 Conflict`; any authorized active-
 site manager must unpublish first so the public copy, custom domain, and DNS
 record are removed deliberately.
@@ -225,6 +244,19 @@ domain as multipart form data:
 - `site`: target site name.
 - `files`: one part per file, with the part filename carrying the
   site-relative path.
+
+Deploy authentication has two paths. Ordinary browser and CLI requests use the
+ambient mesh, forward-auth, development, or single-user identity. Trusted CI
+may instead send `Authorization: Bearer spot_pk_...` with a named publishing
+key created by a stable human identity. A supplied invalid or revoked Bearer
+credential fails with `401`; Spot never falls back to ambient identity.
+
+Publishing keys are stored as a fixed-length public lookup ID plus a SHA-256
+hash of a random 256-bit secret. The plaintext secret is returned once. Each
+key has one literal site prefix and may authenticate only `POST /api/deploy`.
+It acts as its creator for ownership, but carries its own trusted name and ID
+for audit attribution; group membership and platform-admin status are not
+delegated to the credential.
 
 Deploy invariants:
 
@@ -241,18 +273,84 @@ Deploy invariants:
 - Active-site deploys require the immutable owner, a configured platform admin,
   or an email/group matched by the currently stored `maintainers` policy. The
   incoming policy never authorizes its own request.
+- Publishing-key deploys may create, update, or owner-recreate only names under
+  the key's fixed prefix, and only when the immutable owner is the key creator.
+  The trusted repository may deploy `_access.json`, but the incoming policy
+  still cannot authorize the request itself.
 - Deleted names may be recreated only by their original owner or an admin.
 - Visitor-restricting changes stage a deny-all policy before ordinary content
   mutation. Authorization-sensitive policy writes use durable previous/next
   hashes; ambiguous storage outcomes fence site traffic and maintainer-derived
   management until reconciliation or owner/admin repair.
 - Sync semantics are used: uploaded files replace the site, and stale files are
-  removed.
+  removed. The exception is `_access.json`: an update that omits it keeps the
+  stored policy (which may come from the access API) unless the deploy sends
+  `preserve_access=false`.
+- `mode=merge` writes the upload into an active site and keeps every other
+  file (a stored `_access.json` still goes with `preserve_access=false`). It
+  lists and reads the kept files under the site lock, before any storage
+  mutation, to refuse shape collisions and to apply the file-count and size
+  limits to the merged site; its audit row records the merged site's count,
+  size and content hash, which listings and the Cloudflare staleness check
+  read.
+- Every site has a deploy version (`sites.deploy_version`), published as the
+  `_spot_deploys` event `version`. A deploy stores its new version after
+  validation and before its first storage mutation, so a deploy refused during
+  validation keeps the version, while one that fails or is cancelled after it
+  may have changed live files leaves a new version over them and stale
+  `if_version` writers must read the site again. Repins and follow moves that
+  change the pinned version stamp one too. `if_version` is compared with it
+  under the site lock, after authorization.
+- Audit rows record the deploy `mode` (`replace` or `merge`).
 - Deploy audit rows are recorded for success, failure, and denied attempts.
+  They include the authentication method and, for publishing keys, the key ID
+  and human-readable publisher name. Public gallery responses omit this data.
+
+The publishing-key active check and site generation reservation happen in the
+same SQLite transaction. Revocation committed before that point rejects the
+deploy; authorization committed first may finish. This defines the race
+boundary without leaving content mutation authorized by a stale preflight
+check. Successful deploys update `last_used_at` after activation.
 
 The deploy API only answers on the apex. Combined with same-origin checks, this
 prevents JavaScript running on a deployed site from redeploying another site
 using a visitor's ambient mesh identity.
+
+Publishing-key management is also apex-only. Owners can create and list their
+own keys at `GET`/`POST /api/publishing-keys` and revoke one at
+`DELETE /api/publishing-keys/{id}`. Administrators may revoke a known ID for
+incident response, but there is deliberately no administrator-wide listing.
+
+## Site Types
+
+Site types are specified in `docs/site-types.md`. The registry lives in
+`server/site_types.go` (SQLite table `site_type_versions`, package validation,
+`TypeFileStorage`), the API in `server/site_types_api.go`, typed deploy rules
+in `server/type_deploy.go`, repin in `server/site_type_repin.go`, and serving
+in `server/type_serving.go`.
+
+- Package bytes are stored in the site storage backend under `_types/<name>/
+  <version>/`, a root no site name can occupy, through `typeObjectKey`.
+- A version row holds the manifest, the package hash, and the per-file
+  inventory. Only inventory paths are served, so objects left by an
+  interrupted upload are unreachable. Uploads of one type name are serialized
+  by a process lock, and the existing version and hash are checked inside it
+  before any object is written.
+- The site's pin is registry state: `sites.type_name`, `type_version`, and
+  `type_track`, never `_spot.json`. Deletion clears it with the tombstone.
+- Typed deploys read the pin under the site mutation lock after
+  authorization, validate against the version the rules select, and commit
+  the pin fenced by the deploy's content generation. Repin and follow
+  resolution also take the site lock first and then change the pin with one
+  conditional SQLite statement; the follower list is read before any site lock
+  is awaited, so no lock wait happens while SQLite's single connection is
+  held.
+- `rejectInvalidSitePaths` applies the path contract to site-host requests
+  before the `ServeMux` cleans or redirects them.
+- Type files are served with a strong ETag compared before storage is opened
+  and `Cache-Control: private, no-cache`; typed data is `no-store` without
+  time validators. Visitor access runs first, so a revoked visitor never gets a
+  `304`.
 
 ## Optional Cloudflare Pages Publish Flow
 
@@ -351,8 +449,10 @@ unlocks the site.
 
 ## Identity Model
 
-Spot does not manage browser login sessions. Authentication is ambient network
-identity from a mesh, or a configured single-user/static identity.
+Authentication is ambient network identity from a mesh, forward-auth headers
+from a trusted proxy, or a configured single-user/static identity. The optional
+delegated login mode (`server/login.go`) adds per-site-host browser sessions
+that an external application issues through a short HS256 login token.
 
 Core type:
 
@@ -367,6 +467,11 @@ Resolvers:
   identities.
 - `StaticResolver`: returns one configured identity for local dev or
   single-user installs.
+
+`resolvePeer` checks forward auth first, then the delegated-login session
+cookie (site hosts only), then the mesh resolver. With delegated login, a site
+that refuses a mesh identity starts a sign-in, so the login app's identity can
+take its place.
 
 Handlers call `resolveIdentity` using `clientIP`. If a trusted proxy is in
 front, `clientIP` may use trusted forwarded headers; otherwise it uses the
@@ -395,8 +500,11 @@ Apex-only APIs:
 
 - Deploy: `POST /api/deploy`
 - Site listing, management, and gallery preview: `/api/sites/*` (including
-  `GET /api/sites/{name}/preview`)
+  `GET /api/sites/{name}/preview` and `PUT /api/sites/{name}/type`)
+- Site types: `/api/types/*`; uploads and yanks need a platform admin
+  resolved by identity, reads need an identified caller
 - Access suggestions: `/api/access/suggestions`
+- Site access policy: `GET` and `PUT /api/sites/{name}/access`
 
 Site-only APIs:
 
@@ -429,6 +537,19 @@ Site visitor access:
 
 Policy parsing and caching are in `server/policy.go`; storage-backed lookup is
 in `server/policy_resolve.go`.
+
+The access API (`server/site_access.go`) changes a stored policy without a
+deploy. Reads and writes take the site mutation lock and the same management
+decision as a deploy; during a pending policy transition only the owner or an
+admin passes. `GET` reads storage, not the cache, and versions the exact bytes
+with the transition digest (`absent` when there is no file). A `PUT` with
+`If-Match` compares that digest from the same read that fences the commit, so
+a policy written by a deploy or another editor after the caller's read is
+refused with `412` rather than overwritten. Every writer of `_access.json`
+holds the site mutation lock. The `/spots` Mesh access dialog and
+`spot access` always send `If-Match`; the shared picker in
+`sdk/spot-access.js` and `sdk/spot-access.css` also drives the deployer's
+access popover.
 
 Site management is a separate capability from visitor access. The immutable
 owner wins role precedence, followed by platform admin, then maintainer. The
@@ -575,6 +696,7 @@ Use this map when deciding where a change belongs:
 | HTTP route or middleware | `server/handlers.go` |
 | Apex/static/platform asset serving | `server/static_assets.go`, `sdk/` |
 | Site gallery thumbnails | `server/preview.go` |
+| Site types: registry, API, typed deploy, serving | `server/site_types.go`, `server/site_types_api.go`, `server/type_deploy.go`, `server/type_serving.go`, `docs/site-types.md` |
 | Site path rules or data scope rules | `server/scope.go` |
 | Deploy validation, sync, limits | `server/deploy.go` |
 | Site lifecycle, management roles, policy fences, audit | `server/site_registry.go` |

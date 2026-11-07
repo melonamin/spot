@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -11,6 +12,7 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"syscall"
 )
 
 var fileIDRe = regexp.MustCompile(`^[0-9a-f]{32}$`)
@@ -204,7 +206,8 @@ func (s *LocalSiteStore) Open(_ context.Context, site, path string) (io.ReadClos
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
 	file, err := os.OpenInRoot(s.root, filepath.Join(site, filepath.FromSlash(path)))
-	if os.IsNotExist(err) {
+	// ENOTDIR: a path below a file, such as "page.html/index.html", names nothing.
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
 	if err != nil {
@@ -219,7 +222,8 @@ func (s *LocalSiteStore) Open(_ context.Context, site, path string) (io.ReadClos
 		file.Close()
 		return nil, SiteFileInfo{}, ErrNotFound
 	}
-	return file, SiteFileInfo{LastModified: info.ModTime()}, nil
+	etag := fmt.Sprintf(`"%x-%x"`, info.Size(), info.ModTime().UnixNano())
+	return file, SiteFileInfo{LastModified: info.ModTime(), ETag: etag}, nil
 }
 
 func (s *LocalSiteStore) Remove(_ context.Context, site, path string) error {
@@ -231,6 +235,49 @@ func (s *LocalSiteStore) Remove(_ context.Context, site, path string) error {
 	}
 	pruneEmptyDirs(filepath.Join(s.root, site), filepath.Dir(filepath.Join(s.root, site, filepath.FromSlash(path))))
 	return nil
+}
+
+// PutTypeFile stores a package file under <root>/_types/, beside the site
+// directories; "_types" can never be a site name.
+func (s *LocalSiteStore) PutTypeFile(_ context.Context, name, version, path, _ string, data []byte) error {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return err
+	}
+	full := filepath.Join(s.root, filepath.FromSlash(key))
+	if err := os.MkdirAll(filepath.Dir(full), 0o755); err != nil {
+		return fmt.Errorf("create type file dir: %w", err)
+	}
+	if _, err := writeFileAtomic(full, bytes.NewReader(data)); err != nil {
+		return fmt.Errorf("store type file %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *LocalSiteStore) OpenTypeFile(_ context.Context, name, version, path string) (io.ReadCloser, error) {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	file, err := os.OpenInRoot(s.root, filepath.FromSlash(key))
+	if os.IsNotExist(err) || errors.Is(err, syscall.ENOTDIR) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, fmt.Errorf("open type file %s: %w", key, err)
+	}
+	if info, err := file.Stat(); err != nil || info.IsDir() {
+		file.Close()
+		return nil, ErrNotFound
+	}
+	return file, nil
+}
+
+func (s *LocalSiteStore) DeleteTypeFiles(_ context.Context, name string) error {
+	if !siteNameRe.MatchString(name) {
+		return fmt.Errorf("invalid type name %q", name)
+	}
+	return os.RemoveAll(filepath.Join(s.root, typeObjectRootPrefix, name))
 }
 
 func validSitePath(p string) bool {

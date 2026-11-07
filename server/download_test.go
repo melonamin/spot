@@ -6,7 +6,10 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 )
@@ -26,9 +29,12 @@ func TestCleanDownloadPaths(t *testing.T) {
 		"C:tmp/x",
 		"a:b",
 		"with\x00nul",
+		accessFileName,
+		"_ACCESS.JSON",
+		"docs/_access.json",
 		"about.html",
 	})
-	want := []string{"about.html", "css/app.css", "index.html"}
+	want := []string{"about.html", "css/app.css", "docs/_access.json", "index.html"}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("cleanDownloadPaths = %#v, want %#v", got, want)
 	}
@@ -113,6 +119,157 @@ func TestHandleSiteDownloadFailsClosedOnBrokenPolicy(t *testing.T) {
 
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("download with broken policy = %d, want 503 (fail closed)", rec.Code)
+	}
+}
+
+// The policy names every viewer, so an allowed viewer's zip must not carry it.
+func TestHandleSiteDownloadOmitsAccessPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "shared", accessFileName, `{"allow": ["sasha@example.com", "finance-team"]}`)
+	writeSiteFile(t, dir, "shared", "index.html", "<h1>shared</h1>")
+	srv := downloadServer(t, dir)
+
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, downloadRequest("shared.spot.localhost", "100.64.0.7"))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("allowed download = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.Bytes()
+	zr, err := zip.NewReader(bytes.NewReader(body), int64(len(body)))
+	if err != nil {
+		t.Fatalf("response is not a valid zip: %v", err)
+	}
+	var names []string
+	for _, f := range zr.File {
+		names = append(names, f.Name)
+	}
+	if !reflect.DeepEqual(names, []string{"index.html"}) {
+		t.Fatalf("zip entries = %#v, want only index.html", names)
+	}
+}
+
+// Static serving answers 404 for the policy under every spelling that
+// reaches the site root, while the site's pages stay reachable.
+func TestSiteStaticHidesAccessPolicy(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "shared", accessFileName, `{"allow": ["sasha@example.com", "finance-team"]}`)
+	writeSiteFile(t, dir, "shared", "index.html", "<h1>shared</h1>")
+	srv := downloadServer(t, dir)
+	srv.serveStatic = true
+	get := func(target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api"+target, nil)
+		req.Header.Set("X-Forwarded-Host", "shared.spot.localhost")
+		req.Header.Set("X-Forwarded-For", "100.64.0.7")
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	if rec := get("/"); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<h1>shared</h1>") {
+		t.Fatalf("allowed viewer index = %d %q, want 200 with the page", rec.Code, rec.Body.String())
+	}
+	for _, target := range []string{"/_access.json", "/_ACCESS.JSON", "/_Access.Json", "/%5Faccess.json", "/x/../_access.json", "/_access.json/"} {
+		rec := get(target)
+		if loc := rec.Header().Get("Location"); rec.Code/100 == 3 && loc != "" {
+			rec = get(loc)
+		}
+		want := http.StatusNotFound
+		if strings.Contains(target, "..") {
+			// The site path contract refuses dot segments before routing.
+			want = http.StatusBadRequest
+		}
+		if rec.Code != want {
+			t.Errorf("GET %s = %d, want %d", target, rec.Code, want)
+		}
+		if strings.Contains(rec.Body.String(), "finance-team") {
+			t.Errorf("GET %s leaked the policy: %q", target, rec.Body.String())
+		}
+	}
+	req := httptest.NewRequest(http.MethodHead, "http://spot-api/_access.json", nil)
+	req.Header.Set("X-Forwarded-Host", "shared.spot.localhost")
+	req.Header.Set("X-Forwarded-For", "100.64.0.7")
+	rec := httptest.NewRecorder()
+	srv.routes().ServeHTTP(rec, req)
+	if rec.Code != http.StatusNotFound {
+		t.Errorf("HEAD /_access.json = %d, want 404", rec.Code)
+	}
+}
+
+func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
+	dir := t.TempDir()
+	writeSiteFile(t, dir, "shared", accessFileName, `{"allow": ["sasha@example.com"]}`)
+	writeSiteFile(t, dir, "shared", "index.html", "<h1>shared</h1>")
+	writeSiteFile(t, dir, "open", "index.html", "<h1>open</h1>")
+	srv := downloadServer(t, dir)
+	srv.serveStatic = true
+	get := func(site, target string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api"+target, nil)
+		req.Header.Set("X-Forwarded-Host", site+".spot.localhost")
+		req.Header.Set("X-Forwarded-For", "100.64.0.7")
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	for _, target := range []string{"/", "/api/download", "/api/me"} {
+		rec := get("shared", target)
+		if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+			t.Errorf("restricted %s = %d with Cache-Control %q, want 200 and no-store",
+				target, rec.Code, rec.Header().Get("Cache-Control"))
+		}
+	}
+	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
+		t.Errorf("open site = %d with Cache-Control %q, want 200 and no-cache", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+	if rec := get("open", "/api/me"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
+		t.Errorf("open site /api/me = %d with Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))
+	}
+}
+
+func TestSiteFilesRevalidateAfterRedeploy(t *testing.T) {
+	dir := t.TempDir()
+	srv := downloadServer(t, dir)
+	srv.serveStatic = true
+	deployed := time.Date(2026, 11, 4, 5, 25, 37, 0, time.UTC)
+	deploy := func(content string, at time.Time) {
+		writeSiteFile(t, dir, "open", "photo.png", content)
+		if err := os.Chtimes(filepath.Join(dir, "open", "photo.png"), at, at); err != nil {
+			t.Fatal(err)
+		}
+	}
+	get := func(header http.Header) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodGet, "http://spot-api/photo.png", nil)
+		req.Header.Set("X-Forwarded-Host", "open.spot.localhost")
+		req.Header.Set("X-Forwarded-For", "100.64.0.7")
+		for name, values := range header {
+			req.Header[name] = values
+		}
+		rec := httptest.NewRecorder()
+		srv.routes().ServeHTTP(rec, req)
+		return rec
+	}
+
+	deploy("blue", deployed)
+	first := get(nil)
+	etag, lastModified := first.Header().Get("ETag"), first.Header().Get("Last-Modified")
+	if first.Code != http.StatusOK || first.Header().Get("Cache-Control") != "no-cache" || etag == "" || lastModified == "" {
+		t.Fatalf("first load = %d, Cache-Control %q, ETag %q, Last-Modified %q; want 200, no-cache and both validators",
+			first.Code, first.Header().Get("Cache-Control"), etag, lastModified)
+	}
+	cached := http.Header{"If-None-Match": {etag}, "If-Modified-Since": {lastModified}}
+	if rec := get(cached); rec.Code != http.StatusNotModified {
+		t.Fatalf("unchanged revalidation = %d, want 304", rec.Code)
+	}
+
+	// A redeploy inside the same Last-Modified second must still replace the file.
+	deploy("red", deployed.Add(500*time.Millisecond))
+	rec := get(cached)
+	if rec.Code != http.StatusOK || rec.Body.String() != "red" {
+		t.Fatalf("revalidation after redeploy = %d %q, want 200 \"red\"", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("ETag") == etag {
+		t.Fatalf("ETag %q did not change after redeploy", etag)
 	}
 }
 

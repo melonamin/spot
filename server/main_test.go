@@ -302,34 +302,40 @@ func TestValidateDeploymentSafetyRequiresProviderForNonLocalDomain(t *testing.T)
 
 func TestNewResolver(t *testing.T) {
 	tests := []struct {
-		name string
-		cfg  config
-		want string
+		name   string
+		cfg    config
+		want   string
+		method string
 	}{
 		{
-			name: "netbird",
-			cfg:  config{NetbirdAPIURL: "https://netbird.example.com", NetbirdAPIToken: "token"},
-			want: "*main.NetbirdResolver",
+			name:   "netbird",
+			cfg:    config{NetbirdAPIURL: "https://netbird.example.com", NetbirdAPIToken: "token"},
+			want:   "*main.NetbirdResolver",
+			method: "netbird",
 		},
 		{
-			name: "tailscale",
-			cfg:  config{TailscaleAPIToken: "token", TailscaleTailnet: "-"},
-			want: "*main.TailscaleResolver",
+			name:   "tailscale",
+			cfg:    config{TailscaleAPIToken: "token", TailscaleTailnet: "-"},
+			want:   "*main.TailscaleResolver",
+			method: "tailscale",
 		},
 		{
-			name: "tailscale oauth",
-			cfg:  config{TailscaleOAuthID: "client-id", TailscaleOAuthSecret: "client-secret", TailscaleTailnet: "-"},
-			want: "*main.TailscaleResolver",
+			name:   "tailscale oauth",
+			cfg:    config{TailscaleOAuthID: "client-id", TailscaleOAuthSecret: "client-secret", TailscaleTailnet: "-"},
+			want:   "*main.TailscaleResolver",
+			method: "tailscale",
 		},
 		{
-			name: "dev identity",
-			cfg:  config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
-			want: "*main.StaticResolver",
+			name:   "dev identity",
+			cfg:    config{DevIdentityEmail: "dev@example.com", DevIdentityName: "Dev"},
+			want:   "*main.StaticResolver",
+			method: "dev",
 		},
 		{
-			name: "single user",
-			cfg:  config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
-			want: "*main.StaticResolver",
+			name:   "single user",
+			cfg:    config{AuthMode: authModeSingleUser, SingleUserEmail: "owner@spot.local", SingleUserName: "Owner"},
+			want:   "*main.StaticResolver",
+			method: "single_user",
 		},
 		{
 			name: "forward auth ignores dev fallback",
@@ -344,9 +350,12 @@ func TestNewResolver(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			resolver, _ := newResolver(tt.cfg)
+			resolver, _, method := newResolver(tt.cfg)
 			if got := typeName(resolver); got != tt.want {
 				t.Fatalf("newResolver type = %s, want %s", got, tt.want)
+			}
+			if method != tt.method {
+				t.Fatalf("newResolver auth method = %q, want %q", method, tt.method)
 			}
 		})
 	}
@@ -357,4 +366,73 @@ func typeName(v any) string {
 		return "<nil>"
 	}
 	return fmt.Sprintf("%T", v)
+}
+
+func delegatedLoginConfig() config {
+	return config{
+		SpotDomain:       "sites.example.com",
+		StorageMode:      storageModeLocal,
+		AIAccess:         aiAccessOwners,
+		SlackAccess:      slackAccessOwners,
+		LoginURL:         "https://chat.example.com/sites/login",
+		LoginTokenSecret: strings.Repeat("t", 32),
+		SessionSecret:    strings.Repeat("s", 32),
+		SessionTTL:       "12h",
+	}
+}
+
+func TestDelegatedLoginConfigValidation(t *testing.T) {
+	cfg := delegatedLoginConfig()
+	if err := finalizeConfig(&cfg); err != nil {
+		t.Fatalf("delegated login alone rejected as a shared identity provider: %v", err)
+	}
+	withForwardAuth := delegatedLoginConfig()
+	withForwardAuth.ForwardAuth = true
+	withForwardAuth.ForwardAuthSecret = strings.Repeat("f", 32)
+	if err := finalizeConfig(&withForwardAuth); err != nil {
+		t.Fatalf("delegated login with forward auth rejected: %v", err)
+	}
+
+	for _, tt := range []struct {
+		name   string
+		mutate func(*config)
+		want   string
+	}{
+		{"relative login URL", func(c *config) { c.LoginURL = "/sites/login" }, "SPOT_LOGIN_URL"},
+		{"non-http login URL", func(c *config) { c.LoginURL = "javascript:alert(1)" }, "SPOT_LOGIN_URL"},
+		{"short token secret", func(c *config) { c.LoginTokenSecret = "short" }, "SPOT_LOGIN_TOKEN_SECRET"},
+		{"missing session secret", func(c *config) { c.SessionSecret = "" }, "SPOT_SESSION_SECRET"},
+		{"shared secret reuse", func(c *config) { c.SessionSecret = c.LoginTokenSecret }, "must differ"},
+		{"bad TTL", func(c *config) { c.SessionTTL = "tomorrow" }, "SPOT_SESSION_TTL"},
+		{"zero TTL", func(c *config) { c.SessionTTL = "0s" }, "SPOT_SESSION_TTL"},
+		{"secrets without URL", func(c *config) { c.LoginURL = "" }, "require SPOT_LOGIN_URL"},
+		{"single-user", func(c *config) { c.AuthMode = authModeSingleUser }, "single-user"},
+		{"dev identity", func(c *config) { c.DevIdentityEmail = "dev@spot.local" }, "SPOT_DEV_IDENTITY_EMAIL"},
+		{"relative apex redirect", func(c *config) { c.ApexRedirectURL = "/sites" }, "SPOT_APEX_REDIRECT_URL"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := delegatedLoginConfig()
+			tt.mutate(&cfg)
+			if err := finalizeConfig(&cfg); err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("finalizeConfig error = %v, want %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadConfigReadsDelegatedLoginEnv(t *testing.T) {
+	t.Setenv("SPOT_DOMAIN", "sites.example.com")
+	t.Setenv("SPOT_STORAGE_MODE", "local")
+	t.Setenv("SPOT_LOGIN_URL", "https://chat.example.com/sites/login")
+	t.Setenv("SPOT_LOGIN_TOKEN_SECRET", strings.Repeat("t", 40))
+	t.Setenv("SPOT_SESSION_SECRET", strings.Repeat("s", 40))
+	t.Setenv("SPOT_FRAME_ANCESTORS", "  'self'   https://chat.example.com ")
+	t.Setenv("SPOT_APEX_REDIRECT_URL", "https://chat.example.com/sites")
+	cfg, err := loadConfigFrom(nil)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.SessionTTL != "12h" || cfg.FrameAncestors != "'self' https://chat.example.com" || cfg.ApexRedirectURL != "https://chat.example.com/sites" {
+		t.Fatalf("config = %+v", cfg)
+	}
 }

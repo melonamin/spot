@@ -31,8 +31,36 @@ CREATE TABLE IF NOT EXISTS sites (
     content_external_mutation integer NOT NULL DEFAULT 0,
     content_external_mutation_started_at integer NOT NULL DEFAULT 0,
     content_external_mutation_owner text NOT NULL DEFAULT '',
+    -- A typed site pins one version of a site type; empty for ordinary sites.
+    type_name text NOT NULL DEFAULT '',
+    type_version text NOT NULL DEFAULT '',
+    type_track text NOT NULL DEFAULT '',
+    -- Opaque stamp of the last change that published a _spot_deploys event.
+    deploy_version text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
     updated_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
+);
+
+-- Immutable site type versions. Package bytes live in site storage under
+-- _types/<name>/<version>/; only paths in inventory are ever served.
+CREATE TABLE IF NOT EXISTS site_type_versions (
+    name text NOT NULL,
+    version text NOT NULL,
+    major integer NOT NULL,
+    minor integer NOT NULL,
+    patch integer NOT NULL,
+    prerelease text NOT NULL DEFAULT '',
+    title text NOT NULL,
+    manifest text NOT NULL,
+    package_hash text NOT NULL,
+    inventory text NOT NULL,
+    has_skill integer NOT NULL DEFAULT 0,
+    uploader_email text NOT NULL DEFAULT '',
+    uploader_peer_ip text NOT NULL DEFAULT '',
+    uploader_name text NOT NULL DEFAULT '',
+    uploaded_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    yanked_at datetime,
+    PRIMARY KEY (name, version)
 );
 
 CREATE TABLE IF NOT EXISTS site_deploy_audit (
@@ -48,12 +76,32 @@ CREATE TABLE IF NOT EXISTS site_deploy_audit (
     total_bytes integer NOT NULL DEFAULT 0,
     content_hash text NOT NULL DEFAULT '',
     authorized_as text NOT NULL DEFAULT '',
+    auth_method text NOT NULL DEFAULT '',
+    publisher_key_id text NOT NULL DEFAULT '',
+    publisher_name text NOT NULL DEFAULT '',
+    mode text NOT NULL DEFAULT '',
     message text NOT NULL DEFAULT '',
     created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now'))
 );
 
 CREATE INDEX IF NOT EXISTS site_deploy_audit_site_created_idx
     ON site_deploy_audit (site, created_at DESC);
+
+CREATE TABLE IF NOT EXISTS publishing_keys (
+    id text PRIMARY KEY,
+    owner_email text NOT NULL DEFAULT '',
+    owner_peer_ip text NOT NULL DEFAULT '',
+    owner_name text NOT NULL DEFAULT '',
+    name text NOT NULL,
+    site_prefix text NOT NULL,
+    secret_hash blob,
+    created_at datetime NOT NULL DEFAULT (strftime('%Y-%m-%d %H:%M:%f', 'now')),
+    last_used_at datetime,
+    revoked_at datetime
+);
+
+CREATE INDEX IF NOT EXISTS publishing_keys_owner_created_idx
+    ON publishing_keys (owner_email, owner_peer_ip, created_at DESC);
 
 CREATE TABLE IF NOT EXISTS site_cloudflare_publications (
     site text PRIMARY KEY REFERENCES sites(name) ON DELETE RESTRICT,

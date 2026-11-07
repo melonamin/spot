@@ -14,7 +14,7 @@ import (
 	"time"
 )
 
-//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/stats.html ../sdk/help.html ../sdk/404.html ../sdk/spot.js ../sdk/spot-live.js ../sdk/spot.d.ts ../sdk/install.sh ../sdk/agent.md ../sdk/spot-agent-howto.md ../sdk/spot-show-schema.md ../sdk/spot static_assets/sdk/"
+//go:generate sh -c "rm -rf static_assets/sdk && mkdir -p static_assets/sdk && cp ../sdk/index.html ../sdk/spots.html ../sdk/stats.html ../sdk/help.html ../sdk/404.html ../sdk/spot.js ../sdk/spot-live.js ../sdk/spot-format.js ../sdk/spot-access.js ../sdk/spot-access.css ../sdk/spot.d.ts ../sdk/install.sh ../sdk/agent.md ../sdk/spot-agent-howto.md ../sdk/spot-show-schema.md ../sdk/spot static_assets/sdk/"
 //go:embed static_assets/sdk/*
 var staticAssets embed.FS
 
@@ -46,6 +46,11 @@ func (s *Server) handleApexStatic(w http.ResponseWriter, r *http.Request) {
 	}
 	if name == "agent.md" {
 		s.serveAgentDoc(w, r)
+		return
+	}
+	// An embedding product can own the platform pages; APIs and assets stay.
+	if s.apexRedirectURL != "" && strings.HasSuffix(name, ".html") {
+		http.Redirect(w, r, s.apexRedirectURL, http.StatusFound)
 		return
 	}
 	s.serveEmbeddedAsset(w, r, name)
@@ -92,6 +97,24 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		httpError(w, http.StatusServiceUnavailable, "site store not configured")
 		return
 	}
+	typedData := false
+	if s.types != nil {
+		ref, err := s.types.SiteType(r.Context(), site)
+		if err != nil && !errors.Is(err, ErrSiteNotFound) {
+			log.Printf("static %s: read site type: %v", site, err)
+			httpError(w, http.StatusServiceUnavailable, "could not read the site's type")
+			return
+		}
+		if ref.typed() {
+			if s.serveTypedSitePath(w, r, ref) {
+				return
+			}
+			// Typed data is small and changes with deploys and access
+			// changes, so no cache may keep or revalidate it by time.
+			typedData = true
+			w.Header().Set("Cache-Control", "no-store")
+		}
+	}
 	requestPath := strings.TrimPrefix(path.Clean(r.URL.Path), "/")
 	var indexPath string
 	if requestPath == "." || requestPath == "" {
@@ -101,7 +124,7 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 	} else {
 		indexPath = path.Join(requestPath, "index.html")
 	}
-	if !validSitePath(requestPath) {
+	if !validSitePath(requestPath) || isSiteAccessFile(requestPath) {
 		s.serveEmbedded404(w, r)
 		return
 	}
@@ -126,8 +149,23 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		return
 	}
 	defer rc.Close()
+	if !typedData {
+		// Browsers otherwise reuse subresources by heuristic freshness, so a
+		// normal reload after a redeploy shows new HTML with old images.
+		// Restricted sites keep the no-store authorizeSiteAccess set.
+		if w.Header().Get("Cache-Control") == "" {
+			w.Header().Set("Cache-Control", "no-cache")
+		}
+		if info.ETag != "" {
+			w.Header().Set("ETag", info.ETag)
+		}
+	}
 	if seeker, ok := rc.(io.ReadSeeker); ok {
-		http.ServeContent(w, r, requestPath, info.LastModified, seeker)
+		modTime := info.LastModified
+		if typedData {
+			modTime = time.Time{}
+		}
+		http.ServeContent(w, r, requestPath, modTime, seeker)
 		return
 	}
 	w.Header().Set("Content-Type", contentTypeForName(requestPath))
@@ -177,6 +215,14 @@ func (s *Server) serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, name
 }
 
 func (s *Server) serveEmbedded404(w http.ResponseWriter, r *http.Request) {
+	if s.login != nil {
+		writeStatusPage(w, http.StatusNotFound, statusPage{
+			Title:   "Page not found",
+			Message: "This site or page does not exist, or it was deleted.",
+			Links:   s.sitesLink(),
+		})
+		return
+	}
 	file, err := staticAssets.Open("static_assets/sdk/404.html")
 	if err != nil {
 		w.WriteHeader(http.StatusNotFound)

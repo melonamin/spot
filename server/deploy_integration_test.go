@@ -140,7 +140,8 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 	}
 	srv.resolver = NewStaticResolver("it-deployer@example.com", "Integration Deployer", nil)
 
-	// Redeploy without old.txt: sync semantics must remove it.
+	// Redeploy without old.txt: sync semantics must remove it. The stored
+	// _access.json stays, since the bundle does not replace it.
 	code, body = deploy(map[string]string{
 		"index.html":  "<h1>v2</h1>",
 		"css/app.css": "body{color:red}",
@@ -153,8 +154,8 @@ func TestDeploySyncRoundtrip(t *testing.T) {
 		t.Fatalf("list after redeploy: %v", err)
 	}
 	sort.Strings(paths)
-	if len(paths) != 2 || paths[0] != "css/app.css" || paths[1] != "index.html" {
-		t.Errorf("paths after redeploy = %v, want [css/app.css index.html]", paths)
+	if len(paths) != 3 || paths[0] != "_access.json" || paths[1] != "css/app.css" || paths[2] != "index.html" {
+		t.Errorf("paths after redeploy = %v, want [_access.json css/app.css index.html]", paths)
 	}
 }
 
@@ -183,4 +184,43 @@ func mustOutbound(t *testing.T, req *http.Request, url string) *http.Request {
 	}
 	out.Header = req.Header
 	return out
+}
+
+// TestSiteStoreETagFollowsContent pins the validator serveStatic sends for
+// S3-backed sites: quoted, stable for identical bytes, new for new bytes.
+func TestSiteStoreETagFollowsContent(t *testing.T) {
+	endpoint := os.Getenv("SPOT_TEST_S3_ENDPOINT")
+	if endpoint == "" {
+		endpoint = "localhost:9000"
+	}
+	requireTestS3Endpoint(t, endpoint)
+	sites, err := NewSiteStore(endpoint, "rustfsadmin", "rustfsadmin", "spot-sites")
+	if err != nil {
+		t.Fatalf("site store: %v", err)
+	}
+	ctx := context.Background()
+	const site = "it-etag"
+	t.Cleanup(func() { sites.Remove(ctx, site, "photo.png") })
+	etagAfterPut := func(content string) string {
+		t.Helper()
+		if err := sites.Put(ctx, site, "photo.png", "image/png", []byte(content)); err != nil {
+			t.Fatalf("put: %v", err)
+		}
+		rc, info, err := sites.Open(ctx, site, "photo.png")
+		if err != nil {
+			t.Fatalf("open: %v", err)
+		}
+		rc.Close()
+		if len(info.ETag) < 3 || info.ETag[0] != '"' || info.ETag[len(info.ETag)-1] != '"' {
+			t.Fatalf("ETag %q is not a quoted validator", info.ETag)
+		}
+		return info.ETag
+	}
+	blue := etagAfterPut("blue")
+	if again := etagAfterPut("blue"); again != blue {
+		t.Errorf("identical bytes changed ETag %q -> %q", blue, again)
+	}
+	if red := etagAfterPut("red"); red == blue {
+		t.Errorf("new bytes kept ETag %q", blue)
+	}
 }

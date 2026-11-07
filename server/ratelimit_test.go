@@ -91,3 +91,67 @@ func TestRateLimiterPruneRemovesIdle(t *testing.T) {
 		t.Error("prune dropped a fresh visitor")
 	}
 }
+
+func TestLimitedHandlerExemptsSecretProvenForwardAuth(t *testing.T) {
+	limiter := NewRateLimiter(1, 1)
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "0123456789abcdef0123456789abcdef"
+	srv := &Server{forwardAuth: fa, trustedProxies: testTrustedProxies(t)}
+	handler := srv.limited(limiter, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+
+	call := func(email, secret string) int {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		req.RemoteAddr = "192.0.2.1:12345"
+		req.Header.Set("Remote-Email", email)
+		req.Header.Set(forwardAuthSecretHeader, secret)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec.Code
+	}
+
+	for i := 0; i < 5; i++ {
+		if code := call("a@example.com", fa.Secret); code != http.StatusOK {
+			t.Fatalf("proven call %d: status %d, want 200", i, code)
+		}
+	}
+	// A wrong secret proves nothing, so the address bucket applies.
+	if code := call("c@example.com", "wrong-secret-wrong-secret-wrong!"); code != http.StatusOK {
+		t.Fatalf("first unproven call: status %d", code)
+	}
+	if code := call("d@example.com", "wrong-secret-wrong-secret-wrong!"); code != http.StatusTooManyRequests {
+		t.Fatalf("second unproven call from the same address: status %d, want 429", code)
+	}
+}
+
+// AI and Slack spend server-side credentials, so a secret-proven proxy gets a
+// bucket per asserted user there instead of an exemption.
+func TestLimitedSpendKeysSecretProvenForwardAuthByUser(t *testing.T) {
+	limiter := NewRateLimiter(1, 1)
+	fa := NewForwardAuth("", "", "", "")
+	fa.Secret = "0123456789abcdef0123456789abcdef"
+	srv := &Server{forwardAuth: fa, trustedProxies: testTrustedProxies(t)}
+	handler := srv.limitedSpend(limiter, func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	})
+	call := func(email string) int {
+		req := httptest.NewRequest(http.MethodPost, "/", nil)
+		req.RemoteAddr = "192.0.2.1:12345"
+		req.Header.Set("Remote-Email", email)
+		req.Header.Set(forwardAuthSecretHeader, fa.Secret)
+		rec := httptest.NewRecorder()
+		handler(rec, req)
+		return rec.Code
+	}
+	if code := call("a@example.com"); code != http.StatusOK {
+		t.Fatalf("first call for a: status %d", code)
+	}
+	if code := call("a@example.com"); code != http.StatusTooManyRequests {
+		t.Fatalf("second call for a: status %d, want 429", code)
+	}
+	// Another user behind the same proxy has its own bucket.
+	if code := call("b@example.com"); code != http.StatusOK {
+		t.Fatalf("first call for b: status %d, want 200", code)
+	}
+}

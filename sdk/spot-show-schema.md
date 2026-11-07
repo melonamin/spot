@@ -339,6 +339,46 @@ one of `pending`, `running`, `done`, or `error`. Detail starts collapsed.
 }
 ```
 
+### As Was / To Be comparison
+
+Any comparison of a current and a proposed state, such as as was or as is versus
+to be, or before versus after, must separate the two sides by background color.
+Tinted text or box borders alone are not enough. Label each side too, and keep
+each side's color on every table, diagram and panel of the report.
+
+Use amber for the current state and green for the proposed state. Amber does not
+read as an error, as red would.
+
+| Side | HTML blocks | Mermaid fill | Mermaid stroke |
+| --- | --- | --- | --- |
+| As Was | `color-mix(in srgb,var(--spot-warn) 12%,transparent)` | `#d9770626` | `#b45309` |
+| To Be | `color-mix(in srgb,var(--spot-good) 14%,transparent)` | `#05966926` | `#047857` |
+
+These values follow the report's light and dark appearance.
+
+Markdown tables cannot set a cell background, so write a comparison table as an
+`html` block, with the color on the whole column or row:
+
+```json
+{
+  "kind": "html",
+  "title": "Comparison",
+  "body": "<style>table{width:100%;border-collapse:collapse;font:14px var(--spot-font-sans);color:var(--spot-text)}th,td{border:1px solid var(--spot-line);padding:7px 10px;text-align:left}.was{background:color-mix(in srgb,var(--spot-warn) 12%,transparent)}.tobe{background:color-mix(in srgb,var(--spot-good) 14%,transparent)}</style><table><tr><th></th><th class='was'>As Was</th><th class='tobe'>To Be</th></tr><tr><td>Login</td><td class='was'>Browser token</td><td class='tobe'>Server exchange</td></tr></table>"
+}
+```
+
+In a diagram, put each side in its own `subgraph` and style the subgraph, so that
+the background covers the side and not only its nodes. The `~~~` link keeps As Was
+first, because Mermaid may otherwise swap the subgraphs:
+
+```json
+{
+  "kind": "mermaid",
+  "title": "Flow",
+  "body": "flowchart TB\n  subgraph WAS[As Was]\n    A[Browser] --> B[Provider]\n  end\n  subgraph TOBE[To Be]\n    C[Browser] --> D[Spot] --> E[Provider]\n  end\n  WAS ~~~ TOBE\n  style WAS fill:#d9770626,stroke:#b45309\n  style TOBE fill:#05966926,stroke:#047857"
+}
+```
+
 ## Agent workflow
 
 1. Fetch this schema before authoring a Spot Show:

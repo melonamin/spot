@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -15,6 +16,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/minio/minio-go/v7"
@@ -34,6 +36,13 @@ const (
 	maxRawDeployParts = maxDeployFiles * 4
 )
 
+// Deploy modes: a replace deploy's files become the site's whole file set; a
+// merge writes its files into a live site and keeps every other file.
+const (
+	deployModeReplace = "replace"
+	deployModeMerge   = "merge"
+)
+
 type SiteStorage interface {
 	Put(ctx context.Context, site, path, contentType string, data []byte) error
 	List(ctx context.Context, site string) ([]string, error)
@@ -43,6 +52,10 @@ type SiteStorage interface {
 
 type SiteFileInfo struct {
 	LastModified time.Time
+	// ETag is a quoted strong validator that changes whenever the stored
+	// bytes are rewritten, so it also tells apart two deploys inside one
+	// Last-Modified second.
+	ETag string
 }
 
 // SiteStore writes deployed sites into an S3-compatible bucket. Deploys
@@ -108,7 +121,56 @@ func (s *SiteStore) Open(ctx context.Context, site, path string) (io.ReadCloser,
 		}
 		return nil, SiteFileInfo{}, fmt.Errorf("stat site file %s: %w", key, err)
 	}
-	return obj, SiteFileInfo{LastModified: info.LastModified}, nil
+	return obj, SiteFileInfo{LastModified: info.LastModified, ETag: `"` + strings.Trim(info.ETag, `"`) + `"`}, nil
+}
+
+func (s *SiteStore) PutTypeFile(ctx context.Context, name, version, path, contentType string, data []byte) error {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return err
+	}
+	if _, err := s.client.PutObject(ctx, s.bucket, key, bytes.NewReader(data), int64(len(data)),
+		minio.PutObjectOptions{ContentType: contentType}); err != nil {
+		return fmt.Errorf("store type file %s: %w", key, err)
+	}
+	return nil
+}
+
+func (s *SiteStore) OpenTypeFile(ctx context.Context, name, version, path string) (io.ReadCloser, error) {
+	key, err := typeObjectKey(name, version, path)
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	obj, err := s.client.GetObject(ctx, s.bucket, key, minio.GetObjectOptions{})
+	if err != nil {
+		return nil, fmt.Errorf("open type file %s: %w", key, err)
+	}
+	if _, err := obj.Stat(); err != nil {
+		obj.Close()
+		var resp minio.ErrorResponse
+		if errors.As(err, &resp) && (resp.StatusCode == 404 || resp.Code == "NoSuchKey" || resp.Code == "NoSuchBucket") {
+			return nil, ErrNotFound
+		}
+		return nil, fmt.Errorf("stat type file %s: %w", key, err)
+	}
+	return obj, nil
+}
+
+func (s *SiteStore) DeleteTypeFiles(ctx context.Context, name string) error {
+	if !siteNameRe.MatchString(name) {
+		return fmt.Errorf("invalid type name %q", name)
+	}
+	for obj := range s.client.ListObjects(ctx, s.bucket, minio.ListObjectsOptions{
+		Prefix: typeObjectRootPrefix + name + "/", Recursive: true,
+	}) {
+		if obj.Err != nil {
+			return fmt.Errorf("list type files %s: %w", name, obj.Err)
+		}
+		if err := s.client.RemoveObject(ctx, s.bucket, obj.Key, minio.RemoveObjectOptions{}); err != nil {
+			return fmt.Errorf("delete type file %s: %w", obj.Key, err)
+		}
+	}
+	return nil
 }
 
 func (s *SiteStore) Remove(ctx context.Context, site, path string) error {
@@ -131,7 +193,9 @@ type deployFile struct {
 // a "site" name field and one "files" part per file, each part's
 // filename carrying the file's site-relative path. Semantics match the
 // CLI's sync semantics: the uploaded set replaces the site and stale
-// files are removed.
+// files are removed. With mode=merge the files are written into the live
+// site and nothing else is removed. if_version applies the deploy only
+// while the site still has that deploy version.
 //
 // The endpoint only answers on the apex domain. Combined with the
 // same-origin check, that means a deployed site's JavaScript cannot
@@ -148,6 +212,12 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"the deploy API is served on the platform root, not on site subdomains")
 		return
 	}
+	// Authenticate before reading the body: an anonymous caller must not make
+	// the server buffer up to maxDeploySize.
+	principal, ok := s.requireDeployPrincipal(w, r)
+	if !ok {
+		return
+	}
 	r.Body = http.MaxBytesReader(w, r.Body, maxDeploySize)
 	mr, err := r.MultipartReader()
 	if err != nil {
@@ -157,7 +227,19 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 
 	var site string
 	var files []deployFile
-	preserveAccess := false
+	// An update that ships no _access.json keeps the stored policy, which may
+	// have been set through PUT /api/sites/{name}/access rather than a bundle.
+	// Only an explicit preserve_access=false lets the deploy remove it.
+	// preserve_access=require also refuses a deploy that has no stored policy to
+	// keep (a new or inactive site, or an active one without a policy), so a
+	// caller never publishes a site without one.
+	preserveAccess := true
+	requireActiveAccess := false
+	mode := deployModeReplace
+	ifVersion, hasIfVersion := "", false
+	var untypedBundleErr error
+	typeFieldsPresent := map[string]bool{}
+	typeFieldValues := map[string]string{}
 	for {
 		part, err := mr.NextPart()
 		if errors.Is(err, io.EOF) {
@@ -181,7 +263,48 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 				deployReadError(w, err)
 				return
 			}
-			preserveAccess = parseDeployBool(string(raw))
+			if strings.EqualFold(strings.TrimSpace(string(raw)), "require") {
+				preserveAccess, requireActiveAccess = true, true
+				continue
+			}
+			var ok bool
+			if preserveAccess, ok = parseDeployBool(string(raw)); !ok {
+				httpError(w, http.StatusBadRequest, "preserve_access must be true, false or require")
+				return
+			}
+			requireActiveAccess = false
+		case "mode":
+			raw, err := io.ReadAll(io.LimitReader(part, 32))
+			if err != nil {
+				deployReadError(w, err)
+				return
+			}
+			switch value := strings.TrimSpace(string(raw)); value {
+			case deployModeReplace, deployModeMerge:
+				mode = value
+			default:
+				httpError(w, http.StatusBadRequest, "mode must be replace or merge")
+				return
+			}
+		case "if_version":
+			raw, err := io.ReadAll(io.LimitReader(part, 128))
+			if err != nil {
+				deployReadError(w, err)
+				return
+			}
+			if ifVersion = strings.TrimSpace(string(raw)); ifVersion == "" {
+				httpError(w, http.StatusBadRequest, "if_version must name a site version")
+				return
+			}
+			hasIfVersion = true
+		case "type", "type_target", "type_track":
+			raw, err := io.ReadAll(io.LimitReader(part, 256))
+			if err != nil {
+				deployReadError(w, err)
+				return
+			}
+			typeFieldsPresent[part.FormName()] = true
+			typeFieldValues[part.FormName()] = strings.TrimSpace(string(raw))
 		case "files":
 			if len(files) >= maxRawDeployParts {
 				httpError(w, http.StatusBadRequest,
@@ -202,9 +325,53 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			"site name must be 1-63 lowercase letters, digits or hyphens, starting and ending with a letter or digit")
 		return
 	}
-	files, err = normalizeDeploy(files)
-	if err != nil {
-		httpError(w, http.StatusBadRequest, err.Error())
+	if principal.PublishingKey && (!strings.HasPrefix(site, principal.RequiredPrefix) || len(site) == len(principal.RequiredPrefix)) {
+		log.Printf("publishing key rejected: id=%s site=%s", principal.PublisherKeyID, site)
+		httpError(w, http.StatusForbidden, "publishing key is not authorized for this site name")
+		return
+	}
+	typeFields, terr := parseTypedDeployFields(typeFieldsPresent,
+		typeFieldValues["type"], typeFieldValues["type_target"], typeFieldValues["type_track"])
+	if terr != nil {
+		writeTypeError(w, terr)
+		return
+	}
+	merge := mode == deployModeMerge
+	// A repin changes the data contract of the whole site, which a merge's
+	// partial upload cannot state; PUT /api/sites/{name}/type validates the
+	// retained data instead.
+	if merge && typeFields != nil && typeFields.HasTarget {
+		writeTypeError(w, invalidTypeField("type_target cannot be combined with mode=merge; repin with a replace deploy or PUT /api/sites/{name}/type"))
+		return
+	}
+	if typeFields != nil {
+		if s.types == nil {
+			httpError(w, http.StatusServiceUnavailable, "site types are not configured")
+			return
+		}
+		if files, terr = normalizeTypedDeploy(files); terr != nil {
+			writeTypeError(w, terr)
+			return
+		}
+	} else if merge {
+		if files, err = normalizeMergeDeploy(files); err != nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+	} else if files, err = normalizeDeploy(files); err != nil {
+		if s.types == nil {
+			httpError(w, http.StatusBadRequest, err.Error())
+			return
+		}
+		// Data without an index.html is most likely a typed site's data sent
+		// without its type. Whether to say so depends on the site's pin, which
+		// only an authorized caller may learn, so the error waits for the
+		// authorized check under the site lock.
+		untypedBundleErr = err
+		files = nil
+	}
+	if merge && len(files) == 0 {
+		httpError(w, http.StatusBadRequest, "a merge deploy needs at least one file")
 		return
 	}
 	if len(files) > maxDeployFiles {
@@ -223,24 +390,42 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 	}
 	incomingPolicy, hasIncomingPolicy, incomingPolicyErr := deployAccessPolicy(site, files)
 	restricted := policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+	if requireActiveAccess && hasIncomingPolicy {
+		httpError(w, http.StatusBadRequest, "preserve_access=require keeps the stored "+accessFileName+"; do not send one")
+		return
+	}
 	if s.deployAuth == nil {
 		httpError(w, http.StatusServiceUnavailable, "deploy registry not configured")
 		return
 	}
-	actor, ok := s.requireDeployIdentity(w, r)
-	if !ok {
-		return
-	}
+	r = withDeployMode(withDeployPrincipal(r, principal), mode)
+	actor := principal.Actor
 	siteLock := s.siteMutationLock(site)
 	siteLock.Lock()
 	defer siteLock.Unlock()
-	if err := s.reconcilePolicyTransition(r.Context(), site, actor); err != nil && !errors.Is(err, ErrSiteNotFound) {
+	if err := s.reconcilePolicyTransition(r.Context(), site, principal); err != nil && !errors.Is(err, ErrSiteNotFound) {
 		log.Printf("deploy %s: reconcile policy transition: %v", site, err)
 		httpError(w, http.StatusServiceUnavailable, "the site's access policy needs owner or admin recovery")
 		return
 	}
 
-	authz, err := s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
+	var authz DeployAuthorization
+	if principal.PublishingKey {
+		authorizer, ok := s.deployAuth.(interface {
+			AuthorizePublishingKeyDeploy(context.Context, string, Identity, string) (DeployAuthorization, error)
+		})
+		if !ok {
+			httpError(w, http.StatusServiceUnavailable, "publishing-key deploy authorization is not configured")
+			return
+		}
+		authz, err = authorizer.AuthorizePublishingKeyDeploy(r.Context(), site, actor, principal.PublisherKeyID)
+	} else {
+		authz, err = s.deployAuth.AuthorizeDeploy(r.Context(), site, actor)
+	}
+	if errors.Is(err, errPublishingKeyInvalid) {
+		httpError(w, http.StatusUnauthorized, "invalid or revoked publishing key")
+		return
+	}
 	if errors.Is(err, ErrDeployForbidden) {
 		s.recordDeployAudit(r, DeployAuditEvent{
 			Site:       site,
@@ -250,6 +435,7 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			Message:    "actor is not the site owner, a maintainer, or a platform admin",
 			FileCount:  len(files),
 			TotalBytes: totalDeployBytes(files),
+			Mode:       mode,
 		})
 		httpError(w, http.StatusForbidden, "only the site owner, a maintainer, or a platform admin can deploy this site")
 		return
@@ -270,14 +456,63 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			log.Printf("deploy %s: cancel authorization: %v", site, err)
 		}
 	}
+	if untypedBundleErr != nil {
+		terr, err := s.missingTypeError(r.Context(), principal, site, authz)
+		cancelAuthorization()
+		switch {
+		case err != nil:
+			log.Printf("deploy %s: read site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's type")
+		case terr != nil:
+			writeTypeError(w, terr)
+		default:
+			httpError(w, http.StatusBadRequest, untypedBundleErr.Error())
+		}
+		return
+	}
+	activeUpdate := authz.Action == "update" && authz.PreviousState == SiteStateActive
+	if merge && !activeUpdate {
+		cancelAuthorization()
+		writeJSON(w, http.StatusNotFound, map[string]any{
+			"error": "site " + site + " has no live content to merge into; deploy it with mode=replace",
+			"code":  "site_not_found",
+		})
+		return
+	}
+	// The version is checked under the site lock and after authorization, so
+	// only a caller who may deploy the site learns it.
+	if hasIfVersion {
+		current := ""
+		if activeUpdate {
+			current = authz.PreviousVersion
+		}
+		if ifVersion != current {
+			cancelAuthorization()
+			writeJSON(w, http.StatusConflict, map[string]any{
+				"error":           "site " + site + " changed since version " + ifVersion + "; read it again before deploying",
+				"code":            "site_version_mismatch",
+				"current_version": current,
+			})
+			return
+		}
+	}
+	noPolicyToKeep := "site " + site + " has no stored access policy to keep; deploy it with an explicit " + accessFileName
+	if requireActiveAccess && (authz.Action != "update" || authz.PreviousState != SiteStateActive) {
+		cancelAuthorization()
+		httpError(w, http.StatusConflict, noPolicyToKeep)
+		return
+	}
 	if preserveAccess && authz.Action == "update" && authz.PreviousState == SiteStateActive {
-		files, err = s.preserveExistingAccessPolicy(r.Context(), site, files)
+		preserved, err := s.preserveExistingAccessPolicy(r.Context(), site, files)
 		if err != nil {
 			cancelAuthorization()
 			log.Printf("deploy %s: preserve access: %v", site, err)
+			// A read-only failure: audit it without marking content ambiguous.
+			s.recordDeployFailureAs(r, site, actor, "deploy", authz.AuthorizedAs, files, "could not preserve existing "+accessFileName)
 			httpError(w, http.StatusInternalServerError, "could not preserve existing "+accessFileName)
 			return
 		}
+		files = preserved
 		if len(files) > maxDeployFiles {
 			cancelAuthorization()
 			httpError(w, http.StatusBadRequest,
@@ -291,6 +526,82 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		}
 		incomingPolicy, hasIncomingPolicy, incomingPolicyErr = deployAccessPolicy(site, files)
 		restricted = policyRestrictsAccess(incomingPolicy, hasIncomingPolicy, incomingPolicyErr)
+		if requireActiveAccess && !hasIncomingPolicy {
+			cancelAuthorization()
+			httpError(w, http.StatusConflict, noPolicyToKeep)
+			return
+		}
+	}
+	// The pin is read and decided under the site lock, after authorization
+	// and before any storage mutation, so a deploy cannot validate against
+	// one pin and commit after a concurrent repin.
+	var typePlan *siteTypePlan
+	if s.types != nil {
+		current, err := s.types.SiteType(r.Context(), site)
+		if err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: read site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site's type")
+			return
+		}
+		// A merge keeps files a new pin's data contract never checked, so it
+		// cannot make an ordinary site typed.
+		if merge && typeFields != nil && !current.typed() {
+			cancelAuthorization()
+			writeTypeError(w, newTypeError(http.StatusConflict, "site_untyped",
+				site+" is not a typed site; a merge cannot make it one, deploy it with mode=replace"))
+			return
+		}
+		newPin := !activeUpdate
+		plan, terr, err := s.planSiteType(r.Context(), principal, typeFields, current, newPin)
+		if err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: plan site type: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not read the site type registry")
+			return
+		}
+		if terr == nil && plan != nil && plan.validate != nil {
+			terr = validateTypedDeployFiles(files, plan.validate)
+		}
+		if terr != nil {
+			cancelAuthorization()
+			writeTypeError(w, terr)
+			return
+		}
+		typePlan = plan
+	}
+	// A merge is checked against the files it keeps before any storage
+	// mutation, including the fail-closed policy staging below.
+	var mergeResult *mergePlan
+	if merge {
+		plan, terr, err := s.planMerge(r.Context(), site, files)
+		if err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: plan merge: %v", site, err)
+			s.recordDeployFailureAs(r, site, actor, "deploy", authz.AuthorizedAs, files, "could not read current files")
+			httpError(w, http.StatusInternalServerError, "could not read the site's current files")
+			return
+		}
+		if terr != nil {
+			cancelAuthorization()
+			writeTypeError(w, terr)
+			return
+		}
+		mergeResult = plan
+		metadata = plan.metadata
+	}
+	// Validation is over. The new version is stored before the first storage
+	// mutation, so a deploy that fails or is cancelled after changing live
+	// files still invalidates the version its writers read; they read the
+	// site again. CompleteDeploy keeps this version.
+	version := newDeployVersion()
+	if stamper, ok := s.deployAuth.(deployVersionStamper); ok {
+		if err := stamper.StampDeployVersion(r.Context(), site, authz, version); err != nil {
+			cancelAuthorization()
+			log.Printf("deploy %s: stamp version: %v", site, err)
+			httpError(w, http.StatusInternalServerError, "could not record the site's version")
+			return
+		}
 	}
 	var policyOnFailure *failurePolicyCache
 	var previousPolicy *AccessPolicy
@@ -323,6 +634,9 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		if err := s.commitPolicyObject(r.Context(), site, authz.ContentGeneration, data, false); err != nil {
+			if errors.Is(err, errPolicyTransitionUnresolved) {
+				s.disconnectSiteRealtime(site)
+			}
 			cancelAuthorization()
 			s.recordDeployFailureAs(r, site, actor, authz.Action, authz.AuthorizedAs, files, "could not store fail-closed policy")
 			httpError(w, http.StatusInternalServerError, "could not store fail-closed policy")
@@ -335,7 +649,14 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		s.disconnectSiteRealtime(site)
 	}
 
-	existing, err := s.sites.List(r.Context(), site)
+	var existing []string
+	if merge {
+		// A merge removes only a stored _access.json that
+		// preserve_access=false drops.
+		existing = mergeResult.removed
+	} else {
+		existing, err = s.sites.List(r.Context(), site)
+	}
 	if err != nil {
 		log.Printf("deploy %s: %v", site, err)
 		cancelAuthorization()
@@ -493,8 +814,16 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 		metadataUpdated = false
 	}
 	s.updatePolicyCacheFromDeploy(site, files)
+	if typePlan != nil && typePlan.commit {
+		if err := s.types.SetDeployedSiteType(r.Context(), site, authz.ContentGeneration, typePlan.pin); err != nil {
+			log.Printf("deploy %s: %v", site, err)
+			s.failDeployStorage(r, site, actor, authz, files, policyOnFailure, "could not record the site's type")
+			httpError(w, http.StatusInternalServerError, "could not record the site's type")
+			return
+		}
+	}
 	if completer, ok := s.deployAuth.(deployCompleter); ok {
-		if err := completer.CompleteDeploy(r.Context(), site, authz); err != nil {
+		if err := completer.CompleteDeploy(r.Context(), site, authz, version); err != nil {
 			log.Printf("deploy %s: activate: %v", site, err)
 			if authz.Action == "recreate" {
 				if canceler, ok := s.deployAuth.(deployAuthorizationCanceler); ok {
@@ -508,34 +837,189 @@ func (s *Server) handleDeploy(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
+	// The audit describes the site after the deploy: listings read its size
+	// and content hash from the latest successful row.
+	fileCount, totalBytes, contentHash := len(files), totalDeployBytes(files), cloudflareContentHashForDeploy(files)
+	if merge {
+		fileCount, totalBytes, contentHash = mergeResult.fileCount, mergeResult.totalBytes, mergeResult.contentHash
+	}
 	s.recordDeployAudit(r, DeployAuditEvent{
 		Site:              site,
 		Actor:             actor,
 		Action:            authz.Action,
 		Status:            "success",
-		FileCount:         len(files),
-		TotalBytes:        totalDeployBytes(files),
-		ContentHash:       cloudflareContentHashForDeploy(files),
+		FileCount:         fileCount,
+		TotalBytes:        totalBytes,
+		ContentHash:       contentHash,
 		AuthorizedAs:      authz.AuthorizedAs,
 		ContentGeneration: authz.ContentGeneration,
+		Mode:              mode,
 	})
+	if principal.PublishingKey && s.publishingKeys != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := s.publishingKeys.TouchUsed(ctx, principal.PublisherKeyID); err != nil {
+			log.Printf("publishing key %s: update last used: %v", principal.PublisherKeyID, err)
+		}
+		cancel()
+	}
 	if !metadataUpdated {
 		if err := updateMetadata(); err != nil {
 			log.Printf("deploy %s: update site metadata: %v", site, err)
 		}
 	}
-	if s.shouldAutoTag(metadata, existingSiteTags, restricted) {
+	// A merge keeps the tags its site has; tagging runs on replace deploys.
+	if !merge && s.shouldAutoTag(metadata, existingSiteTags, restricted) {
 		s.scheduleAutoTag(site, files, resolveSiteMetadata(metadata, existingSiteTags))
 	}
-	version := time.Now().UTC().Format("20060102T150405.000000000Z")
+	var finalType siteTypeRef
+	followed := false
+	if typePlan != nil {
+		finalType = typePlan.pin
+		if finalType.Track == typeTrackMajor {
+			if move, err := s.followSiteLocked(r, site, actor); err != nil {
+				log.Printf("deploy %s: follow: %v", site, err)
+			} else if move != nil {
+				finalType.Version, version, followed = move.To, move.deployVersion, true
+			}
+		}
+	}
 	url := s.siteURL(r, site)
-	s.publishDeployEvent(site, version, url)
-	writeJSON(w, http.StatusOK, map[string]any{
+	// A follow move announces the final pin and version itself; announce once.
+	if !followed {
+		s.publishDeployEvent(site, version, url, finalType.String())
+	}
+	body := map[string]any{
 		"site":    site,
 		"url":     url,
-		"files":   len(files),
+		"files":   fileCount,
 		"version": version,
-	})
+	}
+	if finalType.typed() {
+		body["type"] = siteTypeJSONFor(finalType, s.siteTypeTitle(r.Context(), finalType))
+	}
+	writeJSON(w, http.StatusOK, body)
+}
+
+var lastDeployVersion struct {
+	sync.Mutex
+	at time.Time
+}
+
+// newDeployVersion stamps a site change. Stamps increase strictly within the
+// process, so two changes never share one even on a coarse clock.
+func newDeployVersion() string {
+	lastDeployVersion.Lock()
+	defer lastDeployVersion.Unlock()
+	now := time.Now().UTC()
+	if !now.After(lastDeployVersion.at) {
+		now = lastDeployVersion.at.Add(time.Nanosecond)
+	}
+	lastDeployVersion.at = now
+	return now.Format("20060102T150405.000000000Z")
+}
+
+type deployModeContextKey struct{}
+
+func withDeployMode(r *http.Request, mode string) *http.Request {
+	return r.WithContext(context.WithValue(r.Context(), deployModeContextKey{}, mode))
+}
+
+func deployModeFromRequest(r *http.Request) string {
+	mode, _ := r.Context().Value(deployModeContextKey{}).(string)
+	return mode
+}
+
+// mergePlan is a merge deploy's view of the site it writes into, read under
+// the site lock before any storage mutation. The counts, size and content
+// hash describe the site after the merge.
+type mergePlan struct {
+	removed     []string
+	fileCount   int
+	totalBytes  int64
+	contentHash string
+	metadata    deploySiteMetadata
+}
+
+// planMerge checks a merge against the site's current files: no uploaded
+// path may collide in shape with a kept one, and the merged site must stay
+// within the deploy limits. files already carries a preserved _access.json,
+// so a stored policy missing from it is the one file the merge removes.
+// Metadata is derived from the merged site's _spot.json and index.html.
+func (s *Server) planMerge(ctx context.Context, site string, files []deployFile) (*mergePlan, *typeError, error) {
+	existing, err := s.sites.List(ctx, site)
+	if err != nil {
+		return nil, nil, err
+	}
+	digests := make(map[string]string, len(existing)+len(files))
+	var metadataFiles []deployFile
+	plan := &mergePlan{}
+	for _, f := range files {
+		sum := sha256.Sum256(f.data)
+		digests[f.path] = hex.EncodeToString(sum[:])
+		plan.totalBytes += int64(len(f.data))
+		if f.path == siteMetadataFileName || f.path == "index.html" {
+			metadataFiles = append(metadataFiles, f)
+		}
+	}
+	var kept []string
+	for _, old := range existing {
+		if _, uploaded := digests[old]; uploaded {
+			continue
+		}
+		if old == accessFileName {
+			plan.removed = append(plan.removed, old)
+			continue
+		}
+		for _, f := range files {
+			if pathShapeConflict(old, f.path) {
+				return nil, newTypeError(http.StatusConflict, "merge_path_conflict",
+					fmt.Sprintf("file path %q conflicts with the site's existing %q", f.path, old)).with("path", f.path), nil
+			}
+		}
+		kept = append(kept, old)
+	}
+	plan.fileCount = len(files) + len(kept)
+	if plan.fileCount > maxDeployFiles {
+		return nil, newTypeError(http.StatusBadRequest, "merge_too_large",
+			fmt.Sprintf("the merged site would have %d files (max %d)", plan.fileCount, maxDeployFiles)), nil
+	}
+	tooBig := newTypeError(http.StatusRequestEntityTooLarge, "merge_too_large",
+		fmt.Sprintf("the merged site would exceed the %d MB limit", maxDeploySize>>20))
+	if plan.totalBytes > maxDeploySize {
+		return nil, tooBig, nil
+	}
+	for _, path := range kept {
+		rc, _, err := s.sites.Open(ctx, site, path)
+		if err != nil {
+			return nil, nil, fmt.Errorf("open %s: %w", path, err)
+		}
+		isMetadata := path == siteMetadataFileName || path == "index.html"
+		hash := sha256.New()
+		var data bytes.Buffer
+		var dst io.Writer = hash
+		if isMetadata {
+			dst = io.MultiWriter(hash, &data)
+		}
+		// Read at most one byte past the remaining budget, enough to know the
+		// merged site is too large.
+		n, err := io.Copy(dst, io.LimitReader(rc, maxDeploySize-plan.totalBytes+1))
+		rc.Close()
+		if err != nil {
+			return nil, nil, fmt.Errorf("read %s: %w", path, err)
+		}
+		if plan.totalBytes += n; plan.totalBytes > maxDeploySize {
+			return nil, tooBig, nil
+		}
+		digests[path] = hex.EncodeToString(hash.Sum(nil))
+		if isMetadata {
+			metadataFiles = append(metadataFiles, deployFile{path: path, data: data.Bytes()})
+		}
+	}
+	plan.contentHash = cloudflareContentHash(digests)
+	if plan.metadata, err = metadataForDeploy(site, metadataFiles); err != nil {
+		return nil, nil, err
+	}
+	return plan, nil, nil
 }
 
 func conflictingStalePaths(existing []string, files []deployFile, keep map[string]bool) []string {
@@ -554,12 +1038,16 @@ func conflictingStalePaths(existing []string, files []deployFile, keep map[strin
 	return out
 }
 
-func parseDeployBool(raw string) bool {
+// parseDeployBool reads a boolean form field strictly: false removes a
+// stored _access.json, so a typo or an empty value must not mean false.
+func parseDeployBool(raw string) (value, ok bool) {
 	switch strings.ToLower(strings.TrimSpace(raw)) {
 	case "1", "true", "yes", "on":
-		return true
+		return true, true
+	case "0", "false", "no", "off":
+		return false, true
 	default:
-		return false
+		return false, false
 	}
 }
 
@@ -666,6 +1154,8 @@ func preservePolicyOnFailure(current *AccessPolicy, currentErr error, next *Acce
 	return policyBroadens(current, next) || maintainersChanged(current, next)
 }
 
+// maintainersChanged compares the maintainer lists as sets of normalized
+// entries: order, case, duplicates and blank entries grant no authority.
 func maintainersChanged(current, next *AccessPolicy) bool {
 	var currentEntries, nextEntries []string
 	if current != nil {
@@ -674,15 +1164,26 @@ func maintainersChanged(current, next *AccessPolicy) bool {
 	if next != nil {
 		nextEntries = next.Maintainers
 	}
-	if len(currentEntries) != len(nextEntries) {
+	currentSet, nextSet := maintainerSet(currentEntries), maintainerSet(nextEntries)
+	if len(currentSet) != len(nextSet) {
 		return true
 	}
-	for i := range currentEntries {
-		if !strings.EqualFold(strings.TrimSpace(currentEntries[i]), strings.TrimSpace(nextEntries[i])) {
+	for entry := range currentSet {
+		if _, ok := nextSet[entry]; !ok {
 			return true
 		}
 	}
 	return false
+}
+
+func maintainerSet(entries []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(entries))
+	for _, entry := range entries {
+		if entry = strings.ToLower(strings.TrimSpace(entry)); entry != "" {
+			set[entry] = struct{}{}
+		}
+	}
+	return set
 }
 
 func policyNarrowsAccess(current, next *AccessPolicy, hasNext bool) bool {
@@ -769,11 +1270,30 @@ func (s *Server) storedPolicyBytes(ctx context.Context, site string) ([]byte, bo
 }
 
 func (s *Server) commitPolicyObject(ctx context.Context, site string, generation int64, next []byte, remove bool) error {
+	return s.commitPolicyObjectIf(ctx, site, generation, next, remove, "")
+}
+
+// policyVersionMismatchError reports that the stored policy no longer has
+// the digest a conditional change expected; Current is the stored digest.
+type policyVersionMismatchError struct{ Current string }
+
+func (e *policyVersionMismatchError) Error() string {
+	return "stored policy digest is " + e.Current
+}
+
+// commitPolicyObjectIf is commitPolicyObject that, when expected is not
+// empty, first requires the stored policy's digest to equal it. The digest
+// comes from the same read that fences the transition, so the caller's
+// site mutation lock makes the check and the write one step.
+func (s *Server) commitPolicyObjectIf(ctx context.Context, site string, generation int64, next []byte, remove bool, expected string) error {
 	previous, previousAbsent, err := s.storedPolicyBytes(ctx, site)
 	if err != nil {
 		return err
 	}
 	previousHash := policyObjectHash(previous, previousAbsent)
+	if expected != "" && expected != previousHash {
+		return &policyVersionMismatchError{Current: previousHash}
+	}
 	nextHash := policyObjectHash(next, remove)
 	registry, fenced := s.deployAuth.(policyTransitionRegistry)
 	if fenced {
@@ -841,7 +1361,11 @@ type pendingPolicyTransitionRegistry interface {
 	ManagementDecision(ctx context.Context, site string, actor Identity) (ManagementDecision, error)
 }
 
-func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, actor Identity) error {
+type publishingKeyPolicyTransitionRegistry interface {
+	ClearPolicyTransitionForPublishingKey(ctx context.Context, site string, generation int64, actor Identity, keyID string) error
+}
+
+func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, principal DeployPrincipal) error {
 	registry, ok := s.deployAuth.(pendingPolicyTransitionRegistry)
 	if !ok {
 		return nil
@@ -850,12 +1374,14 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 	if err != nil || transition.Generation == 0 {
 		return err
 	}
-	decision, err := registry.ManagementDecision(ctx, site, actor)
-	if err != nil {
-		return err
-	}
-	if decision.Role != ManagementRoleOwner && decision.Role != ManagementRoleAdmin {
-		return errPolicyTransitionUnresolved
+	if !principal.PublishingKey {
+		decision, err := registry.ManagementDecision(ctx, site, principal.Actor)
+		if err != nil {
+			return err
+		}
+		if decision.Role != ManagementRoleOwner && decision.Role != ManagementRoleAdmin {
+			return errPolicyTransitionUnresolved
+		}
 	}
 	stored, absent, err := s.storedPolicyBytes(ctx, site)
 	if err != nil {
@@ -865,6 +1391,22 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 	if hash != transition.PreviousHash && hash != transition.NextHash {
 		return fmt.Errorf("%w: stored digest %s", errPolicyTransitionUnresolved, hash)
 	}
+	if principal.PublishingKey {
+		keyRegistry, ok := s.deployAuth.(publishingKeyPolicyTransitionRegistry)
+		if !ok {
+			return errPolicyTransitionUnresolved
+		}
+		err = keyRegistry.ClearPolicyTransitionForPublishingKey(
+			ctx, site, transition.Generation, principal.Actor, principal.PublisherKeyID)
+	} else {
+		err = registry.ClearPolicyTransition(ctx, site, transition.Generation)
+	}
+	if err != nil {
+		if s.policies != nil {
+			s.policies.Set(site, nil, errPolicyTransitionUnresolved)
+		}
+		return err
+	}
 	if s.policies != nil {
 		if absent {
 			s.policies.Set(site, nil, nil)
@@ -873,9 +1415,6 @@ func (s *Server) reconcilePolicyTransition(ctx context.Context, site string, act
 		} else {
 			s.policies.Set(site, policy, nil)
 		}
-	}
-	if err := registry.ClearPolicyTransition(ctx, site, transition.Generation); err != nil {
-		return err
 	}
 	return nil
 }
@@ -1058,10 +1597,6 @@ func (s *Server) failPolicyCommit(r *http.Request, site string, actor Identity, 
 	s.failDeployStorage(r, site, actor, authz, files, policyOnFailure, message)
 }
 
-func (s *Server) recordDeployFailure(r *http.Request, site string, actor Identity, action string, files []deployFile, message string) {
-	s.recordDeployFailureAs(r, site, actor, action, "", files, message)
-}
-
 func (s *Server) recordDeployFailureAs(r *http.Request, site string, actor Identity, action string, role ManagementRole, files []deployFile, message string) {
 	s.recordDeployAudit(r, DeployAuditEvent{
 		Site:         site,
@@ -1072,6 +1607,7 @@ func (s *Server) recordDeployFailureAs(r *http.Request, site string, actor Ident
 		FileCount:    len(files),
 		TotalBytes:   totalDeployBytes(files),
 		AuthorizedAs: role,
+		Mode:         deployModeFromRequest(r),
 	})
 }
 
@@ -1147,6 +1683,28 @@ func normalizeDeploy(files []deployFile) ([]deployFile, error) {
 		for i := range kept {
 			kept[i].path = kept[i].path[len(root)+1:]
 		}
+	}
+	if err := validateDeployPathShapes(kept); err != nil {
+		return nil, err
+	}
+	return kept, nil
+}
+
+// normalizeMergeDeploy validates an untyped merge's paths. They are kept as
+// sent: a merge names files of a live site, so there is no folder wrapping
+// to strip and no index.html to require.
+func normalizeMergeDeploy(files []deployFile) ([]deployFile, error) {
+	kept := make([]deployFile, 0, len(files))
+	for _, f := range files {
+		path, err := cleanSitePath(f.path)
+		if err != nil {
+			return nil, err
+		}
+		if junkPath(path) {
+			continue
+		}
+		f.path = path
+		kept = append(kept, f)
 	}
 	if err := validateDeployPathShapes(kept); err != nil {
 		return nil, err

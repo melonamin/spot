@@ -16,8 +16,13 @@ var (
 	ErrDeployForbidden                  = errors.New("deploy forbidden")
 	ErrSiteNotFound                     = errors.New("site not found")
 	ErrSiteNotActive                    = errors.New("site is not active")
+	ErrSiteNameReleaseForbidden         = errors.New("only a platform admin can release a deleted site's name")
 	ErrExternalContentMutationActive    = errors.New("external content mutation already active")
 	ErrExternalContentMutationLeaseLost = errors.New("external content mutation lease lost")
+	ErrPolicyTransitionConflict         = errors.New("content generation changed or policy transition pending")
+	// ErrManagementPolicyUnresolved means only the owner or an admin can be
+	// recognized: a pending policy transition hides the maintainers list.
+	ErrManagementPolicyUnresolved = errors.New("stored management policy transition is unresolved")
 )
 
 type SiteState string
@@ -59,6 +64,12 @@ type DeployAuthorization struct {
 	PreviousState     SiteState
 	ContentGeneration int64
 	ContentWasDirty   bool
+	// PreviousContentGeneration and PreviousUpdatedAt are the touched row's
+	// values before authorization, restored when the deploy is cancelled.
+	PreviousContentGeneration int64
+	PreviousUpdatedAt         string
+	// PreviousVersion is the site's deploy version before this deploy.
+	PreviousVersion string
 }
 
 type DeployAuditEvent struct {
@@ -72,6 +83,11 @@ type DeployAuditEvent struct {
 	ContentHash       string
 	AuthorizedAs      ManagementRole
 	ContentGeneration int64
+	AuthMethod        string
+	PublisherKeyID    string
+	PublisherName     string
+	// Mode is the deploy's mode (replace or merge); empty for other actions.
+	Mode string
 }
 
 type SiteRegistry struct {
@@ -96,8 +112,12 @@ type deployAuthorizationCanceler interface {
 	CancelDeployAuthorization(ctx context.Context, site string, authz DeployAuthorization) error
 }
 
+type deployVersionStamper interface {
+	StampDeployVersion(ctx context.Context, site string, authz DeployAuthorization, version string) error
+}
+
 type deployCompleter interface {
-	CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization) error
+	CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization, version string) error
 }
 
 type SiteRecord struct {
@@ -112,6 +132,12 @@ type SiteRecord struct {
 	PolicyTransitionGeneration int64
 	CreatedAt                  time.Time
 	UpdatedAt                  time.Time
+	// Type is the site's pin and TypeTitle the pinned version's title.
+	Type      siteTypeRef
+	TypeTitle string
+	// DeployVersion is the opaque stamp of the site's last deploy, repin or
+	// follow move, the version of its latest _spot_deploys event.
+	DeployVersion string
 }
 
 func NewSiteRegistry(db *sql.DB, admins *AccessPolicy) *SiteRegistry {
@@ -127,6 +153,17 @@ func (r *SiteRegistry) SetPolicyResolver(resolver func(context.Context, string) 
 // consulted only for active sites; provisional claims and tombstones remain
 // recoverable solely by their immutable owner or a platform admin.
 func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor Identity) (DeployAuthorization, error) {
+	return r.authorizeDeploy(ctx, site, actor, "")
+}
+
+func (r *SiteRegistry) AuthorizePublishingKeyDeploy(ctx context.Context, site string, actor Identity, keyID string) (DeployAuthorization, error) {
+	if keyID == "" {
+		return DeployAuthorization{}, errPublishingKeyInvalid
+	}
+	return r.authorizeDeploy(ctx, site, actor, keyID)
+}
+
+func (r *SiteRegistry) authorizeDeploy(ctx context.Context, site string, actor Identity, publishingKeyID string) (DeployAuthorization, error) {
 	if actorKey(actor) == "" {
 		return DeployAuthorization{}, ErrDeployForbidden
 	}
@@ -138,10 +175,16 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		snapshot, snapshotErr := r.readDeployAuthorizationRecord(ctx, r.db, site)
 		var role ManagementRole
 		if snapshotErr == nil {
-			var err error
-			role, err = r.managementRole(ctx, snapshot.SiteRecord, actor)
-			if err != nil {
-				return DeployAuthorization{}, err
+			if publishingKeyID != "" {
+				if snapshot.OwnedBy(actor) {
+					role = ManagementRoleOwner
+				}
+			} else {
+				var err error
+				role, err = r.managementRole(ctx, snapshot.SiteRecord, actor)
+				if err != nil {
+					return DeployAuthorization{}, err
+				}
 			}
 		} else if !errors.Is(snapshotErr, sql.ErrNoRows) {
 			return DeployAuthorization{}, snapshotErr
@@ -150,6 +193,29 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		tx, err := r.db.BeginTx(ctx, nil)
 		if err != nil {
 			return DeployAuthorization{}, fmt.Errorf("begin deploy auth: %w", err)
+		}
+		if publishingKeyID != "" {
+			var prefix, ownerEmail, ownerPeerIP string
+			err := tx.QueryRowContext(ctx, `SELECT site_prefix, owner_email, owner_peer_ip
+				FROM publishing_keys
+				WHERE id = ? AND revoked_at IS NULL AND secret_hash IS NOT NULL`, publishingKeyID).Scan(
+				&prefix, &ownerEmail, &ownerPeerIP)
+			if errors.Is(err, sql.ErrNoRows) {
+				tx.Rollback()
+				return DeployAuthorization{}, errPublishingKeyInvalid
+			}
+			if err != nil {
+				tx.Rollback()
+				return DeployAuthorization{}, fmt.Errorf("revalidate publishing key: %w", err)
+			}
+			ownerMatches := ownerEmail != "" && actor.Email != "" && strings.EqualFold(ownerEmail, actor.Email)
+			if ownerEmail == "" {
+				ownerMatches = ownerPeerIP != "" && actor.PeerIP == ownerPeerIP
+			}
+			if !ownerMatches || !strings.HasPrefix(site, prefix) || len(site) == len(prefix) {
+				tx.Rollback()
+				return DeployAuthorization{}, ErrDeployForbidden
+			}
 		}
 		current, currentErr := r.readDeployAuthorizationRecord(ctx, tx, site)
 		if errors.Is(snapshotErr, sql.ErrNoRows) && errors.Is(currentErr, sql.ErrNoRows) {
@@ -209,6 +275,8 @@ func (r *SiteRegistry) AuthorizeDeploy(ctx context.Context, site string, actor I
 		return DeployAuthorization{
 			Action: action, AuthorizedAs: role, PreviousState: snapshot.State,
 			ContentGeneration: generation, ContentWasDirty: snapshot.ContentDirty,
+			PreviousContentGeneration: snapshot.ContentGeneration, PreviousUpdatedAt: current.UpdatedAtText,
+			PreviousVersion: current.DeployVersion,
 		}, nil
 	}
 	return DeployAuthorization{}, fmt.Errorf("authorize deploy for %s: site changed concurrently", site)
@@ -219,6 +287,9 @@ type deployAuthorizationRecord struct {
 	ContentDirty           bool
 	ContentGeneration      int64
 	ExternalMutationActive bool
+	// UpdatedAtText is updated_at exactly as stored, so a cancelled deploy
+	// can put it back unchanged.
+	UpdatedAtText string
 }
 
 func (r deployAuthorizationRecord) sameAuthorizationState(other deployAuthorizationRecord) bool {
@@ -233,10 +304,12 @@ func (r *SiteRegistry) readDeployAuthorizationRecord(ctx context.Context, q inte
 }, site string) (deployAuthorizationRecord, error) {
 	var record deployAuthorizationRecord
 	err := q.QueryRowContext(ctx, `SELECT name, owner_email, owner_peer_ip, owner_name, state,
-		policy_transition_generation, content_dirty, content_generation, content_external_mutation
+		policy_transition_generation, content_dirty, content_generation, content_external_mutation,
+		CAST(updated_at AS TEXT), deploy_version
 		FROM sites WHERE name = ?`, site).Scan(
 		&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName, &record.State,
 		&record.PolicyTransitionGeneration, &record.ContentDirty, &record.ContentGeneration, &record.ExternalMutationActive,
+		&record.UpdatedAtText, &record.DeployVersion,
 	)
 	if err != nil {
 		return deployAuthorizationRecord{}, err
@@ -254,9 +327,15 @@ func (r *SiteRegistry) CancelDeployAuthorization(ctx context.Context, site strin
 	if state == "" {
 		state = SiteStateActive
 	}
-	_, err := r.db.ExecContext(ctx, `UPDATE sites SET content_dirty = ?, state = ?
-		WHERE name = ? AND content_generation = ? AND content_external_mutation = 0`,
-		authz.ContentWasDirty, state, site, authz.ContentGeneration)
+	// The touch is undone too, so a refused deploy neither reorders listings
+	// nor spends a generation. An open policy fence names the reserved
+	// generation and is cleared only while the row still carries it, so the
+	// generation and updated_at stay put until that fence resolves.
+	_, err := r.db.ExecContext(ctx, `UPDATE sites SET content_dirty = ?1, state = ?2,
+		updated_at = CASE WHEN policy_transition_generation = 0 THEN ?3 ELSE updated_at END,
+		content_generation = CASE WHEN policy_transition_generation = 0 THEN ?4 ELSE content_generation END
+		WHERE name = ?5 AND content_generation = ?6 AND content_external_mutation = 0`,
+		authz.ContentWasDirty, state, authz.PreviousUpdatedAt, authz.PreviousContentGeneration, site, authz.ContentGeneration)
 	if err != nil {
 		return fmt.Errorf("cancel deploy authorization for %s: %w", site, err)
 	}
@@ -303,6 +382,10 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 		event.TotalBytes,
 		event.ContentHash,
 		event.AuthorizedAs,
+		event.AuthMethod,
+		event.PublisherKeyID,
+		event.PublisherName,
+		event.Mode,
 		event.Message,
 	)
 	if err != nil {
@@ -332,11 +415,27 @@ func (r *SiteRegistry) RecordDeploy(ctx context.Context, event DeployAuditEvent)
 	return nil
 }
 
-func (r *SiteRegistry) CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization) error {
-	result, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'active'
+// StampDeployVersion stores a deploy's version before its first storage
+// write, fenced by the content generation the deploy reserved.
+func (r *SiteRegistry) StampDeployVersion(ctx context.Context, site string, authz DeployAuthorization, version string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET deploy_version = ?
+		WHERE name = ? AND content_generation = ?`, version, site, authz.ContentGeneration)
+	if err != nil {
+		return fmt.Errorf("stamp deploy version for %s: %w", site, err)
+	}
+	if n, err := result.RowsAffected(); err != nil {
+		return fmt.Errorf("count stamped deploy version for %s: %w", site, err)
+	} else if n != 1 {
+		return fmt.Errorf("stamp deploy version for %s: generation changed", site)
+	}
+	return nil
+}
+
+func (r *SiteRegistry) CompleteDeploy(ctx context.Context, site string, authz DeployAuthorization, version string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'active', deploy_version = ?
 		WHERE name = ? AND content_generation = ? AND content_external_mutation = 0
 		  AND policy_transition_generation = 0
-		  AND state IN ('active', 'provisioning')`, site, authz.ContentGeneration)
+		  AND state IN ('active', 'provisioning')`, version, site, authz.ContentGeneration)
 	if err != nil {
 		return fmt.Errorf("complete deploy for %s: %w", site, err)
 	}
@@ -364,7 +463,7 @@ func (r *SiteRegistry) BeginPolicyTransition(ctx context.Context, site string, g
 		return fmt.Errorf("count policy transition for %s: %w", site, err)
 	}
 	if updated != 1 {
-		return fmt.Errorf("begin policy transition for %s: generation changed or transition pending", site)
+		return fmt.Errorf("begin policy transition for %s: %w", site, ErrPolicyTransitionConflict)
 	}
 	return nil
 }
@@ -382,6 +481,36 @@ func (r *SiteRegistry) ClearPolicyTransition(ctx context.Context, site string, g
 	}
 	if updated != 1 {
 		return fmt.Errorf("clear policy transition for %s: generation changed", site)
+	}
+	return nil
+}
+
+// ClearPolicyTransitionForPublishingKey clears a recoverable policy fence only
+// while the named credential is active and the site is owned by that key's
+// creator. Keeping those checks in the UPDATE prevents a revoked or admin-owned
+// key from using ambient owner/admin recovery authority on a foreign site.
+func (r *SiteRegistry) ClearPolicyTransitionForPublishingKey(ctx context.Context, site string, generation int64, actor Identity, keyID string) error {
+	result, err := r.db.ExecContext(ctx, `UPDATE sites SET
+		policy_transition_generation = 0, policy_previous_hash = '', policy_next_hash = ''
+		WHERE name = ? AND policy_transition_generation = ? AND content_generation = ?
+		  AND EXISTS (
+			SELECT 1 FROM publishing_keys pk
+			WHERE pk.id = ? AND pk.revoked_at IS NULL AND pk.secret_hash IS NOT NULL
+			  AND substr(sites.name, 1, length(pk.site_prefix)) = pk.site_prefix
+			  AND length(sites.name) > length(pk.site_prefix)
+			  AND ((pk.owner_email <> '' AND pk.owner_email = ? AND sites.owner_email = pk.owner_email)
+			    OR (pk.owner_email = '' AND pk.owner_peer_ip <> '' AND pk.owner_peer_ip = ?
+			      AND sites.owner_email = '' AND sites.owner_peer_ip = pk.owner_peer_ip))
+		  )`, site, generation, generation, keyID, strings.ToLower(actor.Email), actor.PeerIP)
+	if err != nil {
+		return fmt.Errorf("clear publishing-key policy transition: %w", err)
+	}
+	updated, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count publishing-key policy transition clear: %w", err)
+	}
+	if updated != 1 {
+		return ErrDeployForbidden
 	}
 	return nil
 }
@@ -417,6 +546,9 @@ type OwnedSite struct {
 	TotalBytes           int64
 	ContentHash          string
 	ContentHashUncertain bool
+	LastDeployAt         string
+	LastDeployAuthMethod string
+	LastDeployPublisher  string
 }
 
 type ManageableSite struct {
@@ -436,7 +568,9 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain); err != nil {
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle, &site.DeployVersion,
+			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
+			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan manageable site candidate: %w", err)
 		}
 		site.Tags = decodeSiteTags(rawTags)
@@ -463,6 +597,10 @@ func (r *SiteRegistry) SitesManageableBy(ctx context.Context, actor Identity) ([
 				if err != nil {
 					log.Printf("manageable sites: omit %s: %v", candidate.Name, err)
 				} else if role != "" {
+					// Only an admin can release a tombstone, so an admin sees it as admin even when owning it.
+					if candidate.State == SiteStateDeleted && allowsAdmin(r.admins, actor) {
+						role = ManagementRoleAdmin
+					}
 					resolved[index] = &ManageableSite{OwnedSite: candidate, ManagementRole: role}
 				}
 			}
@@ -500,7 +638,9 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 		var rawTags string
 		if err := rows.Scan(&site.Name, &site.OwnerEmail, &site.OwnerPeerIP, &site.OwnerName,
 			&site.Title, &site.Description, &rawTags, &site.State, &site.PolicyTransitionGeneration, &site.CreatedAt, &site.UpdatedAt,
-			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain); err != nil {
+			&site.Type.Name, &site.Type.Version, &site.Type.Track, &site.TypeTitle, &site.DeployVersion,
+			&site.FileCount, &site.TotalBytes, &site.ContentHash, &site.ContentHashUncertain,
+			&site.LastDeployAt, &site.LastDeployAuthMethod, &site.LastDeployPublisher); err != nil {
 			return nil, fmt.Errorf("scan owned site: %w", err)
 		}
 		site.Tags = decodeSiteTags(rawTags)
@@ -516,7 +656,8 @@ func (r *SiteRegistry) SitesOwnedBy(ctx context.Context, actor Identity) ([]Owne
 // Callers filter out restricted sites before showing the list.
 func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 	rows, err := r.db.QueryContext(ctx,
-		`SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at
+		`SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at,
+		 `+siteTypeColumnsSQL+`
 		 FROM sites
 		 WHERE state = 'active' AND policy_transition_generation = 0
 		 ORDER BY updated_at DESC`)
@@ -537,6 +678,28 @@ func (r *SiteRegistry) AllSites(ctx context.Context) ([]SiteRecord, error) {
 		return nil, fmt.Errorf("list sites: %w", err)
 	}
 	return sites, nil
+}
+
+// SiteStorageStats returns the combined size of each active site's latest
+// successful deploy. The deploy audit already records this information, so
+// the public stats page does not need to enumerate files in object storage.
+func (r *SiteRegistry) SiteStorageStats(ctx context.Context) (siteStatsStorageJSON, error) {
+	var stats siteStatsStorageJSON
+	err := r.db.QueryRowContext(ctx, `
+		SELECT COALESCE(SUM(a.file_count), 0), COALESCE(SUM(a.total_bytes), 0)
+		FROM sites AS s
+		LEFT JOIN site_deploy_audit AS a ON a.id = (
+			SELECT latest.id
+			FROM site_deploy_audit AS latest
+			WHERE latest.site = s.name AND latest.status = 'success' AND latest.action NOT IN ('access', 'type')
+			ORDER BY latest.created_at DESC, latest.id DESC
+			LIMIT 1
+		)
+		WHERE s.state = 'active' AND s.policy_transition_generation = 0`).Scan(&stats.Files, &stats.Bytes)
+	if err != nil {
+		return siteStatsStorageJSON{}, fmt.Errorf("read site storage stats: %w", err)
+	}
+	return stats, nil
 }
 
 func (r *SiteRegistry) ManagementDecision(ctx context.Context, site string, actor Identity) (ManagementDecision, error) {
@@ -571,7 +734,7 @@ func (r *SiteRegistry) managementRole(ctx context.Context, record SiteRecord, ac
 		return "", nil
 	}
 	if record.PolicyTransitionGeneration != 0 {
-		return "", errors.New("stored management policy transition is unresolved")
+		return "", ErrManagementPolicyUnresolved
 	}
 	policy, err := r.policyResolver(ctx, record.Name)
 	if err != nil {
@@ -671,8 +834,11 @@ func (r *SiteRegistry) RecoverStaleExternalContentMutation(ctx context.Context, 
 	return nil
 }
 
-// DeleteSite removes a site's registry row after purge succeeds. A
-// failed purge leaves the site claimed so its owner can retry.
+// DeleteSite leaves an empty `deleted` tombstone tied to the immutable owner
+// after purge succeeds, so the name, and the browser origin that code from the
+// deleted site may still run on, never passes to another owner. Only
+// ReleaseSiteName frees it. A failed purge leaves the site claimed so its
+// owner can retry.
 func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identity, purge func(context.Context) error) (retErr error) {
 	var record SiteRecord
 	err := scanSiteRecord(r.db.QueryRowContext(ctx, readSiteSQL, site), &record)
@@ -693,13 +859,8 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 		return ErrSiteNotActive
 	}
 	if record.State == SiteStateDeleted {
-		if role == ManagementRoleMaintainer {
-			return ErrDeployForbidden
-		}
-		if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
-			return fmt.Errorf("release deleted site %s: %w", site, err)
-		}
-		return nil
+		// Deleting is never releasing: a second or racing delete leaves the tombstone.
+		return ErrSiteNotFound
 	}
 	var reservation string
 	err = r.db.QueryRowContext(ctx, `UPDATE sites SET
@@ -744,22 +905,36 @@ func (r *SiteRegistry) DeleteSite(ctx context.Context, site string, actor Identi
 			return fmt.Errorf("purge site %s: %w", site, err)
 		}
 	}
-	if role == ManagementRoleMaintainer {
-		_, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'deleted', title = '', description = '', tags = '[]',
-			content_dirty = 0, content_external_mutation = 0,
-			content_external_mutation_started_at = 0, content_external_mutation_owner = '',
-			updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
-			WHERE name = ? AND state = 'active'`, site)
-		if err != nil {
-			return fmt.Errorf("tombstone site %s: %w", site, err)
-		}
-		deletionComplete = true
-		return nil
-	}
-	if _, err := r.db.ExecContext(ctx, deleteSiteSQL, site); err != nil {
-		return fmt.Errorf("delete site %s: %w", site, err)
+	if _, err := r.db.ExecContext(ctx, `UPDATE sites SET state = 'deleted', title = '', description = '', tags = '[]',
+		type_name = '', type_version = '', type_track = '',
+		content_dirty = 0, content_external_mutation = 0,
+		content_external_mutation_started_at = 0, content_external_mutation_owner = '',
+		updated_at = strftime('%Y-%m-%d %H:%M:%f', 'now')
+		WHERE name = ? AND state = 'active'`, site); err != nil {
+		return fmt.Errorf("tombstone site %s: %w", site, err)
 	}
 	deletionComplete = true
+	return nil
+}
+
+// ReleaseSiteName frees a deleted site's name for anyone to claim. Only a
+// platform admin may, including one who owns the tombstone, and only a
+// tombstone is removed, so it cannot race a delete or a recreate.
+func (r *SiteRegistry) ReleaseSiteName(ctx context.Context, site string, actor Identity) error {
+	if !allowsAdmin(r.admins, actor) {
+		return ErrSiteNameReleaseForbidden
+	}
+	result, err := r.db.ExecContext(ctx, `DELETE FROM sites WHERE name = ? AND state = 'deleted'`, site)
+	if err != nil {
+		return fmt.Errorf("release site name %s: %w", site, err)
+	}
+	released, err := result.RowsAffected()
+	if err != nil {
+		return fmt.Errorf("count released site name %s: %w", site, err)
+	}
+	if released != 1 {
+		return ErrSiteNotFound
+	}
 	return nil
 }
 
@@ -831,6 +1006,20 @@ func (r *SiteRegistry) SiteContentGeneration(ctx context.Context, site string) (
 	return generation, nil
 }
 
+// SiteVersion returns an active site's deploy version; empty for any other
+// site.
+func (r *SiteRegistry) SiteVersion(ctx context.Context, site string) (string, error) {
+	var version string
+	err := r.db.QueryRowContext(ctx, `SELECT deploy_version FROM sites WHERE name = ? AND state = 'active'`, site).Scan(&version)
+	if errors.Is(err, sql.ErrNoRows) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read deploy version for %s: %w", site, err)
+	}
+	return version, nil
+}
+
 type siteRecordScanner interface {
 	Scan(dest ...any) error
 }
@@ -838,7 +1027,8 @@ type siteRecordScanner interface {
 func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	var rawTags string
 	if err := row.Scan(&record.Name, &record.OwnerEmail, &record.OwnerPeerIP, &record.OwnerName,
-		&record.Title, &record.Description, &rawTags, &record.State, &record.PolicyTransitionGeneration, &record.CreatedAt, &record.UpdatedAt); err != nil {
+		&record.Title, &record.Description, &rawTags, &record.State, &record.PolicyTransitionGeneration, &record.CreatedAt, &record.UpdatedAt,
+		&record.Type.Name, &record.Type.Version, &record.Type.Track, &record.TypeTitle, &record.DeployVersion); err != nil {
 		return err
 	}
 	record.Tags = decodeSiteTags(rawTags)
@@ -849,6 +1039,12 @@ func scanSiteRecord(row siteRecordScanner, record *SiteRecord) error {
 	}
 	return nil
 }
+
+// siteTypeColumnsSQL selects a site row's pin, the pinned version's title
+// and the deploy version, in SiteRecord scan order.
+const siteTypeColumnsSQL = `type_name, type_version, type_track,
+	COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = sites.type_name AND v.version = sites.type_version), ''),
+	deploy_version`
 
 const (
 	insertSiteSQL = `INSERT INTO sites
@@ -865,30 +1061,47 @@ const (
 		WHERE name = ? AND content_generation = ? AND policy_transition_generation = 0
 		RETURNING content_generation`
 
-	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at
+	readSiteSQL = `SELECT name, owner_email, owner_peer_ip, owner_name, title, description, tags, state, policy_transition_generation, created_at, updated_at,
+		` + siteTypeColumnsSQL + `
 		FROM sites
 		WHERE name = ?`
 
 	insertDeployAuditSQL = `INSERT INTO site_deploy_audit
 		(site, actor_email, actor_peer_ip, actor_name, actor_groups,
-		 action, status, file_count, total_bytes, content_hash, authorized_as, message)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+		 action, status, file_count, total_bytes, content_hash, authorized_as,
+		 auth_method, publisher_key_id, publisher_name, mode, message)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
 
+	// Access-only changes are audited as action 'access' and type pin
+	// changes as 'type'; they never describe deployed content, so the
+	// latest-deploy columns skip them.
 	sitesOwnedBySQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
+			s.type_name, s.type_version, s.type_track,
+			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
+			s.deploy_version,
 			COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0),
 			COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
 			(s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'update', 'delete')
 				  AND status IN ('success', 'failed')
-				ORDER BY created_at DESC, id DESC LIMIT 1), 0))
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0)),
+			COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
+			COALESCE((SELECT auth_method FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), ''),
+			COALESCE((SELECT publisher_name FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), '')
 		FROM sites s
 		WHERE s.state = 'active' AND ((s.owner_email <> '' AND s.owner_email = ?)
 		   OR (s.owner_email = '' AND s.owner_peer_ip <> '' AND s.owner_peer_ip = ?))
@@ -896,19 +1109,31 @@ const (
 
 	manageableSitesSQL = `SELECT s.name, s.owner_email, s.owner_peer_ip, s.owner_name,
 			s.title, s.description, s.tags, s.state, s.policy_transition_generation, s.created_at, s.updated_at,
+			s.type_name, s.type_version, s.type_track,
+			COALESCE((SELECT v.title FROM site_type_versions v WHERE v.name = s.type_name AND v.version = s.type_version), ''),
+			CASE WHEN s.state = 'active' THEN s.deploy_version ELSE '' END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT file_count FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT total_bytes FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), 0) ELSE 0 END,
 			CASE WHEN s.state = 'active' THEN COALESCE((SELECT content_hash FROM site_deploy_audit
-				WHERE site = s.name AND status = 'success'
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
 				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
 			(s.state = 'active' AND (s.content_dirty <> 0 OR COALESCE((SELECT status = 'failed' FROM site_deploy_audit
 				WHERE site = s.name AND action IN ('create', 'recreate', 'update', 'delete')
 				  AND status IN ('success', 'failed')
-				ORDER BY created_at DESC, id DESC LIMIT 1), 0)))
+				ORDER BY created_at DESC, id DESC LIMIT 1), 0))),
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT strftime('%Y-%m-%dT%H:%M:%fZ', created_at) FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT auth_method FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END,
+			CASE WHEN s.state = 'active' THEN COALESCE((SELECT publisher_name FROM site_deploy_audit
+				WHERE site = s.name AND status = 'success' AND action NOT IN ('access', 'type')
+				ORDER BY created_at DESC, id DESC LIMIT 1), '') ELSE '' END
 		FROM sites s
 		WHERE s.state IN ('active', 'deleted')
 		ORDER BY s.updated_at DESC`

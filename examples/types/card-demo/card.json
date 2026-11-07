@@ -1,0 +1,10 @@
+{
+  "title": "Site types",
+  "subtitle": "A typed Spot site",
+  "body": "This page is the card type's viewer. The site itself holds only card.json.",
+  "points": [
+    "The viewer is served from the type registry under /_type/.",
+    "Deploys carry data only, checked against the type's data paths.",
+    "Sites pin an exact version and can follow a major."
+  ]
+}

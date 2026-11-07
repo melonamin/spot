@@ -285,7 +285,10 @@ func (s *Server) handleAIChatStream(w http.ResponseWriter, r *http.Request) {
 func writeSSEHeaders(w http.ResponseWriter) {
 	h := w.Header()
 	h.Set("Content-Type", "text/event-stream")
-	h.Set("Cache-Control", "no-cache")
+	// A restricted site's stream keeps authorizeSiteAccess's no-store.
+	if h.Get("Cache-Control") == "" {
+		h.Set("Cache-Control", "no-cache")
+	}
 	h.Set("Connection", "keep-alive")
 	// Stop intermediary proxies (e.g. Caddy) from buffering the stream, so
 	// tokens reach the browser as they are produced.

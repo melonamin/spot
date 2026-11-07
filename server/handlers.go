@@ -27,12 +27,18 @@ type Server struct {
 	store             *DocStore
 	resolver          IdentityResolver
 	forwardAuth       *ForwardAuth
+	login             *DelegatedLogin
+	frameAncestors    string
+	apexRedirectURL   string
 	policies          *PolicyStore
 	hub               *Hub
 	roomHub           *RoomHub
 	files             FileStorage
 	sites             SiteStorage
 	deployAuth        DeployAuthorizer
+	deployAuthMethod  string
+	publishingKeys    *PublishingKeyStore
+	adminPolicy       *AccessPolicy
 	siteAdmin         SiteAdmin
 	siteManager       SiteManager
 	cloudflare        *CloudflarePublisher
@@ -51,6 +57,10 @@ type Server struct {
 	cloudflareLocks   map[string]*sync.Mutex
 	cloudflareJobsMu  sync.Mutex
 	cloudflareJobs    map[string]struct{}
+	types             *TypeRegistry
+	typeLocksMu       sync.Mutex
+	typeLocks         map[string]*sync.Mutex
+	typeVersionCache  sync.Map
 
 	// bgTasks tracks detached post-deploy work (AI auto-tagging) so shutdown
 	// and tests can wait for it to drain.
@@ -168,21 +178,42 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})
-	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.handleMe))
+	mux.HandleFunc("GET /api/me", s.sameOriginOnly(s.requireVisitor(s.handleMe)))
 	mux.HandleFunc("GET /api/access/suggestions", s.sameOriginOnly(s.limited(s.dbLimit, s.handleAccessSuggestions)))
 	mux.HandleFunc("GET /api/authz", s.handleAuthz)
-	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.handleWS))
-	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleList)))
-	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCount)))
-	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleCreate)))
-	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleGet)))
-	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleUpdate)))
-	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.handleIncrement)))
-	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleDelete)))
+	mux.HandleFunc("GET /api/auth/callback", s.limited(s.dbLimit, s.handleAuthCallback))
+	mux.HandleFunc("GET /api/auth/login", s.handleAuthLogin)
+	mux.HandleFunc("GET /api/auth/check", s.handleAuthCheck)
+	mux.HandleFunc("GET /api/auth/logout", s.handleAuthLogout)
+	mux.HandleFunc("GET /api/tls/ask", s.handleTLSAsk)
+	mux.HandleFunc("GET /api/ws", s.limited(s.dbLimit, s.requireVisitor(s.handleWS)))
+	mux.HandleFunc("GET /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleList))))
+	mux.HandleFunc("GET /api/db/{collection}/count", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleCount))))
+	mux.HandleFunc("POST /api/db/{collection}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleCreate))))
+	mux.HandleFunc("GET /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleGet))))
+	mux.HandleFunc("PUT /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleUpdate))))
+	mux.HandleFunc("POST /api/db/{collection}/{id}/increment", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleIncrement))))
+	mux.HandleFunc("DELETE /api/db/{collection}/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.requireVisitor(s.handleDelete))))
 	mux.HandleFunc("POST /api/deploy", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeploy)))
+	mux.HandleFunc("GET /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
+	mux.HandleFunc("POST /api/publishing-keys", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKeys)))
+	mux.HandleFunc("DELETE /api/publishing-keys/{id}", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublishingKey)))
+	mux.HandleFunc("GET /api/types", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypesList)))
+	mux.HandleFunc("POST /api/types", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeUpload)))
+	mux.HandleFunc("GET /api/types/{name}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeVersions)))
+	mux.HandleFunc("DELETE /api/types/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeDelete)))
+	mux.HandleFunc("GET /api/types/{name}/{version}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeVersion)))
+	mux.HandleFunc("GET /api/types/{name}/{version}/skill", s.sameOriginOnly(s.limited(s.dbLimit, s.handleTypeSkill)))
+	mux.HandleFunc("GET /api/types/{name}/{version}/package", s.sameOriginOnly(s.limited(s.fileLimit, s.handleTypePackage)))
+	mux.HandleFunc("POST /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
+	mux.HandleFunc("DELETE /api/types/{name}/{version}/yank", s.sameOriginOnly(s.limited(s.deployLimit, s.handleTypeYank)))
+	mux.HandleFunc("PUT /api/sites/{name}/type", s.sameOriginOnly(s.limited(s.deployLimit, s.handleSiteTypeRepin)))
 	mux.HandleFunc("GET /api/download", s.limited(s.fileLimit, s.handleSiteDownload))
 	mux.HandleFunc("GET /api/sites/mine", s.sameOriginOnly(s.limited(s.dbLimit, s.handleMySites)))
 	mux.HandleFunc("GET /api/sites/manageable", s.sameOriginOnly(s.limited(s.dbLimit, s.handleManageableSites)))
+	mux.HandleFunc("GET /api/sites/visible", s.sameOriginOnly(s.limited(s.dbLimit, s.handleVisibleSites)))
+	mux.HandleFunc("GET /api/sites/{name}/access", s.sameOriginOnly(s.limited(s.dbLimit, s.handleSiteAccessRead)))
+	mux.HandleFunc("PUT /api/sites/{name}/access", s.sameOriginOnly(s.limited(s.deployLimit, s.handleSiteAccess)))
 	mux.HandleFunc("GET /api/sites/public", s.sameOriginOnly(s.limited(s.dbLimit, s.handlePublicSites)))
 	mux.HandleFunc("GET /api/sites/stats", s.sameOriginOnly(s.limited(s.dbLimit, s.handleSiteStats)))
 	mux.HandleFunc("GET /api/sites/{name}/preview", s.handleSitePreview)
@@ -193,29 +224,46 @@ func (s *Server) routes() http.Handler {
 	mux.HandleFunc("POST /api/sites/{name}/cloudflare/legacy/resolve", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflareResolveLegacy)))
 	mux.HandleFunc("DELETE /api/sites/{name}/cloudflare", s.sameOriginOnly(s.limited(s.deployLimit, s.handleCloudflareUnpublish)))
 	mux.HandleFunc("DELETE /api/sites/{name}", s.sameOriginOnly(s.limited(s.deployLimit, s.handleDeleteSite)))
-	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileList)))
-	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.handleUpload)))
-	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.handleDownload)
-	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.handleFileDelete)))
-	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChat)))
-	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIChatStream)))
-	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limited(s.aiLimit, s.handleAIImage)))
-	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limited(s.slackLimit, s.handleSlackSend)))
+	mux.HandleFunc("GET /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleFileList))))
+	mux.HandleFunc("POST /api/files", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleUpload))))
+	mux.HandleFunc("GET /api/files/{site}/{id}/{name}", s.requireVisitor(s.handleDownload))
+	mux.HandleFunc("DELETE /api/files/{id}/{name}", s.sameOriginOnly(s.limited(s.fileLimit, s.requireVisitor(s.handleFileDelete))))
+	mux.HandleFunc("POST /api/ai/chat", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIChat))))
+	mux.HandleFunc("POST /api/ai/chat/stream", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIChatStream))))
+	mux.HandleFunc("POST /api/ai/image", s.sameOriginOnly(s.limitedSpend(s.aiLimit, s.requireVisitor(s.handleAIImage))))
+	mux.HandleFunc("POST /api/slack/send", s.sameOriginOnly(s.limitedSpend(s.slackLimit, s.requireVisitor(s.handleSlackSend))))
 	mux.HandleFunc("/api/", http.NotFound)
 	mux.HandleFunc("/api", http.NotFound)
 	if s.serveStatic {
 		mux.HandleFunc("/", s.handleStatic)
 	}
-	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(mux))
+	return s.rejectUntrustedForwardedHeaders(s.rejectUnknownHosts(s.siteResponseHeaders(s.rejectInvalidSitePaths(mux))))
 }
 
 func (s *Server) rejectUnknownHosts(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/health" || validSpotHost(s.requestHost(r), s.spotDomain) {
+		// Caddy's on-demand TLS check addresses the service by its internal name.
+		if r.URL.Path == "/health" || r.URL.Path == "/api/tls/ask" || validSpotHost(s.requestHost(r), s.spotDomain) {
 			next.ServeHTTP(w, r)
 			return
 		}
 		httpError(w, http.StatusBadRequest, "request host is not part of this Spot domain")
+	})
+}
+
+// siteResponseHeaders adds the deployment's framing policy to every site-host
+// response, so only the configured origins can embed site content.
+func (s *Server) siteResponseHeaders(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if siteFromHost(s.requestHost(r), s.spotDomain) != "" {
+			if s.frameAncestors != "" {
+				w.Header().Add("Content-Security-Policy", "frame-ancestors "+s.frameAncestors)
+			}
+			if s.login != nil {
+				w.Header().Set("Referrer-Policy", "strict-origin-when-cross-origin")
+			}
+		}
+		next.ServeHTTP(w, r)
 	})
 }
 
@@ -313,14 +361,46 @@ func (s *Server) originMatchesHost(r *http.Request) bool {
 }
 
 func (s *Server) limited(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimited(l, next, false)
+}
+
+// limitedSpend guards routes that spend server-side credentials (AI, Slack).
+// A secret-proven proxy is not exempt there: its requests get one bucket per
+// asserted user, so a leaked proxy secret is not unlimited spend.
+func (s *Server) limitedSpend(l *RateLimiter, next http.HandlerFunc) http.HandlerFunc {
+	return s.rateLimited(l, next, true)
+}
+
+func (s *Server) rateLimited(l *RateLimiter, next http.HandlerFunc, perUser bool) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		if !l.Allow(s.clientIP(r)) {
+		key := s.clientIP(r)
+		if s.exemptFromRateLimit(r) {
+			if !perUser {
+				next(w, r)
+				return
+			}
+			id, _ := s.forwardAuthIdentity(r)
+			key = "forward-auth:" + actorKey(id)
+		}
+		if !l.Allow(key) {
 			w.Header().Set("Retry-After", "1")
 			httpError(w, http.StatusTooManyRequests, "rate limit exceeded, slow down")
 			return
 		}
 		next(w, r)
 	}
+}
+
+// exemptFromRateLimit reports whether a secret-proven forward-auth proxy made
+// the request. That proxy authenticates and throttles its own users, and it
+// speaks for all of them from one address, so an address bucket would make
+// every user share one small budget.
+func (s *Server) exemptFromRateLimit(r *http.Request) bool {
+	if s.forwardAuth == nil || s.forwardAuth.Secret == "" {
+		return false
+	}
+	_, ok := s.forwardAuthIdentity(r)
+	return ok
 }
 
 // forwardAuthIdentity returns the identity asserted by a trusted auth proxy
@@ -343,28 +423,41 @@ func (s *Server) forwardAuthIdentity(r *http.Request) (Identity, bool) {
 // callers map the outcome to their own status. Shared by resolveIdentity and
 // callerKey so the lookup cannot drift between them.
 func (s *Server) resolvePeer(r *http.Request) (Identity, bool, error) {
+	peer, found, err := s.resolvePeerSession(r)
+	return peer.id, found, err
+}
+
+// resolvePeerSession is resolvePeer that also reports where the identity
+// came from and when it lapses.
+func (s *Server) resolvePeerSession(r *http.Request) (resolvedPeer, bool, error) {
+	if peer, ok := r.Context().Value(resolvedPeerKey{}).(resolvedPeer); ok {
+		return peer, true, nil
+	}
 	if id, ok := s.forwardAuthIdentity(r); ok {
-		return id, true, nil
+		return resolvedPeer{id: id}, true, nil
+	}
+	if id, expires, ok := s.verifiedSession(r); ok {
+		return resolvedPeer{id: id, expires: expires}, true, nil
 	}
 	if s.resolver == nil {
-		return Identity{}, false, nil
+		return resolvedPeer{}, false, nil
 	}
 	ip := s.clientIP(r)
 	id, found, err := s.resolver.Resolve(r.Context(), ip)
 	if err != nil {
-		return Identity{}, false, err
+		return resolvedPeer{}, false, err
 	}
 	if !found {
-		return Identity{}, false, nil
+		return resolvedPeer{}, false, nil
 	}
 	if id.PeerIP == "" {
 		id.PeerIP = ip
 	}
-	return id, true, nil
+	return resolvedPeer{id: id, mesh: true}, true, nil
 }
 
 func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose string) (Identity, bool) {
-	if s.resolver == nil && s.forwardAuth == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
@@ -376,7 +469,7 @@ func (s *Server) resolveIdentity(w http.ResponseWriter, r *http.Request, purpose
 		return Identity{}, false
 	}
 	if !found {
-		httpError(w, http.StatusNotFound, "no identity matches "+s.clientIP(r))
+		httpError(w, http.StatusUnauthorized, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
 	}
 	if id.Groups == nil {
@@ -414,29 +507,42 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
 		log.Printf("authz: %v", err)
-		httpError(w, http.StatusServiceUnavailable,
-			"this site's "+accessFileName+" is unreadable; access denied until it is fixed")
+		s.denySiteAccess(w, r, http.StatusServiceUnavailable,
+			"this site's "+accessFileName+" is unreadable; access denied until it is fixed",
+			statusPage{Title: "This site is unavailable", Message: "Its access settings cannot be read, so nobody can open it until the owner fixes them."})
 		return false
 	}
 	if policy == nil || !policy.RestrictsAccess() {
 		return true
 	}
-	if s.resolver == nil && s.forwardAuth == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"site is restricted but the identity resolver is not configured")
 		return false
 	}
-	id, found, err := s.resolvePeer(r)
+	peer, found, err := s.resolvePeerSession(r)
 	if err != nil {
 		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
 		return false
 	}
-	if !found || !policy.Allows(id) {
-		httpError(w, http.StatusForbidden,
-			"this site is restricted by its "+accessFileName)
+	id := peer.id
+	// The login app's identity may carry groups the mesh does not know, so a
+	// refused mesh peer gets the same sign-in as an anonymous visitor.
+	if s.login != nil && (!found || (peer.mesh && !policy.Allows(id))) {
+		s.denyAnonymousVisitor(w, r)
 		return false
 	}
+	if !found || !policy.Allows(id) {
+		page := statusPage{Title: "You don't have access to this site", Message: "Its owner has not shared it with you. Ask them to share it, or open it with an account that has access."}
+		if id.Email != "" {
+			page.Detail = "Signed in as " + id.Email
+		}
+		s.denySiteAccess(w, r, http.StatusForbidden, "this site is restricted by its "+accessFileName, page)
+		return false
+	}
+	// A shared cache in front of Spot must not hand this viewer's content to anyone else.
+	w.Header().Set("Cache-Control", "no-store")
 	return true
 }
 
@@ -487,7 +593,7 @@ func (s *Server) requireDeployIdentity(w http.ResponseWriter, r *http.Request) (
 		return Identity{}, false
 	}
 	if actorKey(id) == "" {
-		httpError(w, http.StatusForbidden, "deploy requires an identified mesh user or peer")
+		httpError(w, http.StatusForbidden, "this request requires an identified user or mesh peer")
 		return Identity{}, false
 	}
 	return id, true
@@ -502,6 +608,11 @@ func (s *Server) recordDeployAudit(r *http.Request, event DeployAuditEvent) {
 	// content metadata cannot remain stale after a partial or successful deploy.
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
+	if principal, ok := deployPrincipalFromRequest(r); ok {
+		event.AuthMethod = principal.AuthMethod
+		event.PublisherKeyID = principal.PublisherKeyID
+		event.PublisherName = principal.PublisherName
+	}
 	if err := s.deployAuth.RecordDeploy(ctx, event); err != nil {
 		log.Printf("deploy audit %s: %v", event.Site, err)
 	}
@@ -638,6 +749,13 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusBadRequest, "invalid file site")
 		return
 	}
+	// On a site host the caller's identity (session cookie or ambient mesh
+	// identity) belongs to that host's site, so another site's uploads are
+	// out of reach there. The apex serves any site's uploads.
+	if hostSite := siteFromHost(s.requestHost(r), s.spotDomain); hostSite != "" && hostSite != site {
+		httpError(w, http.StatusNotFound, "file not found")
+		return
+	}
 	if !s.authorizeSiteAccess(w, r, site) {
 		return
 	}
@@ -659,14 +777,17 @@ func (s *Server) handleDownload(w http.ResponseWriter, r *http.Request) {
 	// response, and only allow inline rendering for known-safe media —
 	// everything else (HTML, SVG, unknown) downloads instead of renders.
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	w.Header().Set("Content-Security-Policy", "sandbox; default-src 'none'")
+	w.Header().Add("Content-Security-Policy", "sandbox; default-src 'none'")
 	disposition := "attachment"
 	if inlineSafe(contentType) {
 		disposition = "inline"
 	}
 	w.Header().Set("Content-Disposition", mime.FormatMediaType(disposition, map[string]string{"filename": name}))
-	// IDs are random per upload, so content at a URL never changes.
-	w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	// IDs are random per upload, so content at a URL never changes; a restricted
+	// site's upload keeps authorizeSiteAccess's no-store.
+	if w.Header().Get("Cache-Control") == "" {
+		w.Header().Set("Cache-Control", "private, max-age=31536000, immutable")
+	}
 	if _, err := io.Copy(w, obj); err != nil {
 		log.Printf("files: stream %s/%s/%s: %v", site, id, name, err)
 	}
@@ -682,6 +803,8 @@ type meResponse struct {
 }
 
 func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	// The caller's identity, or its absence, is never shared with another requester through a cache.
+	w.Header().Set("Cache-Control", "no-store")
 	id, ok := s.resolveIdentity(w, r, "identity")
 	if !ok {
 		return
@@ -824,7 +947,9 @@ func (s *Server) handleAuthz(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 		return
 	}
-	if s.authorizeSiteAccess(w, r, site) {
+	// A proxy asks here on the visitor's behalf; the request URI is this
+	// endpoint, not the page, so a sign-in must not start from it.
+	if s.authorizeSiteAccess(w, withoutLoginRedirect(r), site) {
 		w.WriteHeader(http.StatusOK)
 	}
 }
@@ -885,6 +1010,11 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer s.hub.UnregisterSession(site, sessionID)
+	// A delegated session ends at its expiry, and the socket with it.
+	if expires, ok := s.sessionExpiry(r); ok {
+		expiry := time.AfterFunc(time.Until(expires), revoke)
+		defer expiry.Stop()
+	}
 	defer s.hub.UnsubscribeAll(docOut)
 	defer s.roomHub.LeaveAll(sessionID)
 
@@ -923,7 +1053,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 			}
 			switch req.Type {
 			case "subscribe":
-				scope, err := scopeFor(site, req.Collection)
+				scope, err := s.collectionScope(site, req.Collection)
 				if err != nil {
 					writeWSError(ctx, conn, err.Error())
 					continue
@@ -936,7 +1066,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 					return
 				}
 			case "unsubscribe":
-				scope, err := scopeFor(site, req.Collection)
+				scope, err := s.collectionScope(site, req.Collection)
 				if err != nil {
 					writeWSError(ctx, conn, err.Error())
 					continue
@@ -1015,7 +1145,7 @@ func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, site, room string) (string, bool) {
-	scope, err := roomScopeFor(site, room)
+	scope, err := s.roomScope(site, room)
 	if err != nil {
 		writeWSError(ctx, conn, err.Error())
 		return "", false
@@ -1024,27 +1154,20 @@ func (s *Server) roomRequestScope(ctx context.Context, conn *websocket.Conn, sit
 }
 
 func (s *Server) websocketIdentity(ctx context.Context, conn *websocket.Conn, r *http.Request) (Identity, bool) {
-	if id, ok := s.forwardAuthIdentity(r); ok {
-		return id, true
-	}
-	if s.resolver == nil {
+	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		writeWSError(ctx, conn,
 			"identity resolver not configured: set SPOT_AUTH_MODE=single-user, NETBIRD_API_URL/NETBIRD_API_TOKEN, TAILSCALE_API_TOKEN, TAILSCALE_OAUTH_CLIENT_ID/TAILSCALE_OAUTH_CLIENT_SECRET, SPOT_FORWARD_AUTH, or explicit dev identity")
 		return Identity{}, false
 	}
-	ip := s.clientIP(r)
-	id, found, err := s.resolver.Resolve(ctx, ip)
+	id, found, err := s.resolvePeer(r)
 	if err != nil {
-		log.Printf("realtime: resolve %s: %v", ip, err)
+		log.Printf("realtime: resolve %s: %v", s.clientIP(r), err)
 		writeWSError(ctx, conn, "could not reach the identity resolver")
 		return Identity{}, false
 	}
 	if !found {
-		writeWSError(ctx, conn, "no identity matches "+ip)
+		writeWSError(ctx, conn, "no identity matches "+s.clientIP(r))
 		return Identity{}, false
-	}
-	if id.PeerIP == "" {
-		id.PeerIP = ip
 	}
 	return id, true
 }
@@ -1069,7 +1192,7 @@ func (s *Server) scope(w http.ResponseWriter, r *http.Request) (string, string, 
 	if !s.authorizeSiteAccess(w, r, site) {
 		return "", "", false
 	}
-	scope, err := scopeFor(site, collection)
+	scope, err := s.collectionScope(site, collection)
 	if err != nil {
 		httpError(w, http.StatusBadRequest, err.Error())
 		return "", "", false

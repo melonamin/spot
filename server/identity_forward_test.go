@@ -178,8 +178,8 @@ func TestForwardAuthTrustGate(t *testing.T) {
 		if _, ok := srv.resolveIdentity(rec, newReq("198.51.100.9:54321"), "test"); ok {
 			t.Fatal("resolveIdentity from untrusted socket = ok, want rejected")
 		}
-		if rec.Code != http.StatusNotFound {
-			t.Fatalf("untrusted forward-auth = %d, want 404 (no identity)", rec.Code)
+		if rec.Code != http.StatusUnauthorized {
+			t.Fatalf("untrusted forward-auth = %d, want 401 (no identity)", rec.Code)
 		}
 	})
 }
