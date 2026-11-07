@@ -25,6 +25,7 @@ sdk = root / "sdk"
 
 class Handler(http.server.SimpleHTTPRequestHandler):
     deploys = 0
+    reject_screenshots = False
     last_authorization = ""
     last_body = b""
     last_path = ""
@@ -43,6 +44,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         if self.path == "/api/deploy":
             Handler.deploys += 1
         Handler.last_authorization = self.headers.get("Authorization", "")
+        if self.path == "/api/deploy" and Handler.reject_screenshots and b'filename="_screenshot.png"' in Handler.last_body:
+            self.send_response(503)
+            self.end_headers()
+            self.wfile.write(b"screenshot upload refused")
+            return
         if self.path == "/api/types" and b'filename="conflict"' in Handler.last_body:
             self.send_response(409)
             self.end_headers()
@@ -381,6 +387,7 @@ done
 printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\104\\122\\000\\000\\000\\001\\000\\000\\000\\001\\010\\004\\000\\000\\000\\265\\034\\014\\002\\000\\000\\000\\013\\111\\104\\101\\124\\170\\332\\143\\144\\370\\017\\000\\001\\005\\001\\001\\047\\030\\343\\146\\000\\000\\000\\000\\111\\105\\116\\104\\256\\102\\140\\202' > "$out"
 """)
         chromium.chmod(0o755)
+        valid_chromium = chromium.read_text()
         start_deploys = Handler.deploys
         keyed_show = run(
             ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
@@ -404,6 +411,22 @@ printf '\\211\\120\\116\\107\\015\\012\\032\\012\\000\\000\\000\\015\\111\\110\\
         )
         assert Handler.deploys == start_deploys + 2, Handler.deploys
         assert Handler.last_authorization == "Bearer " + publishing_key, Handler.last_authorization
+        assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
+        failing_bin = pathlib.Path(tmp) / "failing-bin"
+        failing_bin.mkdir()
+        (failing_bin / "chromium").write_text("#!/bin/sh\nexit 1\n")
+        (failing_bin / "chromium").chmod(0o755)
+        for _ in range(2):
+            failed = subprocess.run(
+                ["./cli/spot", "show", "deploy", "shotdemo", str(show)],
+                cwd=root,
+                env={**env, "TMPDIR": tmp, "PATH": str(failing_bin) + os.pathsep + os.environ["PATH"]},
+                text=True,
+                capture_output=True,
+            )
+            assert failed.returncode != 0, failed.stdout
+            assert "screenshot capture failed" in failed.stderr, failed.stderr
+            assert not list(pathlib.Path(tmp).glob("spot-screenshot.*"))
 
         chromium.write_text("""#!/bin/sh
 out=
@@ -548,6 +571,65 @@ exec sleep 30
                 out, err = watch.communicate(timeout=3)
         assert "could not parse" in err, (out, err)
         assert open_log.read_text().count("\n") == 1, open_log.read_text()
+
+        # Watch calls deploy through a conditional, so errexit cannot propagate
+        # screenshot failures. Keep --open pending until a complete deploy works.
+        for failure in ("capture", "upload"):
+            watch_dir = pathlib.Path(tmp) / ("watch-" + failure)
+            watch_dir.mkdir()
+            watch_spec = watch_dir / "show.json"
+            watch_spec.write_text('{"title":"First attempt","cards":[]}')
+            watch_chrome = watch_dir / "chromium"
+            watch_chrome.write_text("#!/bin/sh\nexit 1\n" if failure == "capture" else valid_chromium)
+            watch_chrome.chmod(0o755)
+            watch_open_log = watch_dir / "open.log"
+            stdout_log, stderr_log = watch_dir / "stdout.log", watch_dir / "stderr.log"
+            Handler.reject_screenshots = failure == "upload"
+            with stdout_log.open("w") as stdout, stderr_log.open("w") as stderr:
+                watch = subprocess.Popen(
+                    ["./cli/spot", "show", "watch", "--open", "--screenshot", "--interval", "1", "watch", str(watch_spec)],
+                    cwd=root,
+                    env={**env, "TMPDIR": str(watch_dir), "SPOT_CHROME": str(watch_chrome),
+                         "PATH": str(open_bin) + os.pathsep + os.environ["PATH"],
+                         "SPOT_OPEN_LOG": str(watch_open_log)},
+                    stdout=stdout,
+                    stderr=stderr,
+                )
+                try:
+                    deadline = time.monotonic() + 8
+                    while "watch: deploy failed" not in stderr_log.read_text() and time.monotonic() < deadline:
+                        assert watch.poll() is None, (failure, stdout_log.read_text(), stderr_log.read_text())
+                        time.sleep(0.05)
+                    assert "watch: deploy failed" in stderr_log.read_text(), (failure, stdout_log.read_text(), stderr_log.read_text())
+                    assert "live:" not in stdout_log.read_text(), (failure, stdout_log.read_text())
+                    assert not watch_open_log.exists(), (failure, watch_open_log.read_text())
+                    assert not list(watch_dir.glob("spot-screenshot.*")), failure
+                    assert not list(watch_dir.glob("spot-show.*")), failure
+
+                    # A later edit retries and opens once, after capture and upload.
+                    watch_chrome.write_text(valid_chromium)
+                    Handler.reject_screenshots = False
+                    updated = watch_dir / "updated.json"
+                    updated.write_text('{"title":"Retry succeeds","cards":[]}')
+                    updated.replace(watch_spec)
+                    deadline = time.monotonic() + 8
+                    while not watch_open_log.exists() and time.monotonic() < deadline:
+                        assert watch.poll() is None, (failure, stdout_log.read_text(), stderr_log.read_text())
+                        time.sleep(0.05)
+                    assert watch_open_log.exists(), (failure, stdout_log.read_text(), stderr_log.read_text())
+                    assert watch_open_log.read_text().count("\n") == 1, watch_open_log.read_text()
+                    assert "live:" in stdout_log.read_text(), stdout_log.read_text()
+                    assert not list(watch_dir.glob("spot-screenshot.*")), failure
+                    assert not list(watch_dir.glob("spot-show.*")), failure
+                finally:
+                    Handler.reject_screenshots = False
+                    if watch.poll() is None:
+                        watch.terminate()
+                    try:
+                        watch.wait(timeout=3)
+                    except subprocess.TimeoutExpired:
+                        watch.kill()
+                        watch.wait(timeout=3)
 finally:
     server.shutdown()
 PY
