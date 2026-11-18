@@ -14,6 +14,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -28,6 +29,9 @@ import (
 // The redirect carries a random state that Spot also stores in a host-only
 // cookie; the token must echo it. Without that binding anyone could mint a
 // token for their own account and sign a victim's browser in as themselves.
+// Each pending state has its own cookie, named after it: frames or tabs of
+// one host that start signing in at the same moment each get a fresh state,
+// and a single shared cookie would keep only the last one.
 
 const (
 	loginTokenAudience = "spot-login"
@@ -39,10 +43,10 @@ const (
 	// accept over HTTPS and on *.localhost (a secure context even over HTTP).
 	// A sibling site cannot set a __Host- cookie with a parent Domain, so one
 	// untrusted site cannot plant a session or login state on another.
-	sessionCookieName    = "__Host-spot_session"
-	loginStateCookieName = "__Host-spot_login_state"
-	loginStateMaxAge     = 10 * time.Minute
-	loginStateBytes      = 32
+	sessionCookieName      = "__Host-spot_session"
+	loginStateCookiePrefix = "__Host-spot_login_state_"
+	loginStateMaxAge       = 10 * time.Minute
+	loginStateBytes        = 32
 
 	// prompt and error use the OpenID Connect parameter names (this is not an
 	// OIDC flow). Spot adds prompt=none to the sign-in it starts on its own
@@ -108,7 +112,7 @@ var errInvalidLoginToken = errors.New("invalid login token")
 // browser's login state, and consumes its jti. The jti is marked used only
 // after every other check passes, so a rejected token cannot burn a
 // legitimate one.
-func (l *DelegatedLogin) verifyLoginToken(token, host, state string) (Identity, error) {
+func (l *DelegatedLogin) verifyLoginToken(token, host string, states ...string) (Identity, error) {
 	parts := strings.Split(token, ".")
 	if len(parts) != 3 {
 		return Identity{}, fmt.Errorf("%w: malformed", errInvalidLoginToken)
@@ -150,7 +154,7 @@ func (l *DelegatedLogin) verifyLoginToken(token, host, state string) (Identity, 
 		return Identity{}, fmt.Errorf("%w: email required", errInvalidLoginToken)
 	case claims.JTI == "":
 		return Identity{}, fmt.Errorf("%w: jti required", errInvalidLoginToken)
-	case state == "" || subtle.ConstantTimeCompare([]byte(claims.State), []byte(state)) != 1:
+	case !holdsLoginState(states, claims.State):
 		return Identity{}, fmt.Errorf("%w: state does not match this browser", errInvalidLoginToken)
 	case claims.Iat == 0 || claims.Exp <= claims.Iat || claims.Exp-claims.Iat > int64(loginTokenMaxLife/time.Second):
 		return Identity{}, fmt.Errorf("%w: lifetime", errInvalidLoginToken)
@@ -171,6 +175,16 @@ func (l *DelegatedLogin) verifyLoginToken(token, host, state string) (Identity, 
 		Name:   strings.TrimSpace(claims.Name),
 		Groups: groups,
 	}, nil
+}
+
+func holdsLoginState(states []string, state string) bool {
+	held := false
+	for _, candidate := range states {
+		if candidate != "" && subtle.ConstantTimeCompare([]byte(candidate), []byte(state)) == 1 {
+			held = true
+		}
+	}
+	return held
 }
 
 // consumeJTI is a process-local replay guard. Spot runs as one process, and a
@@ -326,6 +340,33 @@ func (s *Server) sessionCookieValues(r *http.Request) []string {
 	return cookieValues(r, sessionCookieName)
 }
 
+func loginStateCookieName(state string) string {
+	return loginStateCookiePrefix + state
+}
+
+// pendingLoginStates returns the well-formed login states the browser holds.
+// A state cookie counts only when its value repeats its name and the name
+// appears once.
+func pendingLoginStates(r *http.Request) []string {
+	counts := map[string]int{}
+	echoed := map[string]bool{}
+	for _, cookie := range r.Cookies() {
+		if state, ok := strings.CutPrefix(cookie.Name, loginStateCookiePrefix); ok {
+			counts[state]++
+			echoed[state] = cookie.Value == state
+		}
+	}
+	var states []string
+	for state, count := range counts {
+		raw, err := base64.RawURLEncoding.DecodeString(state)
+		if count == 1 && echoed[state] && err == nil && len(raw) == loginStateBytes {
+			states = append(states, state)
+		}
+	}
+	sort.Strings(states)
+	return states
+}
+
 func cookieValues(r *http.Request, name string) []string {
 	var values []string
 	for _, cookie := range r.Cookies() {
@@ -407,10 +448,10 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.writeLoginError(w, r, loginError, returnTo)
 		return
 	}
-	states := cookieValues(r, loginStateCookieName)
+	states := pendingLoginStates(r)
 	if len(states) == 0 {
-		// Another tab's callback already used the shared state and signed
-		// this browser in; the token here stays unused.
+		// Another callback already signed this browser in and cleared its
+		// pending states; the token here stays unused.
 		if _, ok := s.sessionIdentity(r); ok {
 			http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
 			return
@@ -420,11 +461,7 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		s.writeOpenInNewTab(w, r, returnTo)
 		return
 	}
-	state := ""
-	if len(states) == 1 {
-		state = states[0]
-	}
-	id, err := s.login.verifyLoginToken(r.URL.Query().Get("token"), host, state)
+	id, err := s.login.verifyLoginToken(r.URL.Query().Get("token"), host, states...)
 	if err != nil {
 		log.Printf("auth callback %s: %v", host, err)
 		writeStatusPage(w, http.StatusBadRequest, statusPage{
@@ -440,7 +477,11 @@ func (s *Server) handleAuthCallback(w http.ResponseWriter, r *http.Request) {
 		httpError(w, http.StatusInternalServerError, "could not create the session")
 		return
 	}
-	http.SetCookie(w, loginCookie(loginStateCookieName, "", -1))
+	// The session now covers every sign-in this browser has pending on the
+	// host; their callbacks take the signed-in path without a state.
+	for _, state := range states {
+		http.SetCookie(w, loginCookie(loginStateCookieName(state), "", -1))
+	}
 	http.SetCookie(w, sessionCookie(value, int(s.login.sessionTTL/time.Second)))
 	http.Redirect(w, r, "/api/auth/check?return_to="+url.QueryEscape(returnTo), http.StatusFound)
 }
@@ -574,7 +615,7 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath, 
 		httpError(w, http.StatusInternalServerError, "could not start sign-in")
 		return
 	}
-	http.SetCookie(w, loginCookie(loginStateCookieName, state, int(loginStateMaxAge/time.Second)))
+	http.SetCookie(w, loginCookie(loginStateCookieName(state), state, int(loginStateMaxAge/time.Second)))
 	target := *s.login.loginURL
 	query := target.Query()
 	query.Set("return_to", s.requestScheme(r)+"://"+s.requestHost(r)+returnPath)
@@ -589,13 +630,11 @@ func (s *Server) startLogin(w http.ResponseWriter, r *http.Request, returnPath, 
 	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
-// loginState reuses the browser's pending login state, so sign-ins started
-// in several tabs can all complete, or creates a new one.
+// loginState reuses a login state the browser already holds, or creates a
+// new one. Sign-ins that start together get separate states and cookies.
 func (s *Server) loginState(r *http.Request) (string, error) {
-	if values := cookieValues(r, loginStateCookieName); len(values) == 1 {
-		if raw, err := base64.RawURLEncoding.DecodeString(values[0]); err == nil && len(raw) == loginStateBytes {
-			return values[0], nil
-		}
+	if states := pendingLoginStates(r); len(states) > 0 {
+		return states[0], nil
 	}
 	raw := make([]byte, loginStateBytes)
 	if _, err := rand.Read(raw); err != nil {
