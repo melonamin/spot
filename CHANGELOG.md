@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Delegated login no longer fails with "Sign-in failed" when several frames or tabs of one site host start signing in at the same moment. Each pending sign-in now has its own login state cookie. A sign-in already pending during the upgrade shows the "open in a new tab" page once.
+
 ## [0.11.0] - 2026-11-06
 
 ### Added

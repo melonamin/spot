@@ -361,9 +361,10 @@ Delegated login runs only over HTTPS and on `*.localhost`; elsewhere a sibling
 site could plant cookies, so Spot shows a "needs a secure connection" page and
 ignores session cookies. Behind a TLS proxy, make sure Spot sees
 `X-Forwarded-Proto: https` from a trusted proxy. The cookies are
-`__Host-spot_session` and `__Host-spot_login_state`, `SameSite=None; Secure;
-Partitioned` and host-only; the `__Host-` prefix, which Chrome and Firefox
-accept on `http://*.localhost` too (Safari needs HTTPS), stops a sibling site
+`__Host-spot_session` and one `__Host-spot_login_state_<state>` per pending
+sign-in, so frames or tabs of a host that start signing in at the same moment
+all complete. They are `SameSite=None; Secure; Partitioned` and host-only;
+the `__Host-` prefix, which Chrome and Firefox accept on `http://*.localhost` too (Safari needs HTTPS), stops a sibling site
 from setting them. A request that
 carries the session cookie more than once is treated as signed out
 (`/api/auth/check` answers `400`). The session keeps the `name` and `groups`

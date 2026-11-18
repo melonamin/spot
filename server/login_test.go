@@ -273,8 +273,23 @@ func navigation(req *http.Request) *http.Request {
 
 // withLoginState adds the login state cookie a login redirect would have set.
 func withLoginState(req *http.Request) *http.Request {
-	req.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: testLoginState})
+	req.AddCookie(&http.Cookie{Name: loginStateCookieName(testLoginState), Value: testLoginState})
 	return req
+}
+
+// responseLoginState returns the one login state cookie a response set.
+func responseLoginState(t *testing.T, rec *httptest.ResponseRecorder) *http.Cookie {
+	t.Helper()
+	var found []*http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if strings.HasPrefix(cookie.Name, loginStateCookiePrefix) {
+			found = append(found, cookie)
+		}
+	}
+	if len(found) != 1 {
+		t.Fatalf("response login state cookies = %v, want one", rec.Result().Cookies())
+	}
+	return found[0]
 }
 
 // responseCookie returns the named cookie a response set.
@@ -305,7 +320,7 @@ func (st *loginTestStack) signIn(t *testing.T, host, email, jti string) *http.Co
 	if cookies := rec.Result().Cookies(); len(cookies) != 2 {
 		t.Fatalf("callback cookies = %+v, want the session and a cleared login state", cookies)
 	}
-	if state := responseCookie(t, rec, loginStateCookieName); state.MaxAge >= 0 {
+	if state := responseCookie(t, rec, loginStateCookieName(testLoginState)); state.MaxAge >= 0 {
 		t.Fatalf("login state cookie after sign-in = %+v, want cleared", state)
 	}
 	return responseCookie(t, rec, sessionCookieName)
@@ -325,8 +340,8 @@ func TestDelegatedLoginRestrictedSiteFlow(t *testing.T) {
 		location.Query().Get("return_to") != "http://"+host+"/docs/?q=1" || location.Query().Get("prompt") != "none" {
 		t.Fatalf("login redirect = %q", rec.Header().Get("Location"))
 	}
-	state := responseCookie(t, rec, loginStateCookieName)
-	if state.Value == "" || location.Query().Get("state") != state.Value || !state.HttpOnly || !state.Secure ||
+	state := responseLoginState(t, rec)
+	if state.Value == "" || state.Name != loginStateCookieName(state.Value) || location.Query().Get("state") != state.Value || !state.HttpOnly || !state.Secure ||
 		!state.Partitioned || state.SameSite != http.SameSiteNoneMode || state.Domain != "" || state.Path != "/" || state.MaxAge != 600 {
 		t.Fatalf("login state cookie = %+v, redirect state = %q", state, location.Query().Get("state"))
 	}
@@ -448,7 +463,7 @@ func TestSessionCookieModes(t *testing.T) {
 	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
 
 	// Both schemes use __Host- names, which a sibling site cannot set.
-	for _, got := range []*http.Cookie{sessionCookie("v", 60), loginCookie(loginStateCookieName, "v", 60)} {
+	for _, got := range []*http.Cookie{sessionCookie("v", 60), loginCookie(loginStateCookieName("v"), "v", 60)} {
 		if !strings.HasPrefix(got.Name, "__Host-") || !got.Secure || got.Path != "/" || got.Domain != "" ||
 			!got.Partitioned || got.SameSite != http.SameSiteNoneMode {
 			t.Fatalf("login cookie = %+v", got)
@@ -497,7 +512,7 @@ func TestDelegatedLoginGatesSDKAPIsOnOpenSites(t *testing.T) {
 		location.Query().Get("return_to") != "http://"+host+"/app?x=1" {
 		t.Fatalf("sign-in start = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	state := responseCookie(t, rec, loginStateCookieName)
+	state := responseLoginState(t, rec)
 	if location.Query().Get("state") != state.Value {
 		t.Fatalf("sign-in state = %q, cookie %q", location.Query().Get("state"), state.Value)
 	}
@@ -918,11 +933,18 @@ func TestDelegatedLoginCallbackIsBoundToTheBrowser(t *testing.T) {
 	if rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
 		t.Fatalf("callback with another browser's state = %d %v", rec.Code, rec.Result().Cookies())
 	}
-	// Denied: conflicting state cookies.
+	// Denied: a state cookie whose value is not its own state, and the
+	// attacker's state cookie twice, as a browser ignoring __Host- could hold.
+	planted := withLoginState(siteRequest(http.MethodGet, host, attackerLink))
+	planted.AddCookie(&http.Cookie{Name: loginStateCookieName(otherLoginState), Value: testLoginState})
+	if rec := st.do(planted); rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
+		t.Fatalf("callback with a mismatched state cookie = %d %v", rec.Code, rec.Result().Cookies())
+	}
 	dup := withLoginState(siteRequest(http.MethodGet, host, attackerLink))
-	dup.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: otherLoginState})
+	dup.AddCookie(&http.Cookie{Name: loginStateCookieName(otherLoginState), Value: otherLoginState})
+	dup.AddCookie(&http.Cookie{Name: loginStateCookieName(otherLoginState), Value: otherLoginState})
 	if rec := st.do(dup); rec.Code != http.StatusBadRequest || len(rec.Result().Cookies()) != 0 {
-		t.Fatalf("callback with duplicate login states = %d %v", rec.Code, rec.Result().Cookies())
+		t.Fatalf("callback with duplicate login state cookies = %d %v", rec.Code, rec.Result().Cookies())
 	}
 	if rec := st.do(withCookie(siteRequest(http.MethodGet, host, "/api/me"), victim)); !strings.Contains(rec.Body.String(), `"email":"owner@example.com"`) {
 		t.Fatalf("victim identity after attack = %s", rec.Body.String())
@@ -931,7 +953,7 @@ func TestDelegatedLoginCallbackIsBoundToTheBrowser(t *testing.T) {
 	// Allowed: the browser that holds the matching state; rejected attempts
 	// did not burn the token.
 	own := siteRequest(http.MethodGet, host, attackerLink)
-	own.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: otherLoginState})
+	own.AddCookie(&http.Cookie{Name: loginStateCookieName(otherLoginState), Value: otherLoginState})
 	if rec := st.do(own); rec.Code != http.StatusFound {
 		t.Fatalf("callback with matching state = %d %s", rec.Code, rec.Body.String())
 	}
@@ -943,14 +965,75 @@ func TestDelegatedLoginReusesPendingState(t *testing.T) {
 	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
 
 	rec := st.do(withLoginState(navigation(siteRequest(http.MethodGet, host, "/"))))
-	if got := responseCookie(t, rec, loginStateCookieName).Value; got != testLoginState {
+	if got := responseLoginState(t, rec).Value; got != testLoginState {
 		t.Fatalf("second tab state = %q, want the pending %q", got, testLoginState)
 	}
 	malformed := navigation(siteRequest(http.MethodGet, host, "/"))
-	malformed.AddCookie(&http.Cookie{Name: loginStateCookieName, Value: "short"})
+	malformed.AddCookie(&http.Cookie{Name: loginStateCookieName("short"), Value: "short"})
 	rec = st.do(malformed)
-	if got := responseCookie(t, rec, loginStateCookieName).Value; got == "short" || len(got) != 43 {
+	if got := responseLoginState(t, rec).Value; got == "short" || len(got) != 43 {
 		t.Fatalf("state after malformed cookie = %q, want a fresh one", got)
+	}
+}
+
+// Two frames of one host that start signing in at the same moment each get a
+// fresh state; both callbacks must succeed whichever arrives first.
+func TestDelegatedLoginConcurrentSignIns(t *testing.T) {
+	st := newLoginTestStack(t)
+	const host = "private.sites.localhost:8443"
+	st.deploy(t, "owner@example.com", "private", `{"allow":["owner@example.com"]}`)
+
+	start := func() *http.Cookie {
+		rec := st.do(navigation(siteRequest(http.MethodGet, host, "/")))
+		if rec.Code != http.StatusFound {
+			t.Fatalf("sign-in start = %d %s", rec.Code, rec.Body.String())
+		}
+		return responseLoginState(t, rec)
+	}
+	callback := func(state string, jti string, jar []*http.Cookie) *httptest.ResponseRecorder {
+		claims := testLoginClaims(host, jti, time.Now())
+		claims["email"] = "owner@example.com"
+		claims["state"] = state
+		req := siteRequest(http.MethodGet, host, "/api/auth/callback?token="+signTestLoginToken(t, testLoginTokenSecret, nil, claims)+"&return_to=%2F")
+		for _, cookie := range jar {
+			req.AddCookie(&http.Cookie{Name: cookie.Name, Value: cookie.Value})
+		}
+		return st.do(req)
+	}
+
+	for _, firstWins := range []bool{true, false} {
+		first, second := start(), start()
+		if first.Name == second.Name {
+			t.Fatalf("concurrent sign-ins share the state cookie %q", first.Name)
+		}
+		jar := []*http.Cookie{first, second}
+		winner, loser := first, second
+		if !firstWins {
+			winner, loser = second, first
+		}
+
+		// Both callbacks were sent before either response: the browser still
+		// holds both states.
+		rec := callback(winner.Value, "winner-"+winner.Value, jar)
+		if rec.Code != http.StatusFound {
+			t.Fatalf("first callback = %d %s", rec.Code, rec.Body.String())
+		}
+		session := responseCookie(t, rec, sessionCookieName)
+		for _, state := range jar {
+			if cleared := responseCookie(t, rec, state.Name); cleared.MaxAge >= 0 {
+				t.Fatalf("state cookie %s after sign-in = %+v, want cleared", state.Name, cleared)
+			}
+		}
+		if rec := callback(loser.Value, "loser-"+loser.Value, jar); rec.Code != http.StatusFound ||
+			rec.Header().Get("Location") != "/api/auth/check?return_to=%2F" {
+			t.Fatalf("concurrent callback = %d %s", rec.Code, rec.Body.String())
+		}
+
+		// Sent after the first response: no state cookie, but signed in.
+		if rec := callback(loser.Value, "late-"+loser.Value, []*http.Cookie{session}); rec.Code != http.StatusFound ||
+			rec.Header().Get("Location") != "/api/auth/check?return_to=%2F" {
+			t.Fatalf("late callback = %d %s", rec.Code, rec.Body.String())
+		}
 	}
 }
 
