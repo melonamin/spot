@@ -387,6 +387,53 @@ service's internal name with no forwarded headers (as Caddy's `ask` URL
 does) and returns `404` for anything that came through a proxy or names a Spot
 host, so outsiders cannot list site names.
 
+### Embedding SDK extensions
+
+An embedding product can extend the existing `spot` object without changing Spot sources.
+Set `SPOT_SDK_EXTENSIONS_DIR` (or `--sdk-extensions-dir`) to a read-only directory of operator-supplied assets:
+
+```js
+// 10-example.js
+spot.use({
+  apiVersion: 1,
+  install(sdk, { request }) {
+    sdk.example = { summary: (options) => request('/api/example/summary', options) };
+  },
+});
+```
+
+`request(path, options)` uses the core JSON transport, including `SpotError`, cancellation and retry policy.
+Only install trusted code: extensions run on every site, with the same browser authority as the site.
+Spot does not implement the example endpoint; the embedding product routes and authorizes its own APIs.
+Extensions install synchronously and reject unsupported `apiVersion` values.
+
+At startup Spot appends regular `*.js` files to `/spot.js` and `*.d.ts` files to `/spot.d.ts`, in lexical filename order, after the built-in assets.
+Type declarations can augment `SpotSDK.Spot` and `SpotSDK.AI` through TypeScript declaration merging.
+Other filenames are ignored; subdirectories are not scanned.
+Matching symlinks or nonregular files, unreadable paths, and more than 8 MiB of extension contents fail startup.
+An empty directory adds nothing; leaving the option unset preserves the standalone SDK.
+Restart Spot after changing the directory.
+No extension files are accepted from a site's published content, and normal site access checks still protect both SDK URLs.
+For Docker Compose, mount the directory read-only and set its container path in a local override:
+
+```yaml
+services:
+  spot-api:
+    environment:
+      SPOT_SDK_EXTENSIONS_DIR: /sdk-extensions
+    volumes:
+      - ./sdk-extensions:/sdk-extensions:ro
+```
+
+Embedding products can also carry opaque, namespaced `context` objects in signed delegated-login tokens.
+Spot retains this data in its host-bound HttpOnly session and excludes it from public identity JSON.
+Cookies are signed, not encrypted: do not put credentials or secrets in this context.
+The embedding product must verify the signature and authorize its own operations.
+Site policy accepts namespaced object settings under `_access.json`'s `extensions` field.
+Spot preserves these on policy updates, clones and deploys without interpreting their contents.
+`GET /api/sites/{name}/extensions/{namespace}` exposes only one namespace to a trusted forward-auth caller who also has access to the site.
+This internal endpoint is not available through a visitor cookie alone.
+
 ### Single-User Homelab
 
 Use this when LAN/VPN/firewall access is the boundary and everyone who

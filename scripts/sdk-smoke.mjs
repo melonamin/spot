@@ -237,6 +237,16 @@ const run = (cmd, args, opts = {}) =>
 const startSpot = async (port, aiURL, slackURL) => {
   const dataDir = join(tmp, 'data');
   await mkdir(dataDir, { recursive: true });
+  const extensionsDir = join(tmp, 'extensions');
+  await mkdir(extensionsDir);
+  await writeFile(join(extensionsDir, '10-example.js'), `
+window.spot.use({ apiVersion: 1, install(sdk, { request }) {
+  sdk.example = { viewer: () => request('/api/me') };
+} }); // trailing comment`);
+  await writeFile(join(extensionsDir, '20-example.js'), `window.spot.example.ready = true;`);
+  await writeFile(join(extensionsDir, 'example.d.ts'), `
+declare namespace SpotSDK { interface Spot { example: { ready: boolean; viewer(): Promise<Identity> } } }
+`);
   const binary = join(tmp, 'spot-api');
   await run('go', ['build', '-o', binary, '.'], { cwd: serverDir });
   apiProc = spawnLogged(binary, [], {
@@ -248,6 +258,7 @@ const startSpot = async (port, aiURL, slackURL) => {
       SPOT_DATA_DIR: dataDir,
       SPOT_SQLITE_PATH: join(dataDir, 'spot.db'),
       SPOT_SITES_DIR: join(dataDir, 'sites'),
+      SPOT_SDK_EXTENSIONS_DIR: extensionsDir,
       SPOT_AUTH_MODE: '',
       NETBIRD_API_URL: '',
       NETBIRD_API_TOKEN: '',
@@ -302,8 +313,8 @@ const deploySite = async (port, name, files) => {
   });
 };
 
-const makeSpot = async (origin, fetchImpl = fetch) => {
-  const source = await readFile(sdkPath, 'utf8');
+const makeSpot = async (origin, fetchImpl = fetch, source) => {
+  source ??= await readFile(sdkPath, 'utf8');
   const window = {};
   const relativeFetch = (input, init = {}) => {
     let url = input instanceof URL ? input.toString() : String(input);
@@ -543,6 +554,31 @@ const testSiteSDK = async (port) => {
   await spot.files.delete(secondFile.id, secondFile.name);
 };
 
+const testMountedExtensionSDK = async (port) => {
+  const origin = `http://sdksmoke.spot.localhost:${port}`;
+  const response = await fetch(`${origin}/spot.js`);
+  assert(response.ok, `extension SDK HTTP ${response.status}`);
+  const spot = await makeSpot(origin, fetch, await response.text());
+  let installed = false;
+  try {
+    spot.use({ apiVersion: 2, install() { installed = true; } });
+    fail('unsupported SDK extension API was accepted');
+  } catch (err) {
+    assert(!installed && /unsupported SDK extension API/.test(err.message), 'extension API rejection failed');
+  }
+  assert(spot.example.ready === true, 'mounted extensions did not install in filename order');
+  const me = await spot.example.viewer();
+  assert(me.email === 'sdk-smoke@localhost', 'mounted extension did not use core transport');
+  const declarations = await fetch(`${origin}/spot.d.ts`);
+  assert(declarations.ok && (await declarations.text()).includes('example: { ready: boolean'), 'mounted declarations missing');
+  const accessSource = await (await fetch(`http://spot.localhost:${port}/spot-access.js`)).text();
+  const context = vm.createContext({ window: {} });
+  vm.runInContext(accessSource, context);
+  const settings = { example: { enabled: false } };
+  const parsed = context.window.SpotAccess.parsePolicy({ allow: ['viewer@example.com'], extensions: settings });
+  assert(JSON.stringify(parsed.fields.extensions) === JSON.stringify(settings), 'access picker lost extension settings');
+};
+
 const testApexSDK = async (port) => {
   const spot = await makeSpot(`http://spot.localhost:${port}`);
   const mine = await spot.sites.mine();
@@ -582,6 +618,8 @@ const main = async () => {
   await testRetryPolicy();
   console.log('==> SDK site methods');
   await testSiteSDK(port);
+  console.log('==> operator-mounted SDK extensions');
+  await testMountedExtensionSDK(port);
   console.log('==> SDK apex site methods');
   await testApexSDK(port);
   console.log(`SDK SMOKE PASS in ${Math.round((Date.now() - startedAt) / 1000)}s`);

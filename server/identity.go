@@ -15,11 +15,12 @@ import (
 // mesh peer the request came from. Groups is the union of provider group
 // names that apply to that visitor.
 type Identity struct {
-	Email    string   `json:"email"`
-	Name     string   `json:"name"`
-	PeerName string   `json:"peer_name"`
-	PeerIP   string   `json:"peer_ip"`
-	Groups   []string `json:"groups"`
+	Context  map[string]json.RawMessage `json:"-"`
+	Email    string                     `json:"email"`
+	Name     string                     `json:"name"`
+	PeerName string                     `json:"peer_name"`
+	PeerIP   string                     `json:"peer_ip"`
+	Groups   []string                   `json:"groups"`
 }
 
 type IdentityResolver interface {

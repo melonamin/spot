@@ -37,11 +37,12 @@ const (
 // mesh group name; both case-insensitive. An omitted allow keeps the
 // site public; an empty allow list denies everyone.
 type AccessPolicy struct {
-	Allow       []string `json:"allow,omitempty"`
-	Maintainers []string `json:"maintainers,omitempty"`
-	AI          string   `json:"ai,omitempty"`
-	Slack       string   `json:"slack,omitempty"`
-	Download    *bool    `json:"download,omitempty"`
+	Extensions  map[string]json.RawMessage `json:"extensions,omitempty"`
+	Allow       []string                   `json:"allow,omitempty"`
+	Maintainers []string                   `json:"maintainers,omitempty"`
+	AI          string                     `json:"ai,omitempty"`
+	Slack       string                     `json:"slack,omitempty"`
+	Download    *bool                      `json:"download,omitempty"`
 
 	restrictAccess bool
 }
@@ -55,10 +56,15 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 		return err
 	}
 
-	var allowRaw, maintainersRaw, aiRaw, slackRaw, downloadRaw *json.RawMessage
+	var allowRaw, maintainersRaw, aiRaw, slackRaw, downloadRaw, extensionsRaw *json.RawMessage
 	for key, value := range fields {
 		value := value
 		switch strings.ToLower(key) {
+		case "extensions":
+			if extensionsRaw != nil {
+				return errors.New("duplicate extensions field")
+			}
+			extensionsRaw = &value
 		case "allow":
 			if allowRaw != nil {
 				return errors.New("duplicate allow field")
@@ -89,6 +95,22 @@ func (p *AccessPolicy) UnmarshalJSON(raw []byte) error {
 		}
 	}
 
+	if extensionsRaw != nil {
+		if err := json.Unmarshal(*extensionsRaw, &p.Extensions); err != nil || p.Extensions == nil {
+			return errors.New("extensions must be an object")
+		}
+		for namespace, raw := range p.Extensions {
+			var settings map[string]json.RawMessage
+			if !siteNameRe.MatchString(namespace) {
+				return fmt.Errorf("invalid extension namespace %q", namespace)
+			}
+			if err := json.Unmarshal(raw, &settings); err != nil || settings == nil {
+				return fmt.Errorf("extension %q settings must be an object", namespace)
+			}
+		}
+	} else {
+		p.Extensions = nil
+	}
 	if allowRaw != nil {
 		if bytes.Equal(bytes.TrimSpace(*allowRaw), []byte("null")) {
 			return errors.New("allow must be an array")

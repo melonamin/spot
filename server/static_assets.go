@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"embed"
 	"errors"
@@ -190,6 +191,11 @@ func redirectToDir(w http.ResponseWriter, r *http.Request, cleanPath string) {
 
 func (s *Server) serveEmbeddedAsset(w http.ResponseWriter, r *http.Request, name string) {
 	clean := path.Clean(strings.TrimPrefix(name, "/"))
+	if asset, ok := s.sdkAssets[clean]; ok {
+		w.Header().Set("Cache-Control", "no-cache")
+		http.ServeContent(w, r, clean, time.Time{}, bytes.NewReader(asset))
+		return
+	}
 	if clean == "." || strings.HasPrefix(clean, "../") {
 		s.serveEmbedded404(w, r)
 		return

@@ -69,6 +69,7 @@ type config struct {
 	FrameAncestors       string
 	DefaultIconsDir      string
 	ApexRedirectURL      string
+	SDKExtensionsDir     string
 	Cloudflare           cloudflareConfig
 }
 
@@ -97,6 +98,7 @@ func loadConfigFrom(args []string) (config, error) {
 
 func defaultConfigFromEnv() config {
 	return config{
+		SDKExtensionsDir:     os.Getenv("SPOT_SDK_EXTENSIONS_DIR"),
 		Port:                 envOr("PORT", "8080"),
 		StorageMode:          normalizeStorageMode(os.Getenv("SPOT_STORAGE_MODE")),
 		DataDir:              envOr("SPOT_DATA_DIR", "./data"),
@@ -233,6 +235,7 @@ func applyCLIFlags(cfg *config, args []string) error {
 	fs.StringVar(&cfg.DataDir, "data-dir", cfg.DataDir, "data directory for SQLite and local storage")
 	fs.StringVar(&cfg.SQLitePath, "sqlite", cfg.SQLitePath, "SQLite database path")
 	fs.StringVar(&cfg.Port, "listen", cfg.Port, "listen port or address")
+	fs.StringVar(&cfg.SDKExtensionsDir, "sdk-extensions-dir", cfg.SDKExtensionsDir, "operator-owned SDK extension assets directory")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -567,7 +570,12 @@ func main() {
 	} else {
 		policies = NewPolicyStore("", 5*time.Second)
 	}
+	sdkAssets, err := loadSDKExtensionAssets(cfg.SDKExtensionsDir)
+	if err != nil {
+		log.Fatalf("load SDK extensions: %v", err)
+	}
 	srv := &Server{
+		sdkAssets:        sdkAssets,
 		store:            store,
 		resolver:         resolver,
 		forwardAuth:      forwardAuth,

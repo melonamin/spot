@@ -78,7 +78,7 @@
   // Build a SpotError from a non-ok response. Shared by request() and the
   // streaming path so both classify status, code, and Retry-After identically.
   const errorFromResponse = (res, body, retryAfter = retryAfterSeconds(res)) =>
-    new SpotError((body && body.error) || `spot: HTTP ${res.status}`, {
+    new SpotError((body && (body.error || (typeof body.detail === "string" ? body.detail : JSON.stringify(body.detail)))) || `spot: HTTP ${res.status}`, {
       status: res.status,
       code: codeForStatus(res.status),
       retryAfter,
@@ -516,6 +516,13 @@
     // configure({ retry }) sets the default retry behavior. retry is true
     // (smart auto-retry, the default), false (never), or a max-retry count.
     configure,
+    // Operator extensions reuse the same transport and error contract.
+    use: (extension) => {
+      if (extension?.apiVersion !== 1 || typeof extension.install !== 'function') {
+        throw new Error('spot: unsupported SDK extension API; expected version 1');
+      }
+      extension.install(window.spot, { request });
+    },
     // Who is visiting, according to the mesh, plus per-site capabilities:
     // { email, name, peer_name, peer_ip, groups, ai_allowed, slack_allowed }.
     // Capability flags report whether this visitor may call gated server-side

@@ -91,15 +91,16 @@ func parseAbsoluteURL(raw string) (*url.URL, error) {
 }
 
 type loginTokenClaims struct {
-	Aud    string   `json:"aud"`
-	Host   string   `json:"host"`
-	Email  string   `json:"email"`
-	Name   string   `json:"name"`
-	Groups []string `json:"groups"`
-	Iat    int64    `json:"iat"`
-	Exp    int64    `json:"exp"`
-	JTI    string   `json:"jti"`
-	State  string   `json:"state"`
+	Context map[string]json.RawMessage `json:"context,omitempty"`
+	Aud     string                     `json:"aud"`
+	Host    string                     `json:"host"`
+	Email   string                     `json:"email"`
+	Name    string                     `json:"name"`
+	Groups  []string                   `json:"groups"`
+	Iat     int64                      `json:"iat"`
+	Exp     int64                      `json:"exp"`
+	JTI     string                     `json:"jti"`
+	State   string                     `json:"state"`
 }
 
 var errInvalidLoginToken = errors.New("invalid login token")
@@ -167,9 +168,10 @@ func (l *DelegatedLogin) verifyLoginToken(token, host, state string) (Identity, 
 		groups = []string{}
 	}
 	return Identity{
-		Email:  strings.ToLower(strings.TrimSpace(claims.Email)),
-		Name:   strings.TrimSpace(claims.Name),
-		Groups: groups,
+		Email:   strings.ToLower(strings.TrimSpace(claims.Email)),
+		Name:    strings.TrimSpace(claims.Name),
+		Groups:  groups,
+		Context: claims.Context,
 	}, nil
 }
 
@@ -191,16 +193,17 @@ func (l *DelegatedLogin) consumeJTI(jti string, expiresAt, now time.Time) bool {
 }
 
 type sessionPayload struct {
-	Email  string   `json:"email"`
-	Name   string   `json:"name"`
-	Groups []string `json:"groups"`
-	Host   string   `json:"host"`
-	Exp    int64    `json:"exp"`
+	Context map[string]json.RawMessage `json:"context,omitempty"`
+	Email   string                     `json:"email"`
+	Name    string                     `json:"name"`
+	Groups  []string                   `json:"groups"`
+	Host    string                     `json:"host"`
+	Exp     int64                      `json:"exp"`
 }
 
 func (l *DelegatedLogin) signSession(id Identity, host string) (string, error) {
 	raw, err := json.Marshal(sessionPayload{
-		Email: id.Email, Name: id.Name, Groups: id.Groups, Host: host,
+		Email: id.Email, Name: id.Name, Groups: id.Groups, Host: host, Context: id.Context,
 		Exp: l.now().Add(l.sessionTTL).Unix(),
 	})
 	if err != nil {
@@ -243,7 +246,7 @@ func (l *DelegatedLogin) verifySession(value, host string) (Identity, time.Time,
 	if groups == nil {
 		groups = []string{}
 	}
-	return Identity{Email: session.Email, Name: session.Name, Groups: groups}, expires, true
+	return Identity{Email: session.Email, Name: session.Name, Groups: groups, Context: session.Context}, expires, true
 }
 
 // loginHost is the site host as the browser addressed it: lowercase, without

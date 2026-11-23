@@ -167,6 +167,9 @@ func accessPolicyBody(policy *AccessPolicy) map[string]any {
 	if policy.Maintainers != nil {
 		body["maintainers"] = append([]string{}, policy.Maintainers...)
 	}
+	if policy.Extensions != nil {
+		body["extensions"] = policy.Extensions
+	}
 	if policy.AI != "" {
 		body["ai"] = policy.AI
 	}

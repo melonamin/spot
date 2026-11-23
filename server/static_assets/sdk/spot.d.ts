@@ -241,18 +241,30 @@ declare namespace SpotSDK {
     close(): void;
   }
 
+  interface ExtensionTransport {
+    request<T = unknown>(path: string, opts?: RequestInit & RequestOptions): Promise<T>;
+  }
+
+  interface SDKExtension {
+    apiVersion: 1;
+    install(spot: Spot, transport: ExtensionTransport): void;
+  }
+
+  interface AI {
+    chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
+    stream(messages: ChatMessage[], opts?: StreamOptions): Promise<ChatResult>;
+    image(prompt: string, opts?: ImageOptions): Promise<ImageResult>;
+  }
+
   interface Spot {
     SpotError: typeof SpotError;
     /** Set default request behavior; returns the resolved config. */
     configure(opts?: Config): Config;
+    use(extension: SDKExtension): void;
     me(opts?: RequestOptions): Promise<Identity>;
     db: { collection<T = Record<string, unknown>>(name: string): Collection<T> };
     realtime: { room(name: string): Room };
-    ai: {
-      chat(messages: ChatMessage[], opts?: ChatOptions): Promise<ChatResult>;
-      stream(messages: ChatMessage[], opts?: StreamOptions): Promise<ChatResult>;
-      image(prompt: string, opts?: ImageOptions): Promise<ImageResult>;
-    };
+    ai: AI;
     slack: {
       send(opts: SlackSendOptions): Promise<SlackSendResult>;
     };
