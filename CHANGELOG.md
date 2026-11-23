@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-11-22
+
+### Added
+
+- Embedding applications can extend the existing browser SDK with `spot.use` and TypeScript declaration merging, sharing Spot's request, error, retry and cancellation behavior. (#46)
+- Operators can mount JavaScript and type declarations through `SPOT_SDK_EXTENSIONS_DIR` or `--sdk-extensions-dir`. Spot loads them at startup into the existing SDK URLs without a custom build. (#46)
+- Delegated sessions retain opaque private identity context, and site access policies support namespaced extension settings with a trusted, viewer-authorized namespace read. Sharing edits preserve these settings. (#46)
+
+### Security
+
+- The server image and development toolchain use Go 1.26.11, which fixes the HTTP/1 server crash in GO-2026-6859. (#46)
+
 ## [0.11.0] - 2026-11-06
 
 ### Added
@@ -219,7 +231,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - First tagged release: prebuilt multi-arch images and CI/release pipeline.
 
-[Unreleased]: https://github.com/melonamin/spot/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/melonamin/spot/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/melonamin/spot/compare/v0.11.0...v0.12.0
 [0.11.0]: https://github.com/melonamin/spot/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/melonamin/spot/compare/v0.9.1...v0.10.0
 [0.9.1]: https://github.com/melonamin/spot/compare/v0.9.0...v0.9.1
