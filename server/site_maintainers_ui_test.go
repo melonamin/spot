@@ -62,7 +62,7 @@ func TestMaintainerUIAndSDKAssets(t *testing.T) {
 		}
 		page := string(raw)
 		for _, want := range []string{
-			`['ai', 'slack', 'download']`,
+			`['ai', 'slack', 'download', 'extensions']`,
 			`const normalized = name.toLowerCase();`,
 			`throw new Error(name + ' must be an array of strings');`,
 			`'/api/access/suggestions?q='`,

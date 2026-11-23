@@ -24,6 +24,7 @@ var idRe = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-
 var roomEventRe = regexp.MustCompile(`^[A-Za-z0-9_.:-]{1,64}$`)
 
 type Server struct {
+	sdkAssets         map[string][]byte
 	store             *DocStore
 	resolver          IdentityResolver
 	forwardAuth       *ForwardAuth
@@ -176,6 +177,7 @@ func (s *Server) routes() http.Handler {
 	}
 
 	mux := http.NewServeMux()
+	mux.HandleFunc("GET /api/sites/{name}/extensions/{extension}", s.sameOriginOnly(s.limited(s.dbLimit, s.handleSiteExtensionSettings)))
 	mux.HandleFunc("GET /health", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok", "version": version})
 	})

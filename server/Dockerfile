@@ -1,7 +1,7 @@
 # Cross-compile on the build platform (fast, no QEMU) since the binary is
 # pure Go (CGO_ENABLED=0). buildx populates BUILDPLATFORM/TARGETOS/TARGETARCH;
 # plain `docker build` with BuildKit sets them to the host platform.
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+FROM --platform=$BUILDPLATFORM golang:1.26.11-alpine AS build
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download

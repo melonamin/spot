@@ -7,7 +7,7 @@
 (() => {
   'use strict';
 
-  const POLICY_FIELDS = ['allow', 'maintainers', 'ai', 'slack', 'download'];
+  const POLICY_FIELDS = ['allow', 'maintainers', 'ai', 'slack', 'download', 'extensions'];
   const has = (object, key) => Object.prototype.hasOwnProperty.call(object, key);
 
   const key = (entry) => entry.type + ':' + entry.value.toLowerCase();
@@ -50,7 +50,7 @@
       return policy[name];
     };
     const fields = {};
-    for (const name of ['ai', 'slack', 'download']) {
+    for (const name of ['ai', 'slack', 'download', 'extensions']) {
       if (has(policy, name)) fields[name] = policy[name];
     }
     return {

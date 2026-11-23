@@ -1544,6 +1544,12 @@ func cloneAccessPolicy(policy *AccessPolicy) *AccessPolicy {
 		return nil
 	}
 	clone := *policy
+	if policy.Extensions != nil {
+		clone.Extensions = make(map[string]json.RawMessage, len(policy.Extensions))
+		for namespace, settings := range policy.Extensions {
+			clone.Extensions[namespace] = append(json.RawMessage(nil), settings...)
+		}
+	}
 	clone.Allow = append([]string(nil), policy.Allow...)
 	clone.Maintainers = append([]string(nil), policy.Maintainers...)
 	if policy.Download != nil {
