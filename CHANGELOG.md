@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Every HTML page of a site, Spot Show reports included, shows a bar across the top that says who can open it: everyone on the mesh, one person, or the listed people and groups. It follows the current access policy without a redeploy; Cloudflare copies carry none.
+
 ### Fixed
 
 - Links in Spot Show HTML blocks that open a new tab no longer hang on "Loading...": the tab no longer inherits the block's sandbox, so it can load the linked site and its data.

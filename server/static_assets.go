@@ -110,7 +110,7 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 			return
 		}
 		if ref.typed() {
-			if s.serveTypedSitePath(w, r, ref) {
+			if s.serveTypedSitePath(w, r, site, ref) {
 				return
 			}
 			// Typed data is small and changes with deploys and access
@@ -163,6 +163,10 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		if info.ETag != "" {
 			w.Header().Set("ETag", info.ETag)
 		}
+	}
+	if isHTMLPage(requestPath) {
+		s.serveHTMLWithAccessBar(w, r, site, requestPath, "", rc)
+		return
 	}
 	if seeker, ok := rc.(io.ReadSeeker); ok {
 		modTime := info.LastModified

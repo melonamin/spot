@@ -14,7 +14,7 @@ import (
 // entry at / and /index.html, and inventory files under /_type/. It reports
 // false for every other path, which is the site's own data. The caller has
 // already checked lifecycle and visitor access.
-func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, ref siteTypeRef) bool {
+func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, site string, ref siteTypeRef) bool {
 	var filePath string
 	switch p := r.URL.Path; {
 	case p == "/" || p == "/"+typeEntryFile:
@@ -28,11 +28,11 @@ func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, ref 
 	default:
 		return false
 	}
-	s.serveTypeFile(w, r, ref, filePath)
+	s.serveTypeFile(w, r, site, ref, filePath)
 	return true
 }
 
-func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, ref siteTypeRef, filePath string) {
+func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site string, ref siteTypeRef, filePath string) {
 	v, err := s.cachedTypeVersion(r.Context(), ref.Name, ref.Version)
 	if err != nil {
 		log.Printf("static: type %s: %v", ref, err)
@@ -54,7 +54,10 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, ref siteT
 	h.Set("Cache-Control", "private, no-cache")
 	h.Set("ETag", etag)
 	h.Del("Last-Modified")
-	if ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
+	// An HTML viewer page carries the access bar, so its validator is the
+	// served bytes, not the stored file.
+	htmlPage := isHTMLPage(filePath)
+	if !htmlPage && ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -75,6 +78,10 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, ref siteT
 		return
 	}
 	defer rc.Close()
+	if htmlPage {
+		s.serveHTMLWithAccessBar(w, r, site, filePath, v.Version+"-", rc)
+		return
+	}
 	h.Set("Content-Type", contentTypeForName(filePath))
 	if seeker, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, filePath, time.Time{}, seeker)

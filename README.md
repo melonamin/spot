@@ -655,6 +655,13 @@ maintainer can deploy, delete, and manage Cloudflare for an active site but
 cannot visit a restricted site unless `allow` also matches them. The policy
 itself is never served to visitors and is left out of source downloads.
 
+Every HTML page of a site shows a bar across the top that says who can open it,
+rendered from the current policy on each request: green OPEN (everyone on the
+mesh), red PRIVATE (one person), purple SHARED (the listed people and groups).
+An access change shows on the next page load, with no redeploy. Copies
+published to Cloudflare carry no bar. The page moves down by
+`--spot-access-bar-height`; offset a page's own sticky or fixed header by it.
+
 A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an
 `_access.json` without `allow`, change it from My spots (Mesh access), with
