@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- Links in Spot Show HTML blocks that open a new tab no longer hang on "Loading...": the tab no longer inherits the block's sandbox, so it can load the linked site and its data.
+
 ## [0.12.0] - 2026-11-22
 
 ### Added

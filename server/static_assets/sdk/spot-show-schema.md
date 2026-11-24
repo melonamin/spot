@@ -241,6 +241,8 @@ HTML blocks render inside a sandboxed iframe. Do not put secrets in HTML; Spot
 source may be downloadable by authorized viewers.
 
 The iframe remains opaque-origin and resizes through a guarded message bridge.
+Links that open a new tab (`target="_blank"`) open an ordinary page that
+does not inherit the sandbox, so a link to a private Spot site loads normally.
 Use these theme variables so a fragment follows the report without hard-coded
 light/dark colors:
 
