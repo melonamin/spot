@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Every HTML page of a site, Spot Show reports included, shows a bar across the top that says who can open it: everyone on the mesh, one person, or the listed people and groups. It follows the current access policy without a redeploy; Cloudflare copies carry none.
+- Every HTML page of a site, Spot Show reports included, shows a bar across the top that says who can open it: everyone on the mesh (or tailnet), one person, or the listed people and groups. Deployments without a mesh provider say "Anyone who can reach this Spot" instead. It follows the current access policy without a redeploy; Cloudflare copies carry none.
 
 ### Fixed
 

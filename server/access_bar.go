@@ -27,9 +27,25 @@ type accessBarLevel struct {
 	label, color, text string
 }
 
-func accessBarFor(policy *AccessPolicy) accessBarLevel {
+// openAudience names who can open an unrestricted site. Spot knows it is on a
+// mesh only when it resolves visitors through the mesh API and has no login
+// app letting visitors in from outside it; otherwise an open site needs no
+// identity, so reaching Spot is the only limit.
+func (s *Server) openAudience() string {
+	if s.login == nil {
+		switch s.deployAuthMethod {
+		case "netbird":
+			return "Everyone on the mesh"
+		case "tailscale":
+			return "Everyone on the tailnet"
+		}
+	}
+	return "Anyone who can reach this Spot"
+}
+
+func accessBarFor(policy *AccessPolicy, openAudience string) accessBarLevel {
 	if !policy.RestrictsAccess() {
-		return accessBarLevel{"OPEN", "#15803d", "Everyone on the mesh can open this page"}
+		return accessBarLevel{"OPEN", "#15803d", openAudience + " can open this page"}
 	}
 	switch {
 	case len(policy.Allow) == 0:
@@ -128,7 +144,7 @@ func (s *Server) serveHTMLWithAccessBar(w http.ResponseWriter, r *http.Request, 
 		}
 		return
 	}
-	page = injectAccessBar(page, accessBarMarkup(accessBarFor(policy)))
+	page = injectAccessBar(page, accessBarMarkup(accessBarFor(policy, s.openAudience())))
 	sum := sha256.Sum256(page)
 	w.Header().Set("ETag", `"`+etagPrefix+hex.EncodeToString(sum[:])+`"`)
 	w.Header().Del("Last-Modified")

@@ -23,7 +23,7 @@ func TestAccessBarFollowsTheSitePolicy(t *testing.T) {
 	cases := []struct {
 		name, access, want string
 	}{
-		{"open", "", `OPEN</b><span title="Everyone on the mesh can open this page">Everyone on the mesh can open this page`},
+		{"open", "", `OPEN</b><span title="Anyone who can reach this Spot can open this page">Anyone who can reach this Spot can open this page`},
 		{"private", `{"allow":["` + typesOwnerEmail + `"]}`, `PRIVATE</b><span title="Only owner@example.com can open this page">Only owner@example.com can open this page`},
 		{"shared", `{"allow":["` + typesOwnerEmail + `","team-ops"]}`, `SHARED</b><span title="owner@example.com, team-ops can open this page">owner@example.com, team-ops can open this page`},
 		{"one group", `{"allow":["team-ops"]}`, `SHARED</b><span title="team-ops can open this page">team-ops can open this page`},
@@ -89,7 +89,7 @@ func TestAccessBarOnTypedViewer(t *testing.T) {
 }
 
 func TestAccessBarEscapesPolicyEntries(t *testing.T) {
-	markup := accessBarMarkup(accessBarFor(&AccessPolicy{Allow: []string{`a"><script>x()</script>@example.com`}}))
+	markup := accessBarMarkup(accessBarFor(&AccessPolicy{Allow: []string{`a"><script>x()</script>@example.com`}}, ""))
 	if strings.Contains(markup, "<script>") {
 		t.Fatalf("policy entry not escaped: %q", markup)
 	}
@@ -107,6 +107,30 @@ func TestInjectAccessBarPlacement(t *testing.T) {
 	for in, want := range cases {
 		if got := string(injectAccessBar([]byte(in), "|")); got != want {
 			t.Errorf("inject(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+func TestAccessBarOpenAudienceFollowsDeployment(t *testing.T) {
+	cases := []struct {
+		method string
+		login  bool
+		want   string
+	}{
+		{"netbird", false, "Everyone on the mesh"},
+		{"tailscale", false, "Everyone on the tailnet"},
+		{"netbird", true, "Anyone who can reach this Spot"},
+		{"single_user", false, "Anyone who can reach this Spot"},
+		{"dev", false, "Anyone who can reach this Spot"},
+		{"", false, "Anyone who can reach this Spot"},
+	}
+	for _, tc := range cases {
+		s := &Server{deployAuthMethod: tc.method}
+		if tc.login {
+			s.login = &DelegatedLogin{}
+		}
+		if got := s.openAudience(); got != tc.want {
+			t.Errorf("method %q login %v = %q, want %q", tc.method, tc.login, got, tc.want)
 		}
 	}
 }
