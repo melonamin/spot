@@ -124,9 +124,9 @@ Only files in the pinned version's inventory are served under `/_type/`.
 - Type files (`/`, `/index.html`, `/_type/…`):
   - `ETag: "<version>-<64 hex>"` (strong), compared against
     `If-None-Match` before storage is opened. A match returns `304`. The hash
-    is the file's sha256; for an HTML file, which carries the access bar, it
-    is a sha256 over the file's sha256 and the bar, so an access change
-    changes it. This format is part of the contract and stable: `<version>` is
+    is the file's sha256; for an HTML file, it is a sha256 over the file's
+    sha256 and the bar (empty for other visitors). Changes to the owner's bar
+    change its validator. This format is part of the contract and stable: `<version>` is
     the pinned registry version and the hash is 64 lowercase hex digits, so
     the version is everything between the opening quote and the last `-`
     (a prerelease version contains `-` itself). A proxy may weaken the tag to

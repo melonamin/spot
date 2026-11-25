@@ -195,7 +195,7 @@ func TestStaticServerServesApexAndSiteFiles(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "https://demo.spot.localhost/", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !bytes.HasSuffix(rec.Body.Bytes(), []byte("</style><h1>demo</h1>")) {
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>demo</h1>" {
 		t.Fatalf("site = %d body %q", rec.Code, rec.Body.String())
 	}
 
@@ -209,7 +209,7 @@ func TestStaticServerServesApexAndSiteFiles(t *testing.T) {
 	req = httptest.NewRequest(http.MethodGet, "https://demo.spot.localhost/docs/", nil)
 	rec = httptest.NewRecorder()
 	handler.ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK || !bytes.HasSuffix(rec.Body.Bytes(), []byte("</style><h1>docs</h1>")) {
+	if rec.Code != http.StatusOK || rec.Body.String() != "<h1>docs</h1>" {
 		t.Fatalf("site directory index = %d body %q", rec.Code, rec.Body.String())
 	}
 

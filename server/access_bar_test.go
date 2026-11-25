@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -146,7 +147,7 @@ func TestAccessBarUsesThePolicyThatAuthorizedTheRequest(t *testing.T) {
 	env.srv.policies = nil
 	env.srv.sites = &flippingPolicyStore{SiteStorage: env.srv.sites}
 	rec := env.get(barHost, "/")
-	if rec.Code != http.StatusOK || !strings.HasPrefix(barText(t, rec.Body.String()), "OPEN") || rec.Header().Get("Cache-Control") != "no-cache" {
+	if rec.Code != http.StatusOK || !strings.HasPrefix(barText(t, rec.Body.String()), "OPEN") || rec.Header().Get("Cache-Control") != "private, no-cache" {
 		t.Fatalf("GET / = %d %v %q, want the OPEN bar of the policy that admitted it", rec.Code, rec.Header(), rec.Body.String())
 	}
 }
@@ -219,6 +220,11 @@ func TestAccessBarOnTypedSites(t *testing.T) {
 	}
 	if data.Header().Get("ETag") != "" || data.Header().Get("Last-Modified") != "" || data.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("typed HTML data headers = %v", data.Header())
+	}
+	env.as("reader@example.com")
+	data = env.get(deckHost, "/media/intro.html")
+	if data.Code != http.StatusOK || data.Body.String() != "<p>intro</p>" || data.Header().Get("Cache-Control") != "no-store" || data.Header().Get("ETag") != "" {
+		t.Fatalf("reader's typed HTML data = %d %v %q", data.Code, data.Header(), data.Body.String())
 	}
 }
 
@@ -343,5 +349,101 @@ func TestIfNoneMatchMatchesQuotedTags(t *testing.T) {
 		if got := ifNoneMatchMatches(tc.header, `"a"`); got != tc.want {
 			t.Errorf("ifNoneMatchMatches(%q) = %v, want %v", tc.header, got, tc.want)
 		}
+	}
+}
+
+func TestAccessBarPreservesHTMLForAllowedVisitors(t *testing.T) {
+	env := newTypesEnv(t)
+	const visitor = "reader@example.com"
+	head := `<!doctype html><html><head><title>İstanbul ` + strings.Repeat("Ⱥ", 100) + `</title>` +
+		`<!-- <body> --><script>const template = "<body>";</script></head>`
+	bodyTag := `<body data-comparison="a > b">`
+	content := `<h1>report</h1></body></html>`
+	env.mustDeploy("bar", map[string]string{
+		"index.html":   head + bodyTag + content,
+		accessFileName: `{"allow":["` + typesOwnerEmail + `","` + visitor + `"]}`,
+	}, nil)
+	for _, email := range []string{typesOwnerEmail, visitor} {
+		env.as(email)
+		rec := env.get(barHost, "/")
+		if rec.Code != http.StatusOK {
+			t.Fatalf("%s: GET / = %d %s", email, rec.Code, rec.Body.String())
+		}
+		body := rec.Body.String()
+		if email == visitor {
+			if body != head+bodyTag+content {
+				t.Fatalf("reader received modified HTML: %q", body)
+			}
+			continue
+		}
+		if !strings.HasPrefix(body, head+bodyTag+`<spot-access-bar `) || !strings.HasSuffix(body, content) {
+			t.Fatalf("%s: HTML was corrupted: %q", email, body)
+		}
+		if !strings.HasPrefix(barText(t, body), "SHARED") {
+			t.Fatalf("%s: missing shared access bar", email)
+		}
+	}
+	env.as("stranger@example.com")
+	if rec := env.get(barHost, "/"); rec.Code != http.StatusForbidden || strings.Contains(rec.Body.String(), "<spot-access-bar") {
+		t.Fatalf("unlisted visitor = %d %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestAccessBarOnlyForOwnerAndRevalidatesIdentity(t *testing.T) {
+	for _, typed := range []bool{false, true} {
+		t.Run(map[bool]string{false: "plain", true: "typed"}[typed], func(t *testing.T) {
+			env := newTypesEnv(t)
+			fields := map[string]string(nil)
+			files := map[string]string{
+				"index.html":   "<h1>report</h1>",
+				accessFileName: `{"maintainers":["maintainer@example.com"]}`,
+			}
+			if typed {
+				env.mustUpload(cardVersion(t, "1.0.0"))
+				fields = map[string]string{"type": "card@1.0.0"}
+				delete(files, "index.html")
+				files["card.json"] = "{}"
+			}
+			env.mustDeploy("bar", files, fields)
+			owner := env.get(barHost, "/")
+			if owner.Code != http.StatusOK || !strings.Contains(owner.Body.String(), "<spot-access-bar") {
+				t.Fatalf("owner = %d %s", owner.Code, owner.Body.String())
+			}
+			ownerTag := owner.Header().Get("ETag")
+			if rec := env.get(barHost, "/", "If-None-Match", ownerTag); rec.Code != http.StatusNotModified || rec.Header().Get("Cache-Control") != "private, no-cache" {
+				t.Fatalf("unchanged owner = %d %v", rec.Code, rec.Header())
+			}
+			for _, email := range []string{"reader@example.com", "maintainer@example.com", typesAdminEmail, ""} {
+				if email == "" {
+					env.srv.resolver = nil
+				} else {
+					env.as(email)
+				}
+				rec := env.get(barHost, "/", "If-None-Match", ownerTag)
+				if rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "spot-access-bar") {
+					t.Fatalf("%q reused owner response: %d %s", email, rec.Code, rec.Body.String())
+				}
+				if rec.Header().Get("Cache-Control") != "private, no-cache" {
+					t.Fatalf("%q: Cache-Control = %q", email, rec.Header().Get("Cache-Control"))
+				}
+				readerTag := rec.Header().Get("ETag")
+				if cached := env.get(barHost, "/", "If-None-Match", readerTag); cached.Code != http.StatusNotModified {
+					t.Fatalf("%q: unchanged reader = %d", email, cached.Code)
+				}
+				env.as(typesOwnerEmail)
+				if rec := env.get(barHost, "/", "If-None-Match", readerTag); rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "<spot-access-bar") {
+					t.Fatalf("owner reused reader response: %d %s", rec.Code, rec.Body.String())
+				}
+			}
+			env.srv.resolver = errResolver{err: errors.New("identity unavailable")}
+			if rec := env.get(barHost, "/", "If-None-Match", ownerTag); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "<spot-access-bar") {
+				t.Fatalf("identity outage = %d %s", rec.Code, rec.Body.String())
+			}
+			env.as(typesOwnerEmail)
+			env.srv.siteManager = nil
+			if rec := env.get(barHost, "/"); rec.Code != http.StatusOK || strings.Contains(rec.Body.String(), "<spot-access-bar") {
+				t.Fatalf("no owner registry = %d %s", rec.Code, rec.Body.String())
+			}
+		})
 	}
 }

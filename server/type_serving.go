@@ -47,12 +47,12 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site stri
 		return
 	}
 	etag := `"` + v.Version + "-" + file.SHA256 + `"`
-	// An HTML viewer page carries the access bar, so its hash covers the
-	// inventory file and the bar, still known before storage is opened.
+	// HTML viewer pages may carry the owner's access bar, so their hash covers
+	// the inventory file and any bar, still known before storage is opened.
 	ctype := contentTypeForName(filePath)
 	var markup string
 	if isHTMLType(ctype) {
-		markup, err = s.accessBarMarkupFor(r.Context(), site, policy)
+		markup, err = s.accessBarMarkupFor(r, site, policy)
 		if err != nil {
 			log.Printf("static: type %s: access bar: %v", ref, err)
 			httpError(w, http.StatusServiceUnavailable, "could not describe the site's access")

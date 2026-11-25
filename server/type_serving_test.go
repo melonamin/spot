@@ -139,7 +139,7 @@ func TestUntypedSiteServingIsUnchanged(t *testing.T) {
 	env.mustDeploy("plain", map[string]string{"index.html": "<h1>plain</h1>", "_type/x.js": "x"}, nil)
 	rec := env.get("plain.spot.localhost", "/")
 	// An HTML page is validated by the ETag of its served bytes, which carry the access bar.
-	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" || rec.Header().Get("ETag") == "" {
+	if rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, no-cache" || rec.Header().Get("ETag") == "" {
 		t.Fatalf("untyped index = %d %v", rec.Code, rec.Header())
 	}
 	// _type/ is ordinary content on an untyped site.

@@ -169,7 +169,12 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		return
 	}
 	if isHTMLType(ctype) {
-		markup, err := s.accessBarMarkupFor(r.Context(), site, policy)
+		// Mesh identity may depend on the client IP; Vary on cookies or auth
+		// headers alone cannot separate the owner's response in shared caches.
+		if w.Header().Get("Cache-Control") != "no-store" {
+			w.Header().Set("Cache-Control", "private, no-cache")
+		}
+		markup, err := s.accessBarMarkupFor(r, site, policy)
 		if err != nil {
 			log.Printf("static %s: access bar: %v", site, err)
 			httpError(w, http.StatusServiceUnavailable, "could not describe the site's access")

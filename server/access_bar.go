@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"bytes"
-	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
@@ -20,7 +19,7 @@ import (
 	xhtml "golang.org/x/net/html"
 )
 
-// Every HTML page of a site shows a bar at the top that says who can open it,
+// The site's owner sees a bar at the top of HTML pages saying who can open them,
 // rendered per request from the policy that authorized the request, so it can
 // never disagree with the policy. It names no one: the allow list is visible
 // only to the site's managers. Pages published to Cloudflare are read from
@@ -118,7 +117,11 @@ func accessBarLevelFor(policy *AccessPolicy, openAudience, target string, fixed 
 // accessBarMarkupFor renders the bar for the policy that authorized the
 // request. A site with a Cloudflare publication row has a separately
 // configured internet copy, so the bar scopes its claim to this Spot copy.
-func (s *Server) accessBarMarkupFor(ctx context.Context, site string, policy *AccessPolicy) (string, error) {
+func (s *Server) accessBarMarkupFor(r *http.Request, site string, policy *AccessPolicy) (string, error) {
+	if !s.showAccessBar(r, site) {
+		return "", nil
+	}
+	ctx := r.Context()
 	target := "this page"
 	if s.cloudflarePubs != nil {
 		published, err := s.cloudflarePubs.Has(ctx, site)
@@ -134,6 +137,29 @@ func (s *Server) accessBarMarkupFor(ctx context.Context, site string, policy *Ac
 		fixed = &id
 	}
 	return accessBarMarkup(accessBarLevelFor(policy, s.openAudience(), target, fixed)), nil
+}
+
+// showAccessBar recognizes the immutable owner, rather than broader management
+// access. An unavailable identity or registry leaves the page unadorned.
+func (s *Server) showAccessBar(r *http.Request, site string) bool {
+	manager, ok := s.siteManager.(siteAccessManager)
+	if !ok {
+		return false
+	}
+	actor, found, err := s.resolvePeer(r)
+	if err != nil {
+		log.Printf("access bar %s: resolve owner identity: %v", site, err)
+		return false
+	}
+	if !found {
+		return false
+	}
+	decision, err := manager.ManagementDecision(r.Context(), site, actor)
+	if err != nil {
+		log.Printf("access bar %s: verify owner: %v", site, err)
+		return false
+	}
+	return decision.Allowed && decision.Role == ManagementRoleOwner
 }
 
 // accessBarMarkup puts the bar's own styles in a declarative shadow root, so

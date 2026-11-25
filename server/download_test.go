@@ -219,8 +219,8 @@ func TestRestrictedSiteContentIsNeverStoredByCaches(t *testing.T) {
 				target, rec.Code, rec.Header().Get("Cache-Control"))
 		}
 	}
-	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-cache" {
-		t.Errorf("open site = %d with Cache-Control %q, want 200 and no-cache", rec.Code, rec.Header().Get("Cache-Control"))
+	if rec := get("open", "/"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "private, no-cache" {
+		t.Errorf("open site = %d with Cache-Control %q, want 200 and private, no-cache", rec.Code, rec.Header().Get("Cache-Control"))
 	}
 	if rec := get("open", "/api/me"); rec.Code != http.StatusOK || rec.Header().Get("Cache-Control") != "no-store" {
 		t.Errorf("open site /api/me = %d with Cache-Control %q, want 200 and no-store", rec.Code, rec.Header().Get("Cache-Control"))

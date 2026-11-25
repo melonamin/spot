@@ -655,7 +655,7 @@ maintainer can deploy, delete, and manage Cloudflare for an active site but
 cannot visit a restricted site unless `allow` also matches them. The policy
 itself is never served to visitors and is left out of source downloads.
 
-Every HTML page of a site shows a bar across the top that says who can open it,
+Site owners see a bar across the top of HTML pages that says who can open the site,
 rendered per request from the policy that admitted the request. It names no
 one, since only managers may see the allow list:
 
@@ -665,6 +665,9 @@ one, since only managers may see the allow list:
   dev mode, where every visitor is the same identity;
 - red PRIVATE: one email address, "Only you can open this page";
 - purple SHARED: counts of the allowed email addresses and groups.
+
+Other visitors, including maintainers and platform admins who do not own the
+site, see no bar. If the owner's identity cannot be verified, the bar is omitted.
 
 A site with a Cloudflare publication says "this Spot copy" instead of "this
 page", because the internet copy has its own access. An access change shows on
