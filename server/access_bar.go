@@ -1,26 +1,36 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
+	"fmt"
 	"html"
 	"io"
 	"log"
+	"mime"
 	"net/http"
+	"path"
 	"strings"
 	"time"
+
+	xhtml "golang.org/x/net/html"
 )
 
-// Every HTML page of a site shows a sticky bar that says who can open it,
-// rendered from the site's current access policy at request time, so it can
-// never disagree with the policy. Pages published to Cloudflare are read
-// from storage, not served here, so internet copies carry no bar.
+// Every HTML page of a site shows a bar at the top that says who can open it,
+// rendered per request from the policy that authorized the request, so it can
+// never disagree with the policy. It names no one: the allow list is visible
+// only to the site's managers. Pages published to Cloudflare are read from
+// storage, not served here, so internet copies carry no bar.
 
 const (
 	accessBarHeight = "28px"
-	// Larger pages are served as deployed rather than buffered in memory.
-	maxAccessBarPageSize = 32 << 20
+	// Part of every bar validator: a change to the markup or the insertion
+	// rule must not be answered with a 304 for a page rendered the old way.
+	accessBarTransformVersion = "2"
 )
 
 type accessBarLevel struct {
@@ -28,11 +38,11 @@ type accessBarLevel struct {
 }
 
 // openAudience names who can open an unrestricted site. Spot knows it is on a
-// mesh only when it resolves visitors through the mesh API and has no login
-// app letting visitors in from outside it; otherwise an open site needs no
-// identity, so reaching Spot is the only limit.
+// mesh only when it resolves visitors through the mesh API alone; a forward
+// auth proxy or login app may admit visitors from elsewhere, and an open site
+// needs no identity, so reaching Spot is then the only limit.
 func (s *Server) openAudience() string {
-	if s.login == nil {
+	if s.login == nil && s.forwardAuth == nil {
 		switch s.deployAuthMethod {
 		case "netbird":
 			return "Everyone on the mesh"
@@ -43,24 +53,93 @@ func (s *Server) openAudience() string {
 	return "Anyone who can reach this Spot"
 }
 
-func accessBarFor(policy *AccessPolicy, openAudience string) accessBarLevel {
-	if !policy.RestrictsAccess() {
-		return accessBarLevel{"OPEN", "#15803d", openAudience + " can open this page"}
+// fixedIdentity is the identity every visitor gets in single-user and dev
+// mode, where a restriction that admits it admits anyone who can reach Spot.
+func (s *Server) fixedIdentity() (Identity, bool) {
+	if s.deployAuthMethod != "single_user" && s.deployAuthMethod != "dev" {
+		return Identity{}, false
 	}
-	switch {
-	case len(policy.Allow) == 0:
-		return accessBarLevel{"LOCKED", "#b91c1c", "Nobody can open this page"}
-	case len(policy.Allow) == 1 && strings.Contains(policy.Allow[0], "@"):
-		return accessBarLevel{"PRIVATE", "#b91c1c", "Only " + policy.Allow[0] + " can open this page"}
-	default:
-		return accessBarLevel{"SHARED", "#6d28d9", strings.Join(policy.Allow, ", ") + " can open this page"}
+	static, ok := s.resolver.(*StaticResolver)
+	if !ok {
+		return Identity{}, false
 	}
+	return static.identity, true
 }
 
-// accessBarMarkup isolates the bar in a declarative shadow root, so site CSS
-// cannot restyle or hide it. The bar is fixed across the full viewport width,
-// whatever the body's own margins, and the page moves down by its height,
-// published as --spot-access-bar-height for pages with their own sticky headers.
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return "1 " + one
+	}
+	return fmt.Sprintf("%d %s", n, many)
+}
+
+// accessBarLevelFor counts distinct allow entries the way authorization
+// matches them: trimmed, case-insensitive, emails apart from groups.
+func accessBarLevelFor(policy *AccessPolicy, openAudience, target string, fixed *Identity) accessBarLevel {
+	open := accessBarLevel{"OPEN", "#15803d", openAudience + " can open " + target}
+	if !policy.RestrictsAccess() {
+		return open
+	}
+	if fixed != nil && policy.Allows(*fixed) {
+		open.text = "Anyone who can reach this Spot can open " + target
+		return open
+	}
+	emails, groups := map[string]bool{}, map[string]bool{}
+	for _, entry := range policy.Allow {
+		entry = strings.ToLower(strings.TrimSpace(entry))
+		switch {
+		case entry == "":
+		case strings.Contains(entry, "@"):
+			emails[entry] = true
+		default:
+			groups[entry] = true
+		}
+	}
+	switch {
+	case len(emails) == 0 && len(groups) == 0:
+		return accessBarLevel{"LOCKED", "#b91c1c", "Nobody can open " + target}
+	case len(emails) == 1 && len(groups) == 0:
+		return accessBarLevel{"PRIVATE", "#b91c1c", "Only you can open " + target}
+	}
+	var parts []string
+	if len(emails) > 0 {
+		parts = append(parts, plural(len(emails), "email address", "email addresses"))
+	}
+	if len(groups) > 0 {
+		parts = append(parts, plural(len(groups), "group", "groups"))
+	}
+	text := "Limited to " + strings.Join(parts, " and ")
+	if target != "this page" {
+		text += " on " + target
+	}
+	return accessBarLevel{"SHARED", "#6d28d9", text}
+}
+
+// accessBarMarkupFor renders the bar for the policy that authorized the
+// request. A site with a Cloudflare publication row has a separately
+// configured internet copy, so the bar scopes its claim to this Spot copy.
+func (s *Server) accessBarMarkupFor(ctx context.Context, site string, policy *AccessPolicy) (string, error) {
+	target := "this page"
+	if s.cloudflarePubs != nil {
+		published, err := s.cloudflarePubs.Has(ctx, site)
+		if err != nil {
+			return "", fmt.Errorf("read cloudflare publication: %w", err)
+		}
+		if published {
+			target = "this Spot copy"
+		}
+	}
+	var fixed *Identity
+	if id, ok := s.fixedIdentity(); ok {
+		fixed = &id
+	}
+	return accessBarMarkup(accessBarLevelFor(policy, s.openAudience(), target, fixed)), nil
+}
+
+// accessBarMarkup puts the bar's own styles in a declarative shadow root, so
+// site selectors do not reach them. The bar is fixed across the viewport and
+// the page moves down by --spot-access-bar-height, which pages with their own
+// sticky or fixed headers can offset by.
 func accessBarMarkup(level accessBarLevel) string {
 	text := html.EscapeString(level.text)
 	return `<spot-access-bar role="note" aria-label="Who can open this page" style="all:initial;display:block;position:fixed;top:0;left:0;right:0;z-index:2147483647">` +
@@ -69,84 +148,240 @@ func accessBarMarkup(level accessBarLevel) string {
 		`background:` + level.color + `;color:#fff;font:600 13px/1 system-ui,-apple-system,"Segoe UI",sans-serif}` +
 		`b{flex:none;font-weight:800;letter-spacing:.12em}` +
 		`span{min-width:0;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}` +
+		`@media (max-width:480px){div{gap:8px;padding:0 10px;font-size:12px}}` +
 		`</style><div><b>` + level.label + `</b><span title="` + text + `">` + text + `</span></div></template></spot-access-bar>` +
 		`<style>:root{--spot-access-bar-height:` + accessBarHeight + `}` +
 		`html{padding-top:var(--spot-access-bar-height)!important;scroll-padding-top:var(--spot-access-bar-height)}</style>`
 }
 
-// injectAccessBar puts the bar first in <body>, or where the parser would
-// open the body when the page has no <body> tag.
-func injectAccessBar(page []byte, markup string) []byte {
-	lower := bytes.ToLower(page)
-	at := -1
-	if i := openTagEnd(lower, "<body"); i >= 0 {
-		at = i
-	} else if i := bytes.Index(lower, []byte("</head>")); i >= 0 {
-		at = i + len("</head>")
-	} else if i := openTagEnd(lower, "<html"); i >= 0 {
-		at = i
-	} else if i := openTagEnd(lower, "<!doctype"); i >= 0 {
-		at = i
-	} else {
-		at = 0
-	}
-	out := make([]byte, 0, len(page)+len(markup))
-	out = append(out, page[:at]...)
-	out = append(out, markup...)
-	return append(out, page[at:]...)
+// accessBarETag derives a strong validator from the stored file's validator
+// and the exact bar, without reading the page.
+func accessBarETag(prefix, sourceTag, markup string) string {
+	sum := sha256.Sum256([]byte(accessBarTransformVersion + "\x00" + sourceTag + "\x00" + markup))
+	return `"` + prefix + hex.EncodeToString(sum[:]) + `"`
 }
 
-func openTagEnd(lower []byte, tag string) int {
-	for from := 0; ; {
-		i := bytes.Index(lower[from:], []byte(tag))
-		if i < 0 {
-			return -1
-		}
-		i += from
-		next := i + len(tag)
-		if next < len(lower) && strings.IndexByte(" \t\r\n/>", lower[next]) >= 0 {
-			if end := bytes.IndexByte(lower[next:], '>'); end >= 0 {
-				return next + end + 1
+var utf8BOM = []byte{0xEF, 0xBB, 0xBF}
+
+// Elements the HTML parser keeps in <head>; anything else, or non-whitespace
+// text outside them, opens the body.
+var accessBarHeadTags = map[string]bool{
+	"html": true, "head": true, "base": true, "basefont": true, "bgsound": true, "link": true,
+	"meta": true, "title": true, "noscript": true, "noframes": true, "style": true, "script": true,
+	"template": true,
+}
+
+// accessBarInsertOffset returns the byte offset where the body's content
+// starts: right after <body ...>, or where the parser would open the body
+// implicitly. Offsets come from the tokenizer's raw token lengths, so they
+// index the original bytes. A leading BOM stays first.
+func accessBarInsertOffset(r io.Reader) (int64, error) {
+	br := bufio.NewReader(r)
+	var offset int64
+	if head, err := br.Peek(len(utf8BOM)); err == nil && bytes.Equal(head, utf8BOM) {
+		_, _ = br.Discard(len(utf8BOM))
+		offset = int64(len(utf8BOM))
+	}
+	z := xhtml.NewTokenizer(br)
+	templateDepth := 0
+	rawText := false
+	for {
+		tt := z.Next()
+		if tt == xhtml.ErrorToken {
+			if errors.Is(z.Err(), io.EOF) {
+				return offset, nil
 			}
-			return -1
+			return 0, z.Err()
 		}
-		from = next
+		size := int64(len(z.Raw()))
+		// The tokenizer hands the content of script, style, title and the
+		// like to us as the text token right after their start tag.
+		inRawText := rawText
+		rawText = false
+		var name string
+		if tt == xhtml.StartTagToken || tt == xhtml.SelfClosingTagToken || tt == xhtml.EndTagToken {
+			raw, _ := z.TagName()
+			name = string(raw)
+		}
+		switch {
+		case name == "template" && tt == xhtml.StartTagToken:
+			templateDepth++
+		case name == "template" && tt == xhtml.EndTagToken && templateDepth > 0:
+			templateDepth--
+		case templateDepth > 0:
+			// Template contents never open the body.
+		case tt == xhtml.StartTagToken || tt == xhtml.SelfClosingTagToken:
+			if name == "body" {
+				return offset + size, nil
+			}
+			if !accessBarHeadTags[name] {
+				return offset, nil
+			}
+			rawText = tt == xhtml.StartTagToken && accessBarRawTextTags[name]
+		case tt == xhtml.EndTagToken:
+			if !accessBarHeadTags[name] {
+				return offset, nil
+			}
+		case tt == xhtml.TextToken:
+			// Classify the decoded text ("&#32;" is whitespace); offsets
+			// still use the raw length taken above.
+			if !inRawText && strings.Trim(string(z.Text()), " \t\n\f\r") != "" {
+				return offset, nil
+			}
+		}
+		offset += size
 	}
 }
 
-func isHTMLPage(name string) bool {
-	return strings.HasPrefix(contentTypeForName(name), "text/html")
+// Head elements whose content the tokenizer reads as raw text.
+var accessBarRawTextTags = map[string]bool{"title": true, "style": true, "script": true, "noscript": true, "noframes": true}
+
+// splicedPage serves source[:at] + insert + source[at:] as one seekable body,
+// so ServeContent keeps HEAD, Range and preconditions without buffering.
+type splicedPage struct {
+	src      io.ReadSeeker
+	srcPos   int64
+	at, size int64
+	insert   []byte
+	pos      int64
 }
 
-// serveHTMLWithAccessBar serves an HTML page of the site with the bar for its
-// current policy. The ETag covers the served bytes, so an access change is
-// never answered with a 304 for a page that shows the old level. A typed
-// viewer keeps its "<version>-<64 hex>" ETag shape through etagPrefix.
-func (s *Server) serveHTMLWithAccessBar(w http.ResponseWriter, r *http.Request, site, name, etagPrefix string, body io.Reader) {
-	policy, err := s.policyForSite(r.Context(), site)
-	if err != nil {
-		// authorizeSiteAccess has already refused unreadable policies.
-		log.Printf("access bar %s: %v", site, err)
-		httpError(w, http.StatusServiceUnavailable, "could not read the site's access policy")
-		return
+func (p *splicedPage) total() int64 { return p.size + int64(len(p.insert)) }
+
+func (p *splicedPage) Read(b []byte) (int, error) {
+	if p.pos >= p.total() {
+		return 0, io.EOF
 	}
-	page, err := io.ReadAll(io.LimitReader(body, maxAccessBarPageSize+1))
-	if err != nil {
-		log.Printf("access bar %s/%s: %v", site, name, err)
+	insertEnd := p.at + int64(len(p.insert))
+	if p.pos >= p.at && p.pos < insertEnd {
+		n := copy(b, p.insert[p.pos-p.at:])
+		p.pos += int64(n)
+		return n, nil
+	}
+	srcOff, limit := p.pos, p.at-p.pos
+	if p.pos >= insertEnd {
+		srcOff, limit = p.pos-int64(len(p.insert)), p.total()-p.pos
+	}
+	if int64(len(b)) > limit {
+		b = b[:limit]
+	}
+	if p.srcPos != srcOff {
+		if _, err := p.src.Seek(srcOff, io.SeekStart); err != nil {
+			return 0, err
+		}
+		p.srcPos = srcOff
+	}
+	n, err := p.src.Read(b)
+	p.srcPos += int64(n)
+	p.pos += int64(n)
+	if errors.Is(err, io.EOF) && n > 0 {
+		err = nil
+	}
+	return n, err
+}
+
+func (p *splicedPage) Seek(offset int64, whence int) (int64, error) {
+	switch whence {
+	case io.SeekStart:
+	case io.SeekCurrent:
+		offset += p.pos
+	case io.SeekEnd:
+		offset += p.total()
+	default:
+		return 0, errors.New("splicedPage: invalid whence")
+	}
+	if offset < 0 {
+		return 0, errors.New("splicedPage: negative position")
+	}
+	p.pos = offset
+	return offset, nil
+}
+
+// effectiveContentType is the type ServeContent would send: by extension,
+// else sniffed from the first 512 bytes. The returned reader yields the whole
+// file: a seekable source is rewound, any other gets the sniffed bytes back.
+func effectiveContentType(name string, src io.Reader) (string, io.Reader, error) {
+	if ctype := mime.TypeByExtension(path.Ext(name)); ctype != "" {
+		return ctype, src, nil
+	}
+	head := make([]byte, 512)
+	n, err := io.ReadFull(src, head)
+	if err != nil && !errors.Is(err, io.EOF) && !errors.Is(err, io.ErrUnexpectedEOF) {
+		return "", nil, err
+	}
+	ctype := http.DetectContentType(head[:n])
+	if seeker, ok := src.(io.ReadSeeker); ok {
+		if _, err := seeker.Seek(0, io.SeekStart); err != nil {
+			return "", nil, err
+		}
+		return ctype, src, nil
+	}
+	return ctype, io.MultiReader(bytes.NewReader(head[:n]), src), nil
+}
+
+// notModifiedShortcut answers 304 before the body is read. Anything else,
+// If-Match included, is left to ServeContent's full precondition order.
+func notModifiedShortcut(r *http.Request, etag string) bool {
+	return (r.Method == http.MethodGet || r.Method == http.MethodHead) &&
+		r.Header.Get("If-Match") == "" && ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag)
+}
+
+func isHTMLType(ctype string) bool {
+	mediaType, _, _ := mime.ParseMediaType(ctype)
+	return mediaType == "text/html"
+}
+
+// writeHTMLWithAccessBar serves an HTML page with markup at the start of its
+// body. The caller has set the validator and cache headers. Both shipped
+// stores are seekable; another source is read into memory. A UTF-16 page,
+// which the UTF-8 markup would corrupt, is served as stored.
+func writeHTMLWithAccessBar(w http.ResponseWriter, r *http.Request, name, ctype, markup string, src io.Reader) {
+	fail := func(err error) {
+		log.Printf("access bar %s: %v", name, err)
 		httpError(w, http.StatusInternalServerError, "could not read site file")
-		return
 	}
-	w.Header().Set("Content-Type", contentTypeForName(name))
-	if len(page) > maxAccessBarPageSize {
-		w.WriteHeader(http.StatusOK)
-		if r.Method != http.MethodHead {
-			_, _ = io.Copy(w, io.MultiReader(bytes.NewReader(page), body))
+	seeker, ok := src.(io.ReadSeeker)
+	if !ok {
+		page, err := io.ReadAll(src)
+		if err != nil {
+			fail(err)
+			return
 		}
+		seeker = bytes.NewReader(page)
+	}
+	size, err := seeker.Seek(0, io.SeekEnd)
+	var at int64
+	if err == nil {
+		_, err = seeker.Seek(0, io.SeekStart)
+	}
+	var bom [2]byte
+	if err == nil {
+		_, err = io.ReadFull(seeker, bom[:])
+		if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+			err = nil
+		}
+	}
+	utf16 := bom == [2]byte{0xFE, 0xFF} || bom == [2]byte{0xFF, 0xFE}
+	if err == nil && !utf16 {
+		if _, err = seeker.Seek(0, io.SeekStart); err == nil {
+			// Memory grows with the longest token before <body>, bounded by
+			// the deploy size limit.
+			at, err = accessBarInsertOffset(seeker)
+		}
+	}
+	if err == nil {
+		_, err = seeker.Seek(0, io.SeekStart)
+	}
+	if err != nil {
+		fail(err)
 		return
 	}
-	page = injectAccessBar(page, accessBarMarkup(accessBarFor(policy, s.openAudience())))
-	sum := sha256.Sum256(page)
-	w.Header().Set("ETag", `"`+etagPrefix+hex.EncodeToString(sum[:])+`"`)
+	w.Header().Set("Content-Type", ctype)
 	w.Header().Del("Last-Modified")
-	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(page))
+	if utf16 {
+		http.ServeContent(w, r, name, time.Time{}, seeker)
+		return
+	}
+	page := &splicedPage{src: seeker, srcPos: -1, at: at, size: size, insert: []byte(markup)}
+	http.ServeContent(w, r, name, time.Time{}, page)
 }

@@ -466,8 +466,9 @@ deployment's server-side credentials. Add `"download":false` to disable source
 ZIP downloads while keeping normal page access unchanged.
 
 Spot puts a bar at the top of every HTML page that says who can open the site
-(OPEN, PRIVATE or SHARED), from the current policy. Do not build your own. Give
-a sticky or fixed header of your own `top: var(--spot-access-bar-height, 0px)`.
+(OPEN, PRIVATE or SHARED), from the current policy. It names no one. Do not build
+your own. Give a sticky or fixed header of your own
+`top: var(--spot-access-bar-height, 0px)`.
 
 A redeploy without `_access.json` keeps the site's stored policy. To change
 access without redeploying, use `spot access`:

@@ -122,10 +122,12 @@ Only files in the pinned version's inventory are served under `/_type/`.
 - Authorization and lifecycle run before any conditional evaluation: a viewer
   whose access was revoked never gets a `304`. `HEAD` follows `GET`.
 - Type files (`/`, `/index.html`, `/_type/…`):
-  - `ETag: "<version>-<file sha256 hex>"` (strong), compared against
-    `If-None-Match` before storage is opened. A match returns `304`. This
-    format is part of the contract and stable: `<version>` is the pinned
-    registry version and the hash is the file's 64 lowercase hex digits, so
+  - `ETag: "<version>-<64 hex>"` (strong), compared against
+    `If-None-Match` before storage is opened. A match returns `304`. The hash
+    is the file's sha256; for an HTML file, which carries the access bar, it
+    is a sha256 over the file's sha256 and the bar, so an access change
+    changes it. This format is part of the contract and stable: `<version>` is
+    the pinned registry version and the hash is 64 lowercase hex digits, so
     the version is everything between the opening quote and the last `-`
     (a prerelease version contains `-` itself). A proxy may weaken the tag to
     `W/"…"`; strip that prefix before parsing.

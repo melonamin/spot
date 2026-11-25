@@ -656,13 +656,21 @@ cannot visit a restricted site unless `allow` also matches them. The policy
 itself is never served to visitors and is left out of source downloads.
 
 Every HTML page of a site shows a bar across the top that says who can open it,
-rendered from the current policy on each request: green OPEN, red PRIVATE (one
-person), purple SHARED (the listed people and groups). OPEN says "Everyone on
-the mesh" on NetBird and "Everyone on the tailnet" on Tailscale. With forward
-auth, delegated login, single-user or a dev identity, Spot cannot tell who can
-reach it, so OPEN says "Anyone who can reach this Spot".
-An access change shows on the next page load, with no redeploy. Copies
-published to Cloudflare carry no bar. The page moves down by
+rendered per request from the policy that admitted the request. It names no
+one, since only managers may see the allow list:
+
+- green OPEN: "Everyone on the mesh" (NetBird), "Everyone on the tailnet"
+  (Tailscale), or "Anyone who can reach this Spot" when forward auth or
+  delegated login can admit visitors from elsewhere, and in single-user and
+  dev mode, where every visitor is the same identity;
+- red PRIVATE: one email address, "Only you can open this page";
+- purple SHARED: counts of the allowed email addresses and groups.
+
+A site with a Cloudflare publication says "this Spot copy" instead of "this
+page", because the internet copy has its own access. An access change shows on
+the next page load, with no redeploy. Cloudflare copies carry no bar, and a
+UTF-16 page is served as stored, without one. The page
+moves down by
 `--spot-access-bar-height`; offset a page's own sticky or fixed header by it.
 
 A redeploy that ships no `_access.json` keeps the stored policy, including one

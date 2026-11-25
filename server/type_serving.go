@@ -14,7 +14,7 @@ import (
 // entry at / and /index.html, and inventory files under /_type/. It reports
 // false for every other path, which is the site's own data. The caller has
 // already checked lifecycle and visitor access.
-func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, site string, ref siteTypeRef) bool {
+func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, site string, policy *AccessPolicy, ref siteTypeRef) bool {
 	var filePath string
 	switch p := r.URL.Path; {
 	case p == "/" || p == "/"+typeEntryFile:
@@ -28,11 +28,11 @@ func (s *Server) serveTypedSitePath(w http.ResponseWriter, r *http.Request, site
 	default:
 		return false
 	}
-	s.serveTypeFile(w, r, site, ref, filePath)
+	s.serveTypeFile(w, r, site, policy, ref, filePath)
 	return true
 }
 
-func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site string, ref siteTypeRef, filePath string) {
+func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site string, policy *AccessPolicy, ref siteTypeRef, filePath string) {
 	v, err := s.cachedTypeVersion(r.Context(), ref.Name, ref.Version)
 	if err != nil {
 		log.Printf("static: type %s: %v", ref, err)
@@ -47,6 +47,19 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site stri
 		return
 	}
 	etag := `"` + v.Version + "-" + file.SHA256 + `"`
+	// An HTML viewer page carries the access bar, so its hash covers the
+	// inventory file and the bar, still known before storage is opened.
+	ctype := contentTypeForName(filePath)
+	var markup string
+	if isHTMLType(ctype) {
+		markup, err = s.accessBarMarkupFor(r.Context(), site, policy)
+		if err != nil {
+			log.Printf("static: type %s: access bar: %v", ref, err)
+			httpError(w, http.StatusServiceUnavailable, "could not describe the site's access")
+			return
+		}
+		etag = accessBarETag(v.Version+"-", file.SHA256, markup)
+	}
 	h := w.Header()
 	// Overrides the no-store authorizeSiteAccess sets for restricted sites:
 	// viewer bytes are not secret, and every use revalidates after access
@@ -54,10 +67,7 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site stri
 	h.Set("Cache-Control", "private, no-cache")
 	h.Set("ETag", etag)
 	h.Del("Last-Modified")
-	// An HTML viewer page carries the access bar, so its validator is the
-	// served bytes, not the stored file.
-	htmlPage := isHTMLPage(filePath)
-	if !htmlPage && ifNoneMatchMatches(r.Header.Get("If-None-Match"), etag) {
+	if notModifiedShortcut(r, etag) {
 		w.WriteHeader(http.StatusNotModified)
 		return
 	}
@@ -78,11 +88,11 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site stri
 		return
 	}
 	defer rc.Close()
-	if htmlPage {
-		s.serveHTMLWithAccessBar(w, r, site, filePath, v.Version+"-", rc)
+	if markup != "" {
+		writeHTMLWithAccessBar(w, r, filePath, ctype, markup, rc)
 		return
 	}
-	h.Set("Content-Type", contentTypeForName(filePath))
+	h.Set("Content-Type", ctype)
 	if seeker, ok := rc.(io.ReadSeeker); ok {
 		http.ServeContent(w, r, filePath, time.Time{}, seeker)
 		return
@@ -95,16 +105,27 @@ func (s *Server) serveTypeFile(w http.ResponseWriter, r *http.Request, site stri
 }
 
 // ifNoneMatchMatches applies If-None-Match's weak comparison to one strong
-// entity tag.
+// entity tag. Tags are read as quoted strings, so a comma or "*" inside a
+// quoted tag is not a separator or a wildcard.
 func ifNoneMatchMatches(header, etag string) bool {
-	if header == "" {
-		return false
+	header = strings.TrimSpace(header)
+	if header == "*" {
+		return true
 	}
-	for _, candidate := range strings.Split(header, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" || strings.TrimPrefix(candidate, "W/") == etag {
+	for header != "" {
+		header = strings.TrimLeft(header, " \t,")
+		candidate := strings.TrimPrefix(header, "W/")
+		if !strings.HasPrefix(candidate, `"`) {
+			return false
+		}
+		end := strings.IndexByte(candidate[1:], '"')
+		if end < 0 {
+			return false
+		}
+		if candidate[:end+2] == etag {
 			return true
 		}
+		header = candidate[end+2:]
 	}
 	return false
 }
