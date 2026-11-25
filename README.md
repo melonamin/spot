@@ -655,6 +655,27 @@ maintainer can deploy, delete, and manage Cloudflare for an active site but
 cannot visit a restricted site unless `allow` also matches them. The policy
 itself is never served to visitors and is left out of source downloads.
 
+Site owners see a bar across the top of HTML pages that says who can open the site,
+rendered per request from the policy that admitted the request. It names no
+one, since only managers may see the allow list:
+
+- green OPEN: "Everyone on the mesh" (NetBird), "Everyone on the tailnet"
+  (Tailscale), or "Anyone who can reach this Spot" when forward auth or
+  delegated login can admit visitors from elsewhere, and in single-user and
+  dev mode, where every visitor is the same identity;
+- red PRIVATE: one email address, "Only you can open this page";
+- purple SHARED: counts of the allowed email addresses and groups.
+
+Other visitors, including maintainers and platform admins who do not own the
+site, see no bar. If the owner's identity cannot be verified, the bar is omitted.
+
+A site with a Cloudflare publication says "this Spot copy" instead of "this
+page", because the internet copy has its own access. An access change shows on
+the next page load, with no redeploy. Cloudflare copies carry no bar, and a
+UTF-16 page is served as stored, without one. The page
+moves down by
+`--spot-access-bar-height`; offset a page's own sticky or fixed header by it.
+
 A redeploy that ships no `_access.json` keeps the stored policy, including one
 set through `PUT /api/sites/{name}/access`. To open a site, deploy an
 `_access.json` without `allow`, change it from My spots (Mesh access), with

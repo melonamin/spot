@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- Site owners see a bar across HTML pages, Spot Show reports included, that says who can open the site: everyone on the mesh (or tailnet), only you, or a count of allowed email addresses and groups. It names no one, follows the current access policy without a redeploy, and says "Anyone who can reach this Spot" where Spot cannot tell. Other visitors, Cloudflare copies and UTF-16 pages carry none.
+
 ### Fixed
 
 - Links in Spot Show HTML blocks that open a new tab no longer hang on "Loading...": the tab no longer inherits the block's sandbox, so it can load the linked site and its data.

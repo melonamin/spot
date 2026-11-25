@@ -501,11 +501,18 @@ func (s *Server) callerKey(r *http.Request) (string, error) {
 }
 
 func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, site string) bool {
+	_, ok := s.authorizeSiteAccessPolicy(w, r, site)
+	return ok
+}
+
+// authorizeSiteAccessPolicy also returns the policy it decided on, so a
+// response can describe exactly the access that admitted it.
+func (s *Server) authorizeSiteAccessPolicy(w http.ResponseWriter, r *http.Request, site string) (*AccessPolicy, bool) {
 	if site == "" {
-		return true
+		return nil, true
 	}
 	if !s.authorizeSiteLifecycle(w, r, site) {
-		return false
+		return nil, false
 	}
 	policy, err := s.policyForSite(r.Context(), site)
 	if err != nil {
@@ -513,28 +520,28 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 		s.denySiteAccess(w, r, http.StatusServiceUnavailable,
 			"this site's "+accessFileName+" is unreadable; access denied until it is fixed",
 			statusPage{Title: "This site is unavailable", Message: "Its access settings cannot be read, so nobody can open it until the owner fixes them."})
-		return false
+		return nil, false
 	}
 	if policy == nil || !policy.RestrictsAccess() {
-		return true
+		return policy, true
 	}
 	if s.resolver == nil && s.forwardAuth == nil && s.login == nil {
 		httpError(w, http.StatusServiceUnavailable,
 			"site is restricted but the identity resolver is not configured")
-		return false
+		return nil, false
 	}
 	peer, found, err := s.resolvePeerSession(r)
 	if err != nil {
 		log.Printf("authz: resolve %s: %v", s.clientIP(r), err)
 		httpError(w, http.StatusServiceUnavailable, "could not verify identity with the mesh provider")
-		return false
+		return nil, false
 	}
 	id := peer.id
 	// The login app's identity may carry groups the mesh does not know, so a
 	// refused mesh peer gets the same sign-in as an anonymous visitor.
 	if s.login != nil && (!found || (peer.mesh && !policy.Allows(id))) {
 		s.denyAnonymousVisitor(w, r)
-		return false
+		return nil, false
 	}
 	if !found || !policy.Allows(id) {
 		page := statusPage{Title: "You don't have access to this site", Message: "Its owner has not shared it with you. Ask them to share it, or open it with an account that has access."}
@@ -542,11 +549,11 @@ func (s *Server) authorizeSiteAccess(w http.ResponseWriter, r *http.Request, sit
 			page.Detail = "Signed in as " + id.Email
 		}
 		s.denySiteAccess(w, r, http.StatusForbidden, "this site is restricted by its "+accessFileName, page)
-		return false
+		return nil, false
 	}
 	// A shared cache in front of Spot must not hand this viewer's content to anyone else.
 	w.Header().Set("Cache-Control", "no-store")
-	return true
+	return policy, true
 }
 
 func (s *Server) authorizeSiteLifecycle(w http.ResponseWriter, r *http.Request, site string) bool {

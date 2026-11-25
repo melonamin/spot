@@ -90,7 +90,8 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 			return
 		}
 	}
-	if !s.authorizeSiteAccess(w, r, site) {
+	policy, ok := s.authorizeSiteAccessPolicy(w, r, site)
+	if !ok {
 		return
 	}
 	if r.URL.Path == "/spot.js" || r.URL.Path == "/spot-live.js" || r.URL.Path == "/spot.d.ts" {
@@ -110,7 +111,7 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 			return
 		}
 		if ref.typed() {
-			if s.serveTypedSitePath(w, r, ref) {
+			if s.serveTypedSitePath(w, r, site, policy, ref) {
 				return
 			}
 			// Typed data is small and changes with deploys and access
@@ -153,16 +154,46 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		return
 	}
 	defer rc.Close()
-	if !typedData {
+	if !typedData && w.Header().Get("Cache-Control") == "" {
 		// Browsers otherwise reuse subresources by heuristic freshness, so a
 		// normal reload after a redeploy shows new HTML with old images.
 		// Restricted sites keep the no-store authorizeSiteAccess set.
-		if w.Header().Get("Cache-Control") == "" {
-			w.Header().Set("Cache-Control", "no-cache")
+		w.Header().Set("Cache-Control", "no-cache")
+	}
+	// Decide the type once, the way ServeContent would, so a page that is
+	// served as HTML always carries the access bar.
+	ctype, src, err := effectiveContentType(requestPath, rc)
+	if err != nil {
+		log.Printf("static %s/%s: %v", site, requestPath, err)
+		httpError(w, http.StatusInternalServerError, "could not read site file")
+		return
+	}
+	if isHTMLType(ctype) {
+		// Mesh identity may depend on the client IP; Vary on cookies or auth
+		// headers alone cannot separate the owner's response in shared caches.
+		if w.Header().Get("Cache-Control") != "no-store" {
+			w.Header().Set("Cache-Control", "private, no-cache")
 		}
-		if info.ETag != "" {
-			w.Header().Set("ETag", info.ETag)
+		markup, err := s.accessBarMarkupFor(r, site, policy)
+		if err != nil {
+			log.Printf("static %s: access bar: %v", site, err)
+			httpError(w, http.StatusServiceUnavailable, "could not describe the site's access")
+			return
 		}
+		// Typed data stays validator-free.
+		if !typedData && info.ETag != "" {
+			etag := accessBarETag("", info.ETag, markup)
+			w.Header().Set("ETag", etag)
+			if notModifiedShortcut(r, etag) {
+				w.WriteHeader(http.StatusNotModified)
+				return
+			}
+		}
+		writeHTMLWithAccessBar(w, r, requestPath, ctype, markup, src)
+		return
+	}
+	if !typedData && info.ETag != "" {
+		w.Header().Set("ETag", info.ETag)
 	}
 	if seeker, ok := rc.(io.ReadSeeker); ok {
 		modTime := info.LastModified
@@ -172,8 +203,8 @@ func (s *Server) handleSiteStatic(w http.ResponseWriter, r *http.Request, site s
 		http.ServeContent(w, r, requestPath, modTime, seeker)
 		return
 	}
-	w.Header().Set("Content-Type", contentTypeForName(requestPath))
-	if _, err := io.Copy(w, rc); err != nil {
+	w.Header().Set("Content-Type", ctype)
+	if _, err := io.Copy(w, src); err != nil {
 		return
 	}
 }
